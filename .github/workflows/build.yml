@@ -66,16 +66,21 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           mkdir -p out
-          # Убираем случайные пробелы/переносы и подпись «Пароль:», если её скопировали вместе с паролем
-          export KS_PASS="$(printf '%s' "$KS_PASS" | sed 's/^.*://' | tr -d '[:space:]')"
-          KEY_ALIAS="$(printf '%s' "$KEY_ALIAS" | sed 's/^.*://' | tr -d '[:space:]')"
+          # Пароль могли вставить вместе с подписью или целым куском инструкции —
+          # берём строку «Пароль: …» или «ANDROID_KEYSTORE_PASSWORD = …», если она есть
+          RAW="$KS_PASS"
+          LINE="$(printf '%s\n' "$RAW" | grep -m1 'Пароль:' || true)"
+          if [ -n "$LINE" ]; then RAW="${LINE#*:}";
+          else LINE="$(printf '%s\n' "$RAW" | grep -m1 'ANDROID_KEYSTORE_PASSWORD' || true)"; [ -n "$LINE" ] && RAW="${LINE#*=}"; fi
+          export KS_PASS="$(printf '%s' "$RAW" | tr -d '[:space:]')"
           KS_B64="$(printf '%s' "$KS_B64" | tr -d '[:space:]')"
           echo "Длина пароля после очистки: ${#KS_PASS} (ожидается 24)"
           if [ -n "$KS_B64" ]; then
             BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
             echo "$KS_B64" | base64 -d > release.jks
             $BT/zipalign -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
-            $BT/apksigner sign --ks release.jks --ks-pass env:KS_PASS --ks-key-alias "$KEY_ALIAS" --out out/patriki.apk aligned.apk
+            # в файле ключа один ключ, поэтому имя (alias) указывать не нужно
+            $BT/apksigner sign --ks release.jks --ks-pass env:KS_PASS --out out/patriki.apk aligned.apk
             $BT/apksigner verify out/patriki.apk
             rm -f release.jks
           else
