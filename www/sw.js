@@ -1,5 +1,5 @@
 // Service worker: оболочка приложения работает офлайн, меню и заказы всегда идут в сеть.
-const CACHE = 'patriki-v1';
+const CACHE = 'patriki-v2';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/admin.js', 'js/store.js', 'js/config.js', 'js/seed.js', 'js/logo.js', 'icons/icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {

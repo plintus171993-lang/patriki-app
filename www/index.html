@@ -16,7 +16,11 @@
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-<div id="app"><main class="screen"><div class="empty">Загружаем меню…</div></main></div>
+<div id="app"><div class="pk-loader" role="status" aria-live="polite"> <svg class="pk-dog" width="132" height="132" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"> <g class="pk-head"> <path class="pk-ear pk-ear-l" d="M66 62 Q54 44 40 52 Q38 68 56 78" stroke-width="5"/> <path class="pk-ear pk-ear-r" d="M134 62 Q146 44 160 52 Q162 68 144 78" stroke-width="5"/> <path d="M64 66 Q66 46 100 46 Q134 46 136 66 Q152 74 156 98 Q160 128 140 146 Q120 162 100 162 Q80 162 60 146 Q40 128 44 98 Q48 74 64 66 Z" stroke-width="5"/> <path d="M80 64 Q100 56 120 64 M86 72 Q100 67 114 72" stroke-width="3"/> <g class="pk-eyes"><circle cx="78" cy="93" r="5.5" fill="currentColor" stroke="none"/><circle cx="122" cy="93" r="5.5" fill="currentColor" stroke="none"/></g> <path d="M67 87 Q78 80 89 87 M111 87 Q122 80 133 87" stroke-width="4"/> <path d="M85 104 Q100 97 115 104 Q113 115 100 116 Q87 115 85 104 Z" fill="currentColor" stroke="none"/> <g class="pk-jowls"><path d="M100 116 V123 M100 123 Q84 123 74 135 Q70 141 72 147 M100 123 Q116 123 126 135 Q130 141 128 147" stroke-width="4.2"/><path d="M80 141 Q100 153 120 141 M86 142 L88 134 L91 144 M109 144 L112 134 L114 142" stroke-width="4"/></g> </g> </svg> <span class="pk-shadow" aria-hidden="true"></span> <span class="pk-load-text">Будим бульдога…</span> </div></div>
+<script>
+// Меняем подписи под бульдогом, пока грузится меню
+(function(){var t=["Будим бульдога…","Разжигаем смокер…","Режем брискет…","Ищем меню в будке…"],i=0;window.__pkLoaderTimer=setInterval(function(){var e=document.querySelector(".pk-load-text");if(!e)return clearInterval(window.__pkLoaderTimer);e.textContent=t[++i%t.length];},1400);})();
+</script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>
