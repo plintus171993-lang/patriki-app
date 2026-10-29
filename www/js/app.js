@@ -1,7 +1,7 @@
 import { store } from './store.js';
 import { CONFIG } from './config.js';
 import { HERO_IMG } from './seed.js';
-import { logoMark, logoEmblem } from './logo.js';
+import { logoMark, logoEmblem, bulldogLoader } from './logo.js';
 import { renderAdmin } from './admin.js';
 
 /* ---------- утилиты ---------- */
@@ -11,33 +11,86 @@ const keep = {
   get(k, d) { try { const v = localStorage.getItem('patriki.ui.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('patriki.ui.' + k, JSON.stringify(v)); } catch { /* недоступно */ } },
 };
-export function toast(msg, ms = 2200) {
+export function toast(msg, ms = 2400) {
   document.querySelectorAll('.toast').forEach((x) => x.remove());
   const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = msg;
   document.body.appendChild(t); setTimeout(() => t.remove(), ms);
 }
+
+/* ---------- телефон: всегда +7 (XXX) XXX-XX-XX ---------- */
+// 10 цифр после +7 из любой строки («8 911…», «+7 (911)…», «911…»)
+export function phone10(s) {
+  let d = String(s || '').replace(/\D/g, '');
+  if (d.length > 10 && /^[78]/.test(d)) d = d.slice(1);
+  return d.slice(0, 10);
+}
+export function fmtPhone(s) {
+  const d = phone10(s);
+  if (!d) return '';
+  let r = '+7 (' + d.slice(0, 3);
+  if (d.length >= 3) r += ') ' + d.slice(3, 6);
+  if (d.length >= 6) r += '-' + d.slice(6, 8);
+  if (d.length >= 8) r += '-' + d.slice(8, 10);
+  return r;
+}
+const PHONE_PH = '+7 (___) ___-__-__';
+// Маска для всех полей с атрибутом data-phone (работает и в админке)
+document.addEventListener('focusin', (e) => {
+  const el = e.target; if (!el.matches?.('input[data-phone]')) return;
+  if (!el.value) el.value = '+7 (';
+  el.dataset.prev = phone10(el.value);
+});
+document.addEventListener('focusout', (e) => {
+  const el = e.target; if (!el.matches?.('input[data-phone]')) return;
+  if (!phone10(el.value)) el.value = '';
+});
+document.addEventListener('input', (e) => {
+  const el = e.target; if (!el.matches?.('input[data-phone]')) return;
+  const raw = el.value;
+  let d = raw.replace(/\D/g, '');
+  if (raw.startsWith('+7')) d = d.slice(1);                         // префикс +7 уже в поле
+  if (d.length > 10 && /^[78]/.test(d)) d = d.slice(1);             // вставили «8 911…» или «+7 911…» поверх префикса
+  d = d.slice(0, 10);
+  // стёрли скобку или тире — стираем и цифру перед ними, иначе курсор «застревает»
+  if (e.inputType === 'deleteContentBackward' && d === el.dataset.prev) d = d.slice(0, -1);
+  el.dataset.prev = d;
+  el.value = d ? fmtPhone(d) : '+7 (';
+});
+
 const icon = {
   home: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
   menu: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
   bag: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 7h14l-1.5 12h-11z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>',
+  user: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>',
   card: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/></svg>',
+  clock: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  pin: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 21s-7-6.5-7-12a7 7 0 0 1 14 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></svg>',
+  id: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2.2"/><path d="M5.5 16a3.5 3.5 0 0 1 7 0M14 10h4M14 13h3"/></svg>',
   info: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>',
   back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
   chev: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
   phone: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>',
+  check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
 };
 const photo = (url, cls = '', alt = '') => url
   ? `<div class="photo ph ${cls}"><img src="${esc(url)}" alt="${esc(alt)}" loading="lazy" onerror="this.remove()"></div>`
   : `<div class="photo ph ${cls}" aria-hidden="true"></div>`;
+const backBtn = (href, label = 'Назад') => `<a class="icon-btn" href="#${href}" aria-label="${label}">${icon.back}</a>`;
 
 /* ---------- состояние ---------- */
 const S = {
   categories: [], items: [], venues: [],
   venueId: keep.get('venue', 'petrogradka'),
   cart: keep.get('cart', {}),
-  customer: keep.get('customer', { name: '', phone: '', address: '', flat: '', comment: '' }),
-  orders: keep.get('orders', []),
-  checkout: { when: 'asap', time: '', payment: 'card' },
+  orders: keep.get('orders', []),                 // заказы с этого устройства (для экрана статуса)
+  me: null,                                       // { id, phone, verified }
+  profile: { name: '', phone: '', birthday: null },
+  addresses: [],
+  history: null,                                  // история заказов из базы
+  checkout: { when: 'asap', time: '', payment: 'card', noCall: false, addr: null, comment: '' },
+  draftAddr: { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true },
+  draftContact: null,                             // { name, phone } пока заполняют форму
+  verify: { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' },
   infoTaps: [],
 };
 const venue = () => S.venues.find((v) => v.id === S.venueId) || S.venues[0] || {};
@@ -51,6 +104,19 @@ function setQty(id, qty) {
   if (qty <= 0) delete S.cart[id]; else S.cart[id] = Math.min(qty, 50);
   keep.set('cart', S.cart);
 }
+const addrLine = (a) => [a.street, a.flat && `кв. ${a.flat}`, a.entrance && `под. ${a.entrance}`, a.floor && `эт. ${a.floor}`, a.intercom && `домофон ${a.intercom}`].filter(Boolean).join(', ');
+const verified = () => !!S.me?.verified;
+
+async function loadGuest() {
+  try {
+    S.me = await store.me();
+    S.profile = await store.getProfile();
+    S.addresses = await store.listAddresses();
+    // перенос имени и телефона из старой версии приложения
+    const old = keep.get('customer', null);
+    if (old && !S.profile.name && old.name) { S.profile.name = old.name; S.profile.phone = fmtPhone(old.phone); }
+  } catch (e) { console.warn('Профиль не загрузился', e); }
+}
 
 /* ---------- маршрутизация ---------- */
 const app = document.getElementById('app');
@@ -59,29 +125,37 @@ const route = () => (location.hash.replace(/^#/, '') || '/');
 async function render() {
   const r = route();
   app.classList.toggle('wide', r.startsWith('/admin'));
-  if (r.startsWith('/admin')) { await renderAdmin(app, { reloadMenu, esc, rub, toast, photo }); return; }
+  if (r.startsWith('/admin')) { await renderAdmin(app, { reloadMenu, esc, rub, toast, photo, fmtPhone }); return; }
   let html = '';
   if (r === '/') html = Home();
   else if (r === '/menu') html = Menu();
   else if (r === '/cart') html = Cart();
   else if (r === '/checkout') html = Checkout();
   else if (r.startsWith('/order/')) html = OrderStatus(r.split('/')[2]);
+  else if (r === '/profile') html = Profile();
+  else if (r === '/profile/orders') html = History();
+  else if (r === '/profile/addresses') html = Addresses();
+  else if (r === '/profile/me') html = PersonalData();
+  else if (r === '/verify') html = Verify();
   else if (r === '/card') html = GuestCard();
   else if (r === '/info') html = Info();
   else html = Home();
   app.innerHTML = html + TabBar(r) + CartBar(r);
   app.classList.toggle('has-cartbar', !!CartBar(r));
   if (r.startsWith('/order/')) pollOrder(r.split('/')[2]);
+  if (r === '/profile/orders' && S.history === null) loadHistory();
+  if (r === '/verify') tickVerify();
 }
 
 function TabBar(r) {
   const tab = (href, label, ic, active, extra = '') => `<a href="#${href}" ${active ? 'aria-current="page"' : ''}>${ic}${label}${extra}</a>`;
   const n = cartCount();
+  const inProfile = r.startsWith('/profile') || r === '/verify' || r === '/card';
   return `<nav class="tabbar" aria-label="Разделы">
     ${tab('/', 'Главная', icon.home, r === '/' || r === '/info')}
     ${tab('/menu', 'Меню', icon.menu, r === '/menu')}
     ${tab('/cart', 'Корзина', icon.bag, r === '/cart' || r === '/checkout', n ? `<span class="badge">${n}</span>` : '')}
-    ${tab('/card', 'Карта', icon.card, r === '/card')}
+    ${tab('/profile', 'Профиль', icon.user, inProfile)}
   </nav>`;
 }
 function CartBar(r) {
@@ -96,13 +170,14 @@ function VenueSwitch() {
   </div>`;
 }
 
-/* ---------- экраны ---------- */
+/* ---------- главная и меню ---------- */
 function Home() {
   const v = venue();
   const hits = S.items.filter((x) => x.popular && x.available !== false).slice(0, 8);
+  const hello = S.profile.name ? `Привет, ${esc(S.profile.name.split(' ')[0])}!` : 'САНКТ-ПЕТЕРБУРГ';
   return `<main class="screen">
     <header class="between">
-      <div class="brand">${logoMark(48)}<div><div class="brand-name">ПАТРИКИ ПАБ</div><div class="brand-sub">САНКТ-ПЕТЕРБУРГ</div></div></div>
+      <div class="brand">${logoMark(48)}<div><div class="brand-name">ПАТРИКИ ПАБ</div><div class="brand-sub">${hello}</div></div></div>
       <a class="icon-btn" href="#/info" aria-label="Информация">${icon.info}</a>
     </header>
     ${VenueSwitch()}
@@ -117,10 +192,11 @@ function Home() {
         </div>
       </div>
     </section>
-    <a class="card card-link between" href="#/card">
+    ${S.history?.length || S.orders.length ? `<a class="card card-link between" href="#/profile/orders">
+      <div class="stack" style="gap:4px"><span class="eyebrow">Мои заказы</span><span style="font-size:15px;font-weight:600">Повторить прошлый заказ</span></div>
+      <span class="row muted">${icon.chev}</span></a>` : `<a class="card card-link between" href="#/card">
       <div class="stack" style="gap:4px"><span class="eyebrow">Карта гостя</span><span style="font-size:15px;font-weight:600">Баллы за заказы и визиты</span></div>
-      <span class="row muted" style="font-size:13px">Открыть ${icon.chev}</span>
-    </a>
+      <span class="row muted" style="font-size:13px">Открыть ${icon.chev}</span></a>`}
     ${hits.length ? `<section class="stack" style="gap:12px">
       <div class="between"><h2 class="h2">Хиты паба</h2><a href="#/menu" style="font-size:13px;text-decoration:none">Всё меню</a></div>
       <div class="hscroll">${hits.map((x) => `<button type="button" class="mini" data-act="open" data-id="${esc(x.id)}">
@@ -163,6 +239,7 @@ const Stepper = (id, q) => q > 0
   ? `<span class="qty"><button type="button" data-act="dec" data-id="${esc(id)}" aria-label="Убрать одну">−</button><span aria-live="polite">${q}</span><button type="button" data-act="inc" data-id="${esc(id)}" aria-label="Добавить ещё">+</button></span>`
   : `<button type="button" class="add" data-act="inc" data-id="${esc(id)}" aria-label="В корзину">+</button>`;
 
+/* ---------- корзина и оформление ---------- */
 function Cart() {
   const lines = cartLines();
   if (!lines.length) return `<main class="screen"><h1 class="h1">Корзина</h1>
@@ -192,57 +269,132 @@ const canOrder = () => cartCount() > 0 && venue().accepting !== false && !(venue
 
 function Checkout() {
   if (!canOrder()) { setTimeout(() => (location.hash = '#/cart')); return ''; }
-  const c = S.customer, k = S.checkout, v = venue();
+  const k = S.checkout, v = venue(), d = S.draftAddr;
+  const c = S.draftContact || { name: S.profile.name, phone: S.profile.phone || (S.me?.phone ? fmtPhone(S.me.phone) : '') };
+  if (k.addr === null) k.addr = S.addresses[0]?.id || 'new';            // последний использованный адрес
+  const isNew = k.addr === 'new' || !S.addresses.find((a) => a.id === k.addr);
+  const total = cartSum() + (v.delivery_fee || 0);
   return `<main class="screen">
-    <div class="row"><a class="icon-btn" href="#/cart" aria-label="Назад в корзину">${icon.back}</a><h1 class="h1" style="font-size:26px">Оформление</h1></div>
-    <form id="checkout" class="stack" style="gap:18px" novalidate>
-      <div class="stack">
-        <span class="eyebrow">Доставка · ${esc(v.zone || v.name)}</span>
+    <div class="row">${backBtn('/cart', 'Назад в корзину')}<h1 class="h1" style="font-size:26px">Оформление</h1></div>
+    <form id="checkout" class="stack" style="gap:20px" novalidate>
+      <section class="stack">
+        <span class="eyebrow">Куда доставить · ${esc(v.zone || v.name)}</span>
+        ${S.addresses.length ? `<div class="stack" role="radiogroup" aria-label="Сохранённые адреса">
+          ${S.addresses.slice(0, 5).map((a) => `<button type="button" class="addr-opt" role="radio" aria-checked="${k.addr === a.id}" data-act="pick-addr" data-id="${esc(a.id)}">
+            <span class="radio-dot" aria-hidden="true"></span>
+            <span class="stack" style="gap:2px;text-align:left">${a.label ? `<span class="eyebrow">${esc(a.label)}</span>` : ''}<span>${esc(addrLine(a))}</span></span>
+          </button>`).join('')}
+          <button type="button" class="addr-opt" role="radio" aria-checked="${isNew}" data-act="pick-addr" data-id="new"><span class="radio-dot" aria-hidden="true"></span><span>Новый адрес</span></button>
+        </div>` : ''}
+        ${isNew ? `<div class="stack">
+          <label class="field">Улица и дом<input class="input" name="street" autocomplete="street-address" required placeholder="Большая Пушкарская, 10" value="${esc(d.street)}"></label>
+          <div class="grid-2">
+            <label class="field">Квартира / офис<input class="input" name="flat" inputmode="numeric" value="${esc(d.flat)}"></label>
+            <label class="field">Подъезд<input class="input" name="entrance" inputmode="numeric" value="${esc(d.entrance)}"></label>
+            <label class="field">Этаж<input class="input" name="floor" inputmode="numeric" value="${esc(d.floor)}"></label>
+            <label class="field">Домофон<input class="input" name="intercom" value="${esc(d.intercom)}"></label>
+          </div>
+          ${store.guestOff ? '' : `<label class="check"><input type="checkbox" name="saveAddr" ${d.save ? 'checked' : ''}><span>Запомнить адрес для следующих заказов</span></label>`}
+        </div>` : ''}
+      </section>
+      <section class="stack">
+        <span class="eyebrow">Контакты</span>
         <label class="field">Имя<input class="input" name="name" autocomplete="name" required value="${esc(c.name)}"></label>
-        <label class="field">Телефон<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" required placeholder="+7 900 000-00-00" value="${esc(c.phone)}"></label>
-        <label class="field">Адрес<input class="input" name="address" autocomplete="street-address" required placeholder="Улица, дом" value="${esc(c.address)}"></label>
-        <label class="field">Квартира, подъезд, этаж<input class="input" name="flat" value="${esc(c.flat)}"></label>
-        <label class="field">Комментарий<textarea class="textarea" name="comment" placeholder="Домофон, приборы, пожелания">${esc(c.comment)}</textarea></label>
-      </div>
-      <div class="stack">
+        <label class="field">Телефон<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone required placeholder="${PHONE_PH}" value="${esc(fmtPhone(c.phone))}"></label>
+        ${verified() && phone10(c.phone) === phone10(S.me.phone) ? `<span class="ok-note">${icon.check} Номер подтверждён</span>` : ''}
+        <label class="check"><input type="checkbox" name="noCall" ${k.noCall ? 'checked' : ''}><span>Не звонить для подтверждения заказа</span></label>
+      </section>
+      <section class="stack">
         <span class="eyebrow">Когда</span>
         <div class="grid-2">
           <button type="button" class="opt" data-act="when" data-v="asap" aria-pressed="${k.when === 'asap'}">Как можно скорее</button>
           <button type="button" class="opt" data-act="when" data-v="time" aria-pressed="${k.when === 'time'}">Ко времени</button>
         </div>
-        ${k.when === 'time' ? `<label class="field">Время доставки<input class="input" name="time" type="time" value="${esc(k.time)}" required></label>` : ''}
-      </div>
-      <div class="stack">
+        ${k.when === 'time' ? `<label class="field">Время доставки<input class="input" name="time" type="time" value="${esc(k.time)}" required></label>` : `<span class="muted" style="font-size:13px">Привезём примерно за ${esc(v.eta_minutes || 45)} мин</span>`}
+      </section>
+      <section class="stack">
         <span class="eyebrow">Оплата при получении</span>
         <div class="grid-2">
           <button type="button" class="opt" data-act="pay" data-v="card" aria-pressed="${k.payment === 'card'}">Картой курьеру</button>
           <button type="button" class="opt" data-act="pay" data-v="cash" aria-pressed="${k.payment === 'cash'}">Наличными</button>
         </div>
-      </div>
+      </section>
+      <label class="field">Комментарий к заказу<textarea class="textarea" name="comment" placeholder="Приборы, пожелания">${esc(k.comment)}</textarea></label>
       <div class="card stack">
         <div class="sum-row"><span>Блюда (${cartCount()})</span><span>${rub(cartSum())}</span></div>
         <div class="sum-row"><span>Доставка</span><span>${v.delivery_fee ? rub(v.delivery_fee) : 'бесплатно'}</span></div>
-        <div class="total"><span class="h2">Итого</span><b>${rub(cartSum() + (v.delivery_fee || 0))}</b></div>
+        <div class="total"><span class="h2">К оплате</span><b>${rub(total)}</b></div>
       </div>
-      <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы соглашаетесь на обработку имени, телефона и адреса для доставки. Мы перезвоним для подтверждения.</p>
+      <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы соглашаетесь на обработку имени, телефона и адреса для доставки.</p>
       <p id="co-err" class="error" role="alert" style="margin:0"></p>
-      <button class="btn btn-accent btn-block" type="submit">Отправить заказ · ${rub(cartSum() + (v.delivery_fee || 0))}</button>
+      <button class="btn btn-accent btn-block" type="submit">Отправить заказ · ${rub(total)}</button>
     </form>
   </main>`;
 }
 
-const STATUS = [
-  ['new', 'Заказ принят'], ['cooking', 'Готовим'], ['delivering', 'Курьер в пути'], ['done', 'Доставлен'],
-];
+function saveCheckoutForm() {
+  const f = document.getElementById('checkout'); if (!f) return;
+  const d = Object.fromEntries(new FormData(f));
+  S.draftContact = { name: d.name || '', phone: d.phone || '' };
+  if ('street' in d) S.draftAddr = { ...S.draftAddr, street: d.street || '', flat: d.flat || '', entrance: d.entrance || '', floor: d.floor || '', intercom: d.intercom || '', save: !!d.saveAddr || store.guestOff };
+  S.checkout.noCall = !!d.noCall;
+  S.checkout.comment = d.comment || '';
+  if (d.time !== undefined) S.checkout.time = d.time;
+}
+
+async function submitCheckout(form) {
+  saveCheckoutForm();
+  const k = S.checkout, c = S.draftContact, err = document.getElementById('co-err');
+  const saved = S.addresses.find((a) => a.id === k.addr);
+  const addr = saved || S.draftAddr;
+  if (!addr.street?.trim()) return (err.textContent = 'Укажите улицу и дом');
+  if (!c.name.trim()) return (err.textContent = 'Укажите имя');
+  if (phone10(c.phone).length !== 10) return (err.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX');
+  if (k.when === 'time' && !k.time) return (err.textContent = 'Выберите время доставки');
+  const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Отправляем…';
+  try {
+    const comment = [k.noCall ? '⚑ Не звонить для подтверждения' : '', addr.comment || '', k.comment.trim()].filter(Boolean).join('. ');
+    const res = await store.placeOrder({
+      venue_id: S.venueId,
+      customer_name: c.name.trim(), phone: fmtPhone(c.phone),
+      address: addrLine(addr), comment,
+      when_text: k.when === 'asap' ? 'Как можно скорее' : `К ${k.time}`,
+      payment: k.payment,
+      items: cartLines().map(({ item, qty }) => ({ item_id: item.id, name: item.name, price: item.price, qty })),
+    });
+    S.orders.unshift({ id: res.id, number: res.number, total: res.total, status: 'new', at: Date.now() });
+    S.orders = S.orders.slice(0, 20); keep.set('orders', S.orders);
+    S.cart = {}; keep.set('cart', S.cart);
+    // запоминаем гостя: имя, телефон, адрес
+    try {
+      if (c.name.trim() !== S.profile.name || fmtPhone(c.phone) !== S.profile.phone) {
+        S.profile = await store.saveProfile({ ...S.profile, name: c.name, phone: fmtPhone(c.phone) });
+      }
+      if (saved) await store.touchAddress(saved.id);
+      else if (S.draftAddr.save) { await store.saveAddress(S.draftAddr); S.draftAddr = { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true }; }
+      S.addresses = await store.listAddresses();
+    } catch (e2) { console.warn('Не сохранили профиль', e2); }
+    S.history = null; S.draftContact = null; S.checkout = { ...S.checkout, addr: null, comment: '', noCall: false };
+    location.hash = '#/order/' + res.id;
+  } catch (ex) {
+    console.error(ex);
+    err.textContent = 'Не получилось отправить заказ. Проверьте интернет или позвоните нам.';
+    btn.disabled = false; btn.textContent = 'Отправить заказ';
+  }
+}
+
+/* ---------- статус заказа ---------- */
+const STATUS = [['new', 'Заказ принят'], ['cooking', 'Готовим'], ['delivering', 'Курьер в пути'], ['done', 'Доставлен']];
+const STATUS_RU = { new: 'Принят', cooking: 'Готовим', delivering: 'В пути', done: 'Доставлен', cancelled: 'Отменён' };
 function OrderStatus(id) {
-  const o = S.orders.find((x) => x.id === id) || { id, number: '…', status: 'new' };
+  const o = S.orders.find((x) => x.id === id) || S.history?.find((x) => x.id === id) || { id, number: '…', status: 'new' };
   const idx = Math.max(0, STATUS.findIndex(([k]) => k === o.status));
   return `<main class="screen">
     <h1 class="h1">Заказ №${esc(o.number)}</h1>
     ${o.status === 'cancelled'
       ? `<div class="card"><span class="error">Заказ отменён. Если это ошибка — позвоните нам.</span></div>`
       : `<div class="card status-steps" aria-live="polite">${STATUS.map(([k, label], i) => `<div class="step ${i <= idx ? 'done' : ''}"><span class="dot"></span>${label}</div>`).join('')}</div>`}
-    <p class="muted" style="margin:0;line-height:1.5">Мы перезвоним для подтверждения. Статус обновляется сам.</p>
+    <p class="muted" style="margin:0;line-height:1.5">Статус обновляется сам.</p>
     <a class="btn btn-ghost btn-block" href="tel:${esc((venue().phone || '').replace(/[^+\d]/g, ''))}">${icon.phone}Позвонить в паб</a>
     <a class="btn btn-accent btn-block" href="#/menu">Вернуться в меню</a>
   </main>`;
@@ -254,38 +406,233 @@ function pollOrder(id) {
     if (route() !== '/order/' + id) return;
     try {
       const s = await store.getOrderStatus(id);
-      const o = S.orders.find((x) => x.id === id);
+      let o = S.orders.find((x) => x.id === id);
+      if (!o && s) { o = { id, number: s.number, status: s.status }; S.orders.unshift(o); }
       if (s && o && s.status !== o.status) { o.status = s.status; keep.set('orders', S.orders); render(); return; }
     } catch { /* сеть */ }
     pollOrder(id);
   }, 15000);
 }
 
-function GuestCard() {
-  const last = S.orders[0];
+/* ---------- профиль ---------- */
+const row = (href, ic, label, extra = '') => `<a class="menu-row" href="${href}"><span class="row">${ic}<span>${label}</span>${extra}</span>${icon.chev}</a>`;
+
+function Profile() {
+  const p = S.profile, me = S.me;
+  if (store.guestOff) return `<main class="screen"><h1 class="h1">Профиль</h1>
+    <div class="card stack"><span style="color:var(--text-2);line-height:1.5">Профиль временно недоступен. Заказы оформляются как обычно.</span></div>
+    ${InfoRows()}</main>`;
+  const phone = me?.verified ? fmtPhone(me.phone) : p.phone;
   return `<main class="screen">
-    <h1 class="h1">Карта гостя</h1>
+    <div class="stack" style="gap:6px">
+      <h1 class="h1" style="text-transform:none;letter-spacing:.5px">${esc(p.name || 'Гость')}</h1>
+      ${phone ? `<span style="font-size:16px;color:var(--text-2)">${esc(phone)}</span>` : ''}
+      ${me?.verified
+        ? `<span class="ok-note">${icon.check} Номер подтверждён</span>`
+        : `<a class="btn btn-outline btn-sm" href="#/verify" style="align-self:flex-start;margin-top:6px">Подтвердить номер телефона</a>
+           <span class="muted" style="font-size:12px;line-height:1.5">Необязательно. Подтверждённый номер — это ваши заказы и адреса на любом телефоне и баллы лояльности.</span>`}
+    </div>
+    <nav class="menu-group" aria-label="Мой профиль">
+      ${row('#/profile/orders', icon.clock, 'История заказов')}
+      ${row('#/profile/addresses', icon.pin, 'Мои адреса', S.addresses.length ? `<span class="pill">${S.addresses.length}</span>` : '')}
+      ${row('#/card', icon.card, 'Баллы', '<span class="pill muted-pill">скоро</span>')}
+      ${row('#/profile/me', icon.id, 'Личные данные')}
+    </nav>
+    ${InfoRows()}
+    ${me?.verified ? '<button type="button" class="btn btn-ghost btn-block" data-act="logout">Выйти из профиля</button>' : ''}
+  </main>`;
+}
+const InfoRows = () => `<nav class="menu-group" aria-label="О пабе">
+  ${row('#/info', icon.info, 'Адреса и контакты')}
+  <a class="menu-row" href="tel:${esc((venue().phone || '').replace(/[^+\d]/g, ''))}"><span class="row">${icon.phone}<span>Позвонить в паб</span></span>${icon.chev}</a>
+</nav>`;
+
+function History() {
+  const list = S.history;
+  return `<main class="screen">
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Мои заказы</h1></div>
+    ${list === null ? bulldogLoader('Листаем чеки…')
+      : !list.length ? `<div class="empty">${icon.clock}<span>Заказов пока нет. Самое время попробовать брискет.</span><a class="btn btn-accent" href="#/menu">В меню</a></div>`
+      : list.map((o) => `<article class="card stack">
+        <div class="between"><span class="h2" style="font-size:18px">№${esc(o.number)}</span><span class="status-pill ${esc(o.status)}">${STATUS_RU[o.status] || esc(o.status)}</span></div>
+        <span class="muted" style="font-size:13px">${new Date(o.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} · ${esc(o.address)}</span>
+        <span style="font-size:14px;line-height:1.5;color:var(--text-2)">${(o.items || []).map((l) => `${esc(l.name)} × ${esc(l.qty)}`).join(', ')}</span>
+        <div class="between"><span class="price">${rub(o.total)}</span>
+          <div class="row"><a class="btn btn-ghost btn-sm" href="#/order/${esc(o.id)}">Статус</a><button type="button" class="btn btn-accent btn-sm" data-act="repeat" data-id="${esc(o.id)}">Повторить</button></div></div>
+      </article>`).join('')}
+  </main>`;
+}
+async function loadHistory() {
+  try { S.history = await store.myOrders(); } catch (e) { console.warn(e); S.history = []; }
+  if (route() === '/profile/orders') render();
+}
+function repeatOrder(id) {
+  const o = S.history?.find((x) => x.id === id); if (!o) return;
+  let added = 0, missing = 0;
+  for (const l of o.items || []) {
+    const it = itemById(l.item_id);
+    if (it && it.available !== false) { setQty(it.id, (S.cart[it.id] || 0) + l.qty); added += l.qty; } else missing++;
+  }
+  toast(missing ? `Добавили ${added} шт. Некоторых блюд сейчас нет` : 'Заказ добавлен в корзину');
+  location.hash = '#/cart';
+}
+
+function Addresses() {
+  return `<main class="screen">
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Мои адреса</h1></div>
+    ${S.addresses.length ? `<div class="menu-group">${S.addresses.map((a) => `<button type="button" class="menu-row" data-act="edit-addr" data-id="${esc(a.id)}">
+      <span class="row" style="text-align:left">${icon.pin}<span class="stack" style="gap:2px">${a.label ? `<span class="eyebrow">${esc(a.label)}</span>` : ''}<span>${esc(addrLine(a))}</span></span></span>${icon.chev}</button>`).join('')}</div>`
+      : `<div class="empty">${icon.pin}<span>Сохранённых адресов нет. Адрес из первого заказа запомнится сам.</span></div>`}
+    <button type="button" class="btn btn-accent btn-block" data-act="edit-addr" data-id="">+ Добавить адрес</button>
+  </main>`;
+}
+
+function addrSheet(a) {
+  const x = a || { label: '', street: '', flat: '', entrance: '', floor: '', intercom: '', comment: '' };
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  wrap.innerHTML = `<form class="sheet" role="dialog" aria-modal="true" aria-label="${a ? 'Изменить адрес' : 'Новый адрес'}">
+    <span class="grab"></span>
+    <h2 class="h2">${a ? 'Изменить адрес' : 'Новый адрес'}</h2>
+    <div class="tabs" role="radiogroup" aria-label="Название">${['Дом', 'Работа', 'Друзья', 'Другое'].map((l) => `<button type="button" class="chip" data-label="${l}" aria-current="${x.label === l}">${l}</button>`).join('')}</div>
+    <label class="field">Улица и дом<input class="input" name="street" required value="${esc(x.street)}" placeholder="Большая Пушкарская, 10"></label>
+    <div class="grid-2">
+      <label class="field">Квартира / офис<input class="input" name="flat" inputmode="numeric" value="${esc(x.flat)}"></label>
+      <label class="field">Подъезд<input class="input" name="entrance" inputmode="numeric" value="${esc(x.entrance)}"></label>
+      <label class="field">Этаж<input class="input" name="floor" inputmode="numeric" value="${esc(x.floor)}"></label>
+      <label class="field">Домофон<input class="input" name="intercom" value="${esc(x.intercom)}"></label>
+    </div>
+    <label class="field">Комментарий курьеру<input class="input" name="comment" value="${esc(x.comment)}" placeholder="Вход со двора"></label>
+    <p class="error" role="alert" style="margin:0"></p>
+    <button type="submit" class="btn btn-accent btn-block">Сохранить</button>
+    ${a ? '<button type="button" class="btn btn-danger btn-block" data-x="del">Удалить адрес</button>' : ''}
+    <button type="button" class="btn btn-ghost btn-block" data-x="close">Отмена</button>
+  </form>`;
+  let label = x.label;
+  const form = wrap.querySelector('form');
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap || e.target.closest('[data-x=close]')) return wrap.remove();
+    const chip = e.target.closest('[data-label]');
+    if (chip) { label = label === chip.dataset.label ? '' : chip.dataset.label; wrap.querySelectorAll('[data-label]').forEach((c) => c.setAttribute('aria-current', String(c.dataset.label === label))); }
+    if (e.target.closest('[data-x=del]')) {
+      await store.deleteAddress(a.id); S.addresses = await store.listAddresses(); wrap.remove(); render(); toast('Адрес удалён');
+    }
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(form));
+    if (!d.street.trim()) return (form.querySelector('.error').textContent = 'Укажите улицу и дом');
+    try {
+      await store.saveAddress({ ...(a ? { id: a.id } : {}), ...d, label });
+      S.addresses = await store.listAddresses(); wrap.remove(); render(); toast('Адрес сохранён');
+    } catch (ex) { console.error(ex); form.querySelector('.error').textContent = 'Не удалось сохранить'; }
+  });
+  document.body.appendChild(wrap);
+  form.street.focus();
+}
+
+function PersonalData() {
+  const p = S.profile;
+  const phone = p.phone || (S.me?.phone ? fmtPhone(S.me.phone) : '');
+  return `<main class="screen">
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Личные данные</h1></div>
+    <form id="me-form" class="stack" style="gap:14px">
+      <label class="field">Имя<input class="input" name="name" autocomplete="name" value="${esc(p.name)}"></label>
+      <label class="field">Телефон<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone placeholder="${PHONE_PH}" value="${esc(phone)}"></label>
+      ${verified() ? `<span class="ok-note">${icon.check} Подтверждён ${esc(fmtPhone(S.me.phone))}</span>` : '<a href="#/verify" style="font-size:13px">Подтвердить номер</a>'}
+      <label class="field">День рождения — пришлём подарок<input class="input" name="birthday" type="date" value="${esc(p.birthday || '')}"></label>
+      <p class="error" role="alert" style="margin:0"></p>
+      <button type="submit" class="btn btn-accent btn-block">Сохранить</button>
+    </form>
+  </main>`;
+}
+
+/* ---------- подтверждение номера ---------- */
+function Verify() {
+  const v = S.verify;
+  const pre = v.phone || S.profile.phone || '';
+  if (v.step === 'code') {
+    const left = Math.max(0, Math.ceil((v.until - Date.now()) / 1000));
+    return `<main class="screen">
+      <div class="row"><button type="button" class="icon-btn" data-act="verify-back" aria-label="Изменить номер">${icon.back}</button><h1 class="h1" style="font-size:26px">Код из SMS</h1></div>
+      <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
+      <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.5">Отправили код на<br><b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b></p>
+      <form id="code-form" class="stack" style="gap:14px">
+        <label class="sr-only" for="otp">Код подтверждения</label>
+        <input id="otp" class="input otp" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" required>
+        <p class="error" role="alert" style="margin:0"></p>
+        <button type="submit" class="btn btn-accent btn-block">Подтвердить</button>
+      </form>
+      ${left > 0 ? `<p class="muted" style="text-align:center;margin:0" id="resend">Отправить ещё раз через ${left} с</p>`
+        : '<button type="button" class="btn btn-ghost btn-block" data-act="resend">Отправить код ещё раз</button>'}
+      ${CONFIG.SMS_TEST_MODE ? '<p class="demo-banner" style="margin:0">Тестовый режим: SMS пока не отправляются. Код виден управляющему в админке и приходит в чат заведения.</p>' : ''}
+    </main>`;
+  }
+  return `<main class="screen">
+    <div class="row">${backBtn(v.back || '/profile')}<h1 class="h1" style="font-size:26px">Вход по номеру</h1></div>
+    <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
+    <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.5">Подтвердите номер — и заказы, адреса и баллы будут с вами на любом телефоне</p>
+    <form id="phone-form" class="stack" style="gap:14px">
+      <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone required placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
+      <p class="error" role="alert" style="margin:0"></p>
+      <button type="submit" class="btn btn-accent btn-block">Получить код</button>
+    </form>
+    <p class="muted" style="font-size:12px;text-align:center;margin:0;line-height:1.5">Нажимая «Получить код», вы соглашаетесь на обработку номера телефона для входа и доставки.</p>
+  </main>`;
+}
+let verifyTimer = null;
+function tickVerify() {
+  clearInterval(verifyTimer);
+  if (S.verify.step !== 'code') return;
+  verifyTimer = setInterval(() => {
+    const el = document.getElementById('resend');
+    if (!el || route() !== '/verify') return clearInterval(verifyTimer);
+    const left = Math.ceil((S.verify.until - Date.now()) / 1000);
+    if (left <= 0) { clearInterval(verifyTimer); render(); } else el.textContent = `Отправить ещё раз через ${left} с`;
+  }, 1000);
+  document.getElementById('otp')?.focus();
+}
+async function sendCode(p10, errEl, btn) {
+  if (p10.length !== 10) { if (errEl) errEl.textContent = 'Введите номер полностью'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Отправляем…'; }
+  try {
+    const ctx = await store.sendCode(p10);
+    S.verify = { ...S.verify, step: 'code', phone: p10, ctx, until: Date.now() + 60000 };
+    render();
+    if (ctx.demoCode) toast(`Демо-режим: код ${ctx.demoCode}`, 6000);
+  } catch (ex) {
+    console.error(ex);
+    const m = String(ex.message || '');
+    if (errEl) errEl.textContent = /rate|seconds|limit/i.test(m) ? 'Слишком часто. Подождите минуту и попробуйте снова' : 'Не удалось отправить код. Попробуйте позже';
+    if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
+  }
+}
+
+/* ---------- карта гостя и информация ---------- */
+function GuestCard() {
+  return `<main class="screen">
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Баллы</h1></div>
     <div class="guest-card">
       <div class="between"><div class="stack" style="gap:4px"><span style="font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:2px">ПАТРИКИ ПАБ</span><span class="eyebrow">Программа лояльности</span></div>${logoMark(44)}</div>
       <span style="font-size:15px;line-height:1.5">Скоро здесь будет баланс баллов — тот же, что на вашей карте в Wallet. Копите в зале и в доставке, списывайте при заказе.</span>
     </div>
     <div class="card stack">
       <span class="eyebrow">Уже есть карта в Wallet?</span>
-      <span style="font-size:14px;line-height:1.5;color:var(--text-2)">Покажите её бармену в зале, а в заказе доставки укажите тот же номер телефона — баллы начислим.</span>
+      <span style="font-size:14px;line-height:1.5;color:var(--text-2)">Подтвердите в профиле тот же номер телефона, что и у карты — так мы свяжем баллы с приложением.</span>
+      ${verified() ? '' : '<a class="btn btn-outline btn-sm" href="#/verify" style="align-self:flex-start">Подтвердить номер</a>'}
     </div>
-    ${last ? `<a class="card card-link between" href="#/order/${esc(last.id)}"><div class="stack" style="gap:4px"><span class="eyebrow">Последний заказ</span><span style="font-weight:600">№${esc(last.number)} · ${rub(last.total)}</span></div>${icon.chev}</a>` : ''}
   </main>`;
 }
 
 function Info() {
   return `<main class="screen">
-    <div class="row"><a class="icon-btn" href="#/" aria-label="На главную">${icon.back}</a><h1 class="h1" style="font-size:26px">Информация</h1></div>
+    <div class="row">${backBtn('/', 'На главную')}<h1 class="h1" style="font-size:26px">Информация</h1></div>
     <div style="display:flex;justify-content:center;color:var(--text);padding:8px 0">${logoEmblem(220)}</div>
     ${S.venues.map((v) => `<section class="card stack">
       <div class="between"><span class="h2" style="font-size:18px">${esc(v.name)}</span>${v.accepting === false ? '<span class="status-pill">скоро</span>' : ''}</div>
       <span style="color:var(--text-2)">${esc(v.address)}</span>
       <span class="muted" style="font-size:13px">Ежедневно ${esc(v.hours)} · доставка: ${esc(v.zone)}</span>
-      ${v.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${esc(v.phone.replace(/[^+\d]/g, ''))}" style="align-self:flex-start">${icon.phone}${esc(v.phone)}</a>` : ''}
+      ${v.phone ? `<a class="btn btn-ghost btn-sm" href="tel:${esc(v.phone.replace(/[^+\d]/g, ''))}" style="align-self:flex-start">${icon.phone}${esc(fmtPhone(v.phone) || v.phone)}</a>` : ''}
     </section>`).join('')}
     <section class="card stack">
       <span class="eyebrow">О доставке</span>
@@ -316,21 +663,21 @@ function openItem(id) {
     </div>`;
   };
   draw();
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); render(); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
   wrap.addEventListener('click', (e) => {
-    if (e.target === wrap || e.target.closest('[data-close]')) { wrap.remove(); render(); return; }
+    if (e.target === wrap || e.target.closest('[data-close]')) return close();
     const b = e.target.closest('[data-act]');
     if (b?.dataset.act === 'inc') { setQty(x.id, (S.cart[x.id] || 0) + 1); draw(); }
     if (b?.dataset.act === 'dec') { setQty(x.id, (S.cart[x.id] || 0) - 1); draw(); }
   });
-  document.addEventListener('keydown', function onKey(e) {
-    if (e.key === 'Escape') { wrap.remove(); render(); document.removeEventListener('keydown', onKey); }
-  });
+  document.addEventListener('keydown', onKey);
   document.body.appendChild(wrap);
   wrap.querySelector('[data-close]').focus();
 }
 
 /* ---------- события ---------- */
-app.addEventListener('click', (e) => {
+app.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const { act, id, v } = b.dataset;
   if (act === 'venue') { S.venueId = id; keep.set('venue', id); render(); }
@@ -343,8 +690,18 @@ app.addEventListener('click', (e) => {
     document.getElementById('cat-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     app.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-current', String(c === b)));
   }
-  if (act === 'when') { saveForm(); S.checkout.when = v; render(); }
-  if (act === 'pay') { saveForm(); S.checkout.payment = v; render(); }
+  if (act === 'when') { saveCheckoutForm(); S.checkout.when = v; render(); }
+  if (act === 'pay') { saveCheckoutForm(); S.checkout.payment = v; render(); }
+  if (act === 'pick-addr') { saveCheckoutForm(); S.checkout.addr = id; render(); }
+  if (act === 'repeat') repeatOrder(id);
+  if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
+  if (act === 'verify-back') { S.verify.step = 'phone'; render(); }
+  if (act === 'resend') sendCode(S.verify.phone, null, null);
+  if (act === 'logout') {
+    await store.guestSignOut();
+    S.history = null; S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
+    await loadGuest(); render(); toast('Вы вышли из профиля');
+  }
   if (act === 'secret') {
     const now = Date.now();
     S.infoTaps = [...S.infoTaps.filter((t) => now - t < 3000), now];
@@ -352,43 +709,43 @@ app.addEventListener('click', (e) => {
   }
 });
 
-function saveForm() {
-  const f = document.getElementById('checkout'); if (!f) return;
-  const d = Object.fromEntries(new FormData(f));
-  S.customer = { name: d.name || '', phone: d.phone || '', address: d.address || '', flat: d.flat || '', comment: d.comment || '' };
-  if (d.time !== undefined) S.checkout.time = d.time;
-  keep.set('customer', S.customer);
-}
-
 app.addEventListener('submit', async (e) => {
-  if (e.target.id !== 'checkout') return;
-  e.preventDefault();
-  saveForm();
-  const c = S.customer, k = S.checkout, err = document.getElementById('co-err');
-  const digits = c.phone.replace(/\D/g, '');
-  if (!c.name.trim()) return (err.textContent = 'Укажите имя');
-  if (digits.length < 10 || digits.length > 12) return (err.textContent = 'Проверьте номер телефона');
-  if (!c.address.trim()) return (err.textContent = 'Укажите адрес доставки');
-  if (k.when === 'time' && !k.time) return (err.textContent = 'Выберите время доставки');
-  const btn = e.target.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Отправляем…';
-  try {
-    const res = await store.placeOrder({
-      venue_id: S.venueId,
-      customer_name: c.name.trim(), phone: c.phone.trim(),
-      address: [c.address.trim(), c.flat.trim()].filter(Boolean).join(', '),
-      comment: c.comment.trim(),
-      when_text: k.when === 'asap' ? 'Как можно скорее' : `К ${k.time}`,
-      payment: k.payment,
-      items: cartLines().map(({ item, qty }) => ({ item_id: item.id, name: item.name, price: item.price, qty })),
-    });
-    S.orders.unshift({ id: res.id, number: res.number, total: res.total, status: 'new', at: Date.now() });
-    S.orders = S.orders.slice(0, 20); keep.set('orders', S.orders);
-    S.cart = {}; keep.set('cart', S.cart);
-    location.hash = '#/order/' + res.id;
-  } catch (ex) {
-    console.error(ex);
-    err.textContent = 'Не получилось отправить заказ. Проверьте интернет или позвоните нам.';
-    btn.disabled = false; btn.textContent = 'Отправить заказ';
+  const f = e.target;
+  if (f.id === 'checkout') { e.preventDefault(); return submitCheckout(f); }
+  if (f.id === 'phone-form') {
+    e.preventDefault();
+    return sendCode(phone10(f.phone.value), f.querySelector('.error'), f.querySelector('[type=submit]'));
+  }
+  if (f.id === 'code-form') {
+    e.preventDefault();
+    const err = f.querySelector('.error'), btn = f.querySelector('[type=submit]');
+    const code = f.code.value.replace(/\D/g, '');
+    if (code.length < 4) return (err.textContent = 'Введите код из сообщения');
+    btn.disabled = true; btn.textContent = 'Проверяем…';
+    try {
+      await store.confirmPhone(S.verify.phone, code, S.verify.ctx);
+      await loadGuest();
+      if (!S.profile.phone || phone10(S.profile.phone) !== S.verify.phone) {
+        S.profile = await store.saveProfile({ ...S.profile, phone: fmtPhone(S.verify.phone) });
+      }
+      S.history = null;
+      const back = S.verify.back || '/profile';
+      S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
+      toast('Номер подтверждён');
+      location.hash = '#' + back;
+    } catch (ex) {
+      err.textContent = ex.message || 'Неверный код';
+      btn.disabled = false; btn.textContent = 'Подтвердить';
+    }
+  }
+  if (f.id === 'me-form') {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(f));
+    if (d.phone && phone10(d.phone).length !== 10) return (f.querySelector('.error').textContent = 'Введите номер полностью');
+    try {
+      S.profile = await store.saveProfile({ name: d.name, phone: fmtPhone(d.phone), birthday: d.birthday || null });
+      toast('Сохранено'); location.hash = '#/profile';
+    } catch (ex) { console.error(ex); f.querySelector('.error').textContent = 'Не удалось сохранить'; }
   }
 });
 
@@ -416,17 +773,27 @@ export async function reloadMenu() {
   if (!S.venues.find((v) => v.id === S.venueId) && S.venues[0]) S.venueId = S.venues[0].id;
 }
 
-window.addEventListener('hashchange', () => { window.scrollTo(0, 0); render(); });
+window.addEventListener('hashchange', () => {
+  window.scrollTo(0, 0);
+  if (route() === '/verify' && S.verify.step === 'phone') S.verify.back = S.verify.back || '/profile';
+  render();
+});
 
 (async () => {
+  const started = Date.now();
   try {
     await store.init();
-    await reloadMenu();
+    await Promise.all([reloadMenu(), loadGuest()]);
   } catch (e) {
     console.error(e);
-    app.innerHTML = `<main class="screen"><div class="empty">Не удалось загрузить меню. Проверьте интернет и откройте приложение снова.<button class="btn btn-accent" onclick="location.reload()">Обновить</button></div></main>`;
+    clearInterval(window.__pkLoaderTimer);
+    app.innerHTML = `<main class="screen"><div class="empty">${logoMark(72)}Не удалось загрузить меню. Проверьте интернет и откройте приложение снова.<button class="btn btn-accent" onclick="location.reload()">Обновить</button></div></main>`;
     return;
   }
+  // даём бульдогу хотя бы секунду покрутить головой — иначе экран просто мигнёт
+  const wait = 1100 - (Date.now() - started);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  clearInterval(window.__pkLoaderTimer);
   render();
 })();
 

@@ -37,7 +37,20 @@ export const store = {
     if (this.demo) { demoInit(); return; }
     // Библиотеку кладёт внутрь приложения сборка в GitHub (www/vendor), CDN — запасной вариант
     const createClient = await loadSupabase();
-    sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, { auth: { persistSession: true } });
+    sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, { auth: { persistSession: true, storageKey: 'patriki-auth' } });
+    await this.ensureGuest();
+  },
+
+  // Каждый гость сразу получает профиль (анонимный, без регистрации).
+  // Если анонимный вход в Supabase выключен — приложение просто работает без профиля.
+  async ensureGuest() {
+    if (this.demo) return true;
+    const { data } = await sb.auth.getSession();
+    if (data.session) return true;
+    const { error } = await sb.auth.signInAnonymously();
+    this.guestOff = !!error;
+    if (error) console.warn('Анонимный вход недоступен:', error.message);
+    return !error;
   },
 
   async getMenu() {
@@ -68,8 +81,10 @@ export const store = {
       });
       const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
       const orders = LS.get('orders', []);
+      const me = LS.get('me', { verified: false, phone: '' });
       const rec = {
-        ...order, items: lines, id: uid(), number: 1000 + orders.length + 1, status: 'new',
+        ...order, items: lines, id: uid(), number: 1000 + orders.length + 1, status: 'new', user_id: 'demo-user',
+        phone_verified: me.verified && order.phone.replace(/\D/g, '').slice(-10) === me.phone.slice(-10),
         subtotal, delivery_fee: venue.delivery_fee || 0, total: subtotal + (venue.delivery_fee || 0),
         created_at: new Date().toISOString(),
       };
@@ -89,6 +104,131 @@ export const store = {
     return data;
   },
 
+  /* ---------------- профиль гостя ---------------- */
+  // Кто сейчас в приложении: { id, phone ('79…' если подтверждён), verified }
+  async me() {
+    if (this.demo) {
+      const d = LS.get('me', { id: 'demo-user', phone: '', verified: false });
+      return d;
+    }
+    if (this.guestOff) return null;
+    const { data } = await sb.auth.getUser();
+    const u = data?.user;
+    if (!u) return null;
+    return { id: u.id, phone: u.phone || '', verified: !!(u.phone && u.phone_confirmed_at), anonymous: !!u.is_anonymous };
+  },
+
+  async getProfile() {
+    if (this.demo) return LS.get('profile', { name: '', phone: '', birthday: null });
+    const me = await this.me(); if (!me) return { name: '', phone: '', birthday: null };
+    const { data } = await sb.from('profiles').select('*').eq('id', me.id).maybeSingle();
+    return data || { name: '', phone: '', birthday: null };
+  },
+
+  async saveProfile(p) {
+    const row = { name: (p.name || '').trim(), phone: p.phone || '', birthday: p.birthday || null };
+    if (this.demo) { LS.set('profile', row); return row; }
+    const me = await this.me(); if (!me) return row;
+    const { error } = await sb.from('profiles').upsert({ id: me.id, ...row, updated_at: new Date().toISOString() });
+    if (error) throw error;
+    return row;
+  },
+
+  async listAddresses() {
+    if (this.demo) return LS.get('addresses', []).sort((a, b) => (b.last_used_at || '').localeCompare(a.last_used_at || ''));
+    if (!(await this.me())) return [];
+    const { data, error } = await sb.from('addresses').select('*').order('last_used_at', { ascending: false });
+    if (error) throw error;
+    return data;
+  },
+
+  async saveAddress(a) {
+    const row = {
+      label: a.label || '', street: (a.street || '').trim(), flat: a.flat || '', entrance: a.entrance || '',
+      floor: a.floor || '', intercom: a.intercom || '', comment: a.comment || '', last_used_at: new Date().toISOString(),
+    };
+    if (this.demo) {
+      const list = LS.get('addresses', []);
+      if (a.id) { const i = list.findIndex((x) => x.id === a.id); list[i] = { ...list[i], ...row }; }
+      else list.push({ id: uid(), ...row });
+      LS.set('addresses', list); return;
+    }
+    if (!(await this.me())) return;
+    const q = a.id ? sb.from('addresses').update(row).eq('id', a.id) : sb.from('addresses').insert(row);
+    const { error } = await q;
+    if (error) throw error;
+  },
+
+  async touchAddress(id) {
+    const at = new Date().toISOString();
+    if (this.demo) { const l = LS.get('addresses', []); const x = l.find((y) => y.id === id); if (x) x.last_used_at = at; LS.set('addresses', l); return; }
+    await sb.from('addresses').update({ last_used_at: at }).eq('id', id);
+  },
+
+  async deleteAddress(id) {
+    if (this.demo) { LS.set('addresses', LS.get('addresses', []).filter((x) => x.id !== id)); return; }
+    const { error } = await sb.from('addresses').delete().eq('id', id);
+    if (error) throw error;
+  },
+
+  async myOrders() {
+    if (this.demo) return LS.get('orders', []).filter((o) => o.user_id === 'demo-user').slice(0, 50);
+    const me = await this.me(); if (!me) return [];
+    const { data, error } = await sb.from('orders').select('*').eq('user_id', me.id).order('created_at', { ascending: false }).limit(50);
+    if (error) throw error;
+    return data;
+  },
+
+  // Подтверждение номера. phone — 10 цифр после +7.
+  // Возвращает «режим», который нужно передать в confirmPhone.
+  async sendCode(phone10) {
+    const phone = '+7' + phone10;
+    if (this.demo) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      LS.set('demo_code', { phone, code });
+      const out = LS.get('sms_outbox', []); out.unshift({ phone: phone.slice(1), otp: code, created_at: new Date().toISOString() });
+      LS.set('sms_outbox', out.slice(0, 20));
+      return { mode: 'demo', demoCode: code };
+    }
+    // 1) привязываем номер к текущему профилю
+    const r = await sb.auth.updateUser({ phone });
+    if (!r.error) return { mode: 'link' };
+    // 2) номер уже есть у другого профиля (вход с нового телефона) — входим в него,
+    //    а накопленное здесь заберём после входа
+    const { data: token } = await sb.rpc('create_transfer');
+    const s = await sb.auth.signInWithOtp({ phone, options: { shouldCreateUser: true } });
+    if (s.error) throw s.error;
+    return { mode: 'login', transfer: token };
+  },
+
+  async confirmPhone(phone10, code, ctx) {
+    const phone = '+7' + phone10;
+    if (this.demo) {
+      const d = LS.get('demo_code', {});
+      if (d.phone !== phone || d.code !== code.trim()) throw new Error('Неверный код');
+      LS.set('me', { id: 'demo-user', phone: phone.slice(1), verified: true });
+      return true;
+    }
+    const { error } = await sb.auth.verifyOtp({ phone, token: code.trim(), type: ctx.mode === 'link' ? 'phone_change' : 'sms' });
+    if (error) throw new Error('Неверный или устаревший код');
+    if (ctx.mode === 'login' && ctx.transfer) await sb.rpc('claim_transfer', { p_token: ctx.transfer });
+    return true;
+  },
+
+  // Выйти из профиля гостя: дальше он снова анонимный гость на этом устройстве
+  async guestSignOut() {
+    if (this.demo) { LS.set('me', { id: 'demo-user', phone: '', verified: false }); return; }
+    await sb.auth.signOut();
+    await this.ensureGuest();
+  },
+
+  async listSmsCodes() {
+    if (this.demo) return LS.get('sms_outbox', []);
+    const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data } = await sb.from('sms_outbox').select('*').gte('created_at', since).order('created_at', { ascending: false }).limit(20);
+    return data || [];
+  },
+
   /* ---------------- управляющий ---------------- */
   async adminSignIn(email, password) {
     if (this.demo) {
@@ -106,6 +246,7 @@ export const store = {
   async adminSignOut() {
     if (this.demo) { sessionStorage.removeItem('patriki.admin'); return; }
     await sb.auth.signOut();
+    await this.ensureGuest();
   },
 
   async isAdmin() {

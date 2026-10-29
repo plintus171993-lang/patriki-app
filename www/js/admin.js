@@ -45,6 +45,7 @@ async function loadAll() {
   A.menu = await store.getMenu();
   A.catId = A.catId || A.menu.categories[0]?.id;
   await loadOrders();
+  try { A.codes = await store.listSmsCodes(); } catch { A.codes = []; }
   if (!A.unsub) A.unsub = store.onOrdersChange(async () => { await loadOrders(); if (location.hash.startsWith('#/admin')) draw(); });
 }
 async function loadOrders() {
@@ -87,7 +88,10 @@ function Orders() {
   const venueName = (id) => A.menu.venues.find((v) => v.id === id)?.name || id;
   const list = A.orders.filter((o) => A.filter === 'all' || ['new', 'cooking', 'delivering'].includes(o.status));
   const f = (id, label) => `<button type="button" class="chip" data-a="filter" data-v="${id}" aria-current="${A.filter === id}">${label}</button>`;
+  // сколько заказов у этого гостя среди загруженных (последние 100)
+  const visits = (o) => (o.user_id ? A.orders.filter((x) => x.user_id === o.user_id && x.status !== 'cancelled').length : 0);
   return `<div class="stack" style="gap:14px">
+    <div id="sms-box">${SmsCodes()}</div>
     <div class="tabs">${f('active', 'Активные')}${f('all', 'Все за последнее время')}</div>
     ${list.length ? `<div class="admin-grid">${list.map((o) => `<article class="card order ${o.status === 'new' ? 'new' : ''}">
       <div class="between"><span class="h2" style="font-size:20px">№${esc(o.number)}</span><span class="status-pill ${esc(o.status)}">${STATUS[o.status] || esc(o.status)}</span></div>
@@ -96,6 +100,10 @@ function Orders() {
       <div class="total"><span class="muted">Итого · ${o.payment === 'cash' ? 'наличные' : 'карта курьеру'}</span><b style="font-size:22px">${rub(o.total)}</b></div>
       <div class="stack" style="gap:4px;font-size:14px">
         <span><b>${esc(o.customer_name)}</b> · <a href="tel:${esc(String(o.phone).replace(/[^+\d]/g, ''))}">${esc(o.phone)}</a></span>
+        <span class="row" style="gap:10px;flex-wrap:wrap">
+          ${o.phone_verified ? '<span class="badge-ok">✓ номер подтверждён</span>' : '<span class="muted" style="font-size:12px">номер не подтверждён</span>'}
+          ${visits(o) > 1 ? `<span class="pill">постоянный гость · ${visits(o)} зак.</span>` : ''}
+        </span>
         <span style="color:var(--text-2)">${esc(o.address)}</span>
         ${o.comment ? `<span class="muted">«${esc(o.comment)}»</span>` : ''}
       </div>
@@ -106,6 +114,23 @@ function Orders() {
     </article>`).join('')}</div>` : '<div class="empty">Заказов пока нет. Новые появятся здесь сами, со звуковым сигналом.</div>'}
   </div>`;
 }
+
+// Тестовый режим подтверждения номера: коды, которые гости запросили за последние 30 минут
+function SmsCodes() {
+  if (!A.codes?.length) return '';
+  const { esc, fmtPhone } = ctx;
+  return `<section class="card stack" style="gap:8px;border-color:#5A4A22">
+    <span class="eyebrow accent">Коды подтверждения · тестовый режим</span>
+    <span class="muted" style="font-size:12px;line-height:1.4">SMS ещё не подключены. Если гость просит код — продиктуйте ему его по телефону.</span>
+    ${A.codes.slice(0, 5).map((c) => `<div class="between"><span>${esc(fmtPhone(c.phone))}</span><b style="font-family:var(--display);font-size:20px;letter-spacing:3px">${esc(c.otp)}</b><span class="muted" style="font-size:12px">${new Date(c.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}
+  </section>`;
+}
+async function refreshCodes() {
+  try { A.codes = await store.listSmsCodes(); } catch { A.codes = []; }
+  const box = document.getElementById('sms-box');
+  if (box) box.innerHTML = SmsCodes();
+}
+setInterval(() => { if (location.hash.startsWith('#/admin') && A.tab === 'orders' && A.menu) refreshCodes(); }, 10000);
 
 /* ---------- меню ---------- */
 function MenuEditor() {
@@ -238,7 +263,7 @@ function Venues() {
     <label class="field">Адрес<input class="input" name="address" value="${esc(v.address)}"></label>
     <label class="field">Зона доставки (видна гостям)<input class="input" name="zone" value="${esc(v.zone)}"></label>
     <div class="grid-2">
-      <label class="field">Телефон<input class="input" name="phone" value="${esc(v.phone)}"></label>
+      <label class="field">Телефон<input class="input" name="phone" type="tel" data-phone placeholder="+7 (___) ___-__-__" value="${esc(ctx.fmtPhone(v.phone) || v.phone)}"></label>
       <label class="field">Часы работы<input class="input" name="hours" value="${esc(v.hours)}"></label>
       <label class="field">Доставка, ₽<input class="input" name="delivery_fee" inputmode="numeric" value="${esc(v.delivery_fee)}"></label>
       <label class="field">Мин. заказ, ₽<input class="input" name="min_order" inputmode="numeric" value="${esc(v.min_order)}"></label>

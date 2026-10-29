@@ -20,6 +20,27 @@ const markBody = (sw) => `
 <path d="${P.jowls}" stroke-width="${sw * 0.85}"/>
 <path d="${P.jaw} ${P.fangs}" stroke-width="${sw * 0.8}"/>`;
 
+// Анимированный бульдог для экрана загрузки: подпрыгивает, мотает головой, хлопает ушами, моргает.
+// Анимации описаны в css/app.css (.pk-loader …). Та же разметка вставлена статически в index.html,
+// чтобы собака появлялась мгновенно, ещё до загрузки скриптов.
+export const bulldogLoader = (text = 'Будим бульдога…') => `
+<div class="pk-loader" role="status" aria-live="polite">
+  <svg class="pk-dog" width="132" height="132" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <g class="pk-head">
+      <path class="pk-ear pk-ear-l" d="M66 62 Q54 44 40 52 Q38 68 56 78" stroke-width="5"/>
+      <path class="pk-ear pk-ear-r" d="M134 62 Q146 44 160 52 Q162 68 144 78" stroke-width="5"/>
+      <path d="${P.head}" stroke-width="5"/>
+      <path d="${P.brows}" stroke-width="3"/>
+      <g class="pk-eyes"><circle cx="78" cy="93" r="5.5" fill="currentColor" stroke="none"/><circle cx="122" cy="93" r="5.5" fill="currentColor" stroke="none"/></g>
+      <path d="${P.lids}" stroke-width="4"/>
+      <path d="${P.nose}" fill="currentColor" stroke="none"/>
+      <g class="pk-jowls"><path d="${P.jowls}" stroke-width="4.2"/><path d="${P.jaw} ${P.fangs}" stroke-width="4"/></g>
+    </g>
+  </svg>
+  <span class="pk-shadow" aria-hidden="true"></span>
+  <span class="pk-load-text">${text}</span>
+</div>`;
+
 // Компактный знак (шапка, иконка)
 export const logoMark = (size = 44, label = 'Патрики Паб') => `
 <svg role="img" aria-label="${label}" width="${size}" height="${size}" viewBox="0 0 240 240" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
