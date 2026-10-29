@@ -1,0 +1,9 @@
+{
+  "appId": "ru.patriki.pub",
+  "appName": "Патрики Паб",
+  "webDir": "www",
+  "backgroundColor": "#0E0E0D",
+  "android": {
+    "allowMixedContent": false
+  }
+}
