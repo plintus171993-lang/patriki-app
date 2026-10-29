@@ -1,0 +1,8 @@
+node_modules/
+android/
+ios/
+www/vendor/
+www/download/
+*.jks
+*.keystore
+.DS_Store
