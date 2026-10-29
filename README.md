@@ -27,7 +27,13 @@ Supabase → **SQL Editor** → New query → вставить весь файл
    ```sql
    insert into public.admins (user_id) select id from auth.users where email = 'ваш@email.ru';
    ```
-3. Чтобы посторонние не регистрировались: **Authentication → Sign In / Providers → Email → выключить "Allow new users to sign up"**. Управляющих добавляете только вы, по шагам 1–2.
+3. **Не выключайте** «Allow new users to sign up» (Authentication → Sign In / Providers): через неё гости получают профиль. Права управляющего даёт только строка в таблице `admins`, поэтому обычная регистрация доступа к админке не открывает.
+
+### 2а. Профили гостей и вход по номеру (обновление 002)
+Уже включено в `setup-all.sql`. Для существующей базы — выполнить `supabase/002-profiles.sql`.
+В Supabase должны быть включены: **Allow anonymous sign-ins**, провайдер **Phone** и хук **Send SMS → public.pk_send_sms**.
+Пока SMS-сервис не подключён (`SMS_TEST_MODE: true` в `www/js/config.js`), коды подтверждения видны управляющему в админке (вкладка «Заказы») и приходят в Telegram-чат.
+Подключить SMS.ru/SMSC: дописать отправку в функцию `pk_send_sms` через `net.http_post`, затем поставить `SMS_TEST_MODE: false`.
 
 ### 3. Telegram (необязательно)
 1. В Telegram написать @BotFather → `/newbot` → получить токен.
