@@ -66,6 +66,11 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           mkdir -p out
+          # Убираем случайные пробелы/переносы и подпись «Пароль:», если её скопировали вместе с паролем
+          export KS_PASS="$(printf '%s' "$KS_PASS" | sed 's/^.*://' | tr -d '[:space:]')"
+          KEY_ALIAS="$(printf '%s' "$KEY_ALIAS" | sed 's/^.*://' | tr -d '[:space:]')"
+          KS_B64="$(printf '%s' "$KS_B64" | tr -d '[:space:]')"
+          echo "Длина пароля после очистки: ${#KS_PASS} (ожидается 24)"
           if [ -n "$KS_B64" ]; then
             BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
             echo "$KS_B64" | base64 -d > release.jks
