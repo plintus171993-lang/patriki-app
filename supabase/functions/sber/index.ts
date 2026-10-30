@@ -66,13 +66,16 @@ async function setPayment(id: string, patch: Record<string, unknown>) {
   const { error } = await db.from('orders').update(patch).eq('id', id);
   if (error) throw error;
 }
-async function requireAdmin(req: Request) {
+// Управляющий может списывать и возвращать деньги только по заказам своего заведения
+// (admins.venue_id пустой — владелец, ему можно всё).
+async function requireAdmin(req: Request, venueId: string) {
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   if (!token) throw new Error('Нет входа');
   const { data: u } = await db.auth.getUser(token);
   if (!u?.user) throw new Error('Нет входа');
-  const { data } = await db.from('admins').select('user_id').eq('user_id', u.user.id).maybeSingle();
+  const { data } = await db.from('admins').select('*').eq('user_id', u.user.id).maybeSingle();
   if (!data) throw new Error('Нет прав управляющего');
+  if (data.venue_id && data.venue_id !== venueId) throw new Error('Это заказ другого заведения');
 }
 // Узнаём реальный статус у Сбера (уведомлениям на слово не верим)
 async function syncFromSber(order: Record<string, any>) {
@@ -133,8 +136,8 @@ async function mockPay(body: any) {
 }
 
 async function capture(req: Request, body: any) {
-  await requireAdmin(req);
   const order = await getOrder(body.order_id);
+  await requireAdmin(req, order.venue_id);
   const ps = await syncFromSber(order);
   if (ps === 'paid') return { payment_status: 'paid' };
   if (ps !== 'held') throw new Error('Деньги не заблокированы — списать нельзя');
@@ -144,8 +147,8 @@ async function capture(req: Request, body: any) {
 }
 
 async function cancel(req: Request, body: any) {
-  await requireAdmin(req);
   const order = await getOrder(body.order_id);
+  await requireAdmin(req, order.venue_id);
   const ps = await syncFromSber(order);
   if (ps === 'held') {
     if (MODE !== 'mock') await sber('reverse.do', { orderId: order.sber_order_id });
