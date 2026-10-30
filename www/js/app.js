@@ -120,7 +120,8 @@ async function loadGuest() {
 
 /* ---------- маршрутизация ---------- */
 const app = document.getElementById('app');
-const route = () => (location.hash.replace(/^#/, '') || '/');
+const route = () => (location.hash.replace(/^#/, '').split('?')[0] || '/');
+const hashParams = () => new URLSearchParams(location.hash.split('?')[1] || '');
 
 async function render() {
   const r = route();
@@ -132,6 +133,7 @@ async function render() {
   else if (r === '/cart') html = Cart();
   else if (r === '/checkout') html = Checkout();
   else if (r.startsWith('/order/')) html = OrderStatus(r.split('/')[2]);
+  else if (r.startsWith('/pay-test/')) { app.innerHTML = PayTest(r.split('/')[2]); return; }
   else if (r === '/profile') html = Profile();
   else if (r === '/profile/orders') html = History();
   else if (r === '/profile/addresses') html = Addresses();
@@ -270,6 +272,8 @@ const canOrder = () => cartCount() > 0 && venue().accepting !== false && !(venue
 function Checkout() {
   if (!canOrder()) { setTimeout(() => (location.hash = '#/cart')); return ''; }
   const k = S.checkout, v = venue(), d = S.draftAddr;
+  if (k.payment === 'online' && !v.pay_online) k.payment = 'card';
+  if (!k.payChosen && v.pay_online) k.payment = 'online';          // онлайн по умолчанию, если доступен
   const c = S.draftContact || { name: S.profile.name, phone: S.profile.phone || (S.me?.phone ? fmtPhone(S.me.phone) : '') };
   if (k.addr === null) k.addr = S.addresses[0]?.id || 'new';            // последний использованный адрес
   const isNew = k.addr === 'new' || !S.addresses.find((a) => a.id === k.addr);
@@ -313,7 +317,9 @@ function Checkout() {
         ${k.when === 'time' ? `<label class="field">Время доставки<input class="input" name="time" type="time" value="${esc(k.time)}" required></label>` : `<span class="muted" style="font-size:13px">Привезём примерно за ${esc(v.eta_minutes || 45)} мин</span>`}
       </section>
       <section class="stack">
-        <span class="eyebrow">Оплата при получении</span>
+        <span class="eyebrow">Оплата</span>
+        ${v.pay_online ? `<button type="button" class="opt opt-wide" data-act="pay" data-v="online" aria-pressed="${k.payment === 'online'}">
+          <span class="stack" style="gap:2px;text-align:left"><b>Онлайн сейчас</b><span class="muted" style="font-size:12px">Карта, СБП, SberPay · спишем, когда паб примет заказ</span></span></button>` : ''}
         <div class="grid-2">
           <button type="button" class="opt" data-act="pay" data-v="card" aria-pressed="${k.payment === 'card'}">Картой курьеру</button>
           <button type="button" class="opt" data-act="pay" data-v="cash" aria-pressed="${k.payment === 'cash'}">Наличными</button>
@@ -325,7 +331,7 @@ function Checkout() {
         <div class="sum-row"><span>Доставка</span><span>${v.delivery_fee ? rub(v.delivery_fee) : 'бесплатно'}</span></div>
         <div class="total"><span class="h2">К оплате</span><b>${rub(total)}</b></div>
       </div>
-      <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы соглашаетесь на обработку имени, телефона и адреса для доставки.</p>
+      <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы принимаете <a href="legal/#offer">условия оферты</a> и соглашаетесь с <a href="legal/#privacy">политикой обработки персональных данных</a>.</p>
       <p id="co-err" class="error" role="alert" style="margin:0"></p>
       <button class="btn btn-accent btn-block" type="submit">Отправить заказ · ${rub(total)}</button>
     </form>
@@ -362,7 +368,8 @@ async function submitCheckout(form) {
       payment: k.payment,
       items: cartLines().map(({ item, qty }) => ({ item_id: item.id, name: item.name, price: item.price, qty })),
     });
-    S.orders.unshift({ id: res.id, number: res.number, total: res.total, status: 'new', at: Date.now() });
+    const online = k.payment === 'online';
+    S.orders.unshift({ id: res.id, number: res.number, total: res.total, status: 'new', payment: k.payment, payment_status: online ? 'pending' : 'none', at: Date.now() });
     S.orders = S.orders.slice(0, 20); keep.set('orders', S.orders);
     S.cart = {}; keep.set('cart', S.cart);
     // запоминаем гостя: имя, телефон, адрес
@@ -376,6 +383,7 @@ async function submitCheckout(form) {
     } catch (e2) { console.warn('Не сохранили профиль', e2); }
     S.history = null; S.draftContact = null; S.checkout = { ...S.checkout, addr: null, comment: '', noCall: false };
     location.hash = '#/order/' + res.id;
+    if (online) payNow(res.id);                                     // сразу на страницу оплаты
   } catch (ex) {
     console.error(ex);
     err.textContent = 'Не получилось отправить заказ. Проверьте интернет или позвоните нам.';
@@ -386,12 +394,57 @@ async function submitCheckout(form) {
 /* ---------- статус заказа ---------- */
 const STATUS = [['new', 'Заказ принят'], ['cooking', 'Готовим'], ['delivering', 'Курьер в пути'], ['done', 'Доставлен']];
 const STATUS_RU = { new: 'Принят', cooking: 'Готовим', delivering: 'В пути', done: 'Доставлен', cancelled: 'Отменён' };
+function PaymentBlock(o) {
+  if (o.payment !== 'online') return '';
+  const ps = o.payment_status;
+  const box = (cls, title, text, btn = '') => `<div class="card stack pay-box ${cls}" aria-live="polite"><b>${title}</b>${text ? `<span class="muted" style="font-size:13px;line-height:1.5">${text}</span>` : ''}${btn}</div>`;
+  const payBtn = (label) => `<button type="button" class="btn btn-accent btn-block" data-act="pay-now" data-id="${esc(o.id)}">${label} · ${rub(o.total)}</button>`;
+  if (ps === 'held') return box('ok', '✓ Оплачено', 'Сумма заблокирована на карте. Спишем, когда паб примет заказ. Если заказ отменят — деньги сразу разблокируются.');
+  if (ps === 'paid') return box('ok', '✓ Оплачено', 'Деньги списаны. Чек придёт на почту или по SMS.');
+  if (ps === 'cancelled') return box('', 'Блокировка снята', 'Деньги снова доступны на карте. Обычно в течение нескольких минут, иногда до нескольких дней — зависит от банка.');
+  if (ps === 'refunded') return box('', 'Деньги возвращены', 'Возврат на карту обычно занимает от нескольких минут до 3–5 рабочих дней.');
+  if (ps === 'failed') return box('bad', 'Оплата не прошла', 'Попробуйте ещё раз или выберите другую карту.', payBtn('Оплатить снова'));
+  return box('wait', 'Ожидаем оплату', 'Заказ уйдёт в паб сразу после оплаты.', payBtn('Оплатить'));
+}
+
+// Отправляем гостя на платёжную страницу Сбера
+async function payNow(id, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Открываем оплату…'; }
+  try {
+    const base = location.origin + location.pathname + location.search;
+    const r = await store.startPayment(id, base);
+    if (r.formUrl) { location.href = r.formUrl; return; }
+    if (r.already) { const o = S.orders.find((x) => x.id === id); if (o) o.payment_status = r.already; render(); }
+  } catch (ex) {
+    console.error(ex);
+    toast('Не удалось открыть оплату: ' + ex.message, 4000);
+    if (btn) { btn.disabled = false; btn.textContent = 'Оплатить'; }
+  }
+}
+
+// Тестовая «платёжная страница» — только пока Сбер в режиме имитации
+function PayTest(id) {
+  const o = S.orders.find((x) => x.id === id) || {};
+  return `<main class="screen" style="min-height:100dvh;justify-content:center">
+    <div class="card stack" style="gap:16px;padding:24px">
+      <span class="eyebrow accent">Тестовая оплата · имитация Сбера</span>
+      <span class="h2" style="text-transform:none">Патрики Паб, заказ №${esc(o.number || '')}</span>
+      ${o.total ? `<span class="price" style="font-size:32px">${rub(o.total)}</span>` : ''}
+      <span class="muted" style="font-size:13px;line-height:1.5">Здесь будет настоящая страница Сбера с вводом карты, СБП и SberPay. Сейчас деньги не списываются — выберите результат.</span>
+      <button type="button" class="btn btn-accent btn-block" data-act="mock-pay" data-id="${esc(id)}" data-v="ok">Оплатить (тест)</button>
+      <button type="button" class="btn btn-danger btn-block" data-act="mock-pay" data-id="${esc(id)}" data-v="fail">Отказ банка (тест)</button>
+    </div>
+  </main>`;
+}
+
 function OrderStatus(id) {
   const o = S.orders.find((x) => x.id === id) || S.history?.find((x) => x.id === id) || { id, number: '…', status: 'new' };
   const idx = Math.max(0, STATUS.findIndex(([k]) => k === o.status));
+  const waitingPay = o.payment === 'online' && ['pending', 'failed'].includes(o.payment_status);
   return `<main class="screen">
     <h1 class="h1">Заказ №${esc(o.number)}</h1>
-    ${o.status === 'cancelled'
+    ${PaymentBlock(o)}
+    ${waitingPay ? '' : o.status === 'cancelled'
       ? `<div class="card"><span class="error">Заказ отменён. Если это ошибка — позвоните нам.</span></div>`
       : `<div class="card status-steps" aria-live="polite">${STATUS.map(([k, label], i) => `<div class="step ${i <= idx ? 'done' : ''}"><span class="dot"></span>${label}</div>`).join('')}</div>`}
     <p class="muted" style="margin:0;line-height:1.5">Статус обновляется сам.</p>
@@ -400,18 +453,31 @@ function OrderStatus(id) {
   </main>`;
 }
 let pollTimer = null;
-function pollOrder(id) {
+function pollOrder(id, now = false) {
   clearTimeout(pollTimer);
+  const o0 = S.orders.find((x) => x.id === id);
+  const payWait = o0?.payment === 'online' && o0.payment_status === 'pending';
+  // сразу после возврата со страницы оплаты — проверяем немедленно, пока ждём оплату — чаще
+  const delay = now || hashParams().has('pay') ? 300 : payWait ? 4000 : 15000;
   pollTimer = setTimeout(async () => {
     if (route() !== '/order/' + id) return;
     try {
       const s = await store.getOrderStatus(id);
       let o = S.orders.find((x) => x.id === id);
-      if (!o && s) { o = { id, number: s.number, status: s.status }; S.orders.unshift(o); }
-      if (s && o && s.status !== o.status) { o.status = s.status; keep.set('orders', S.orders); render(); return; }
+      if (!o && s) { o = { id, number: s.number, status: s.status, total: s.total, payment: s.payment, payment_status: s.payment_status }; S.orders.unshift(o); }
+      let ps = s?.payment_status;
+      // ждём оплату — сверяем со Сбером напрямую (не дожидаясь уведомления)
+      if (s?.payment === 'online' && ps === 'pending') { try { ps = (await store.paymentStatus(id)).payment_status; } catch { /* сеть */ } }
+      if (s && o && (s.status !== o.status || ps !== o.payment_status || !o.payment)) {
+        Object.assign(o, { status: s.status, payment: s.payment, payment_status: ps, total: s.total ?? o.total });
+        keep.set('orders', S.orders);
+        if (hashParams().has('pay')) history.replaceState(null, '', location.pathname + location.search + '#/order/' + id);
+        render(); return;
+      }
     } catch { /* сеть */ }
+    if (hashParams().has('pay')) history.replaceState(null, '', location.pathname + location.search + '#/order/' + id);
     pollOrder(id);
-  }, 15000);
+  }, delay);
 }
 
 /* ---------- профиль ---------- */
@@ -577,7 +643,7 @@ function Verify() {
       <p class="error" role="alert" style="margin:0"></p>
       <button type="submit" class="btn btn-accent btn-block">Получить код</button>
     </form>
-    <p class="muted" style="font-size:12px;text-align:center;margin:0;line-height:1.5">Нажимая «Получить код», вы соглашаетесь на обработку номера телефона для входа и доставки.</p>
+    <p class="muted" style="font-size:12px;text-align:center;margin:0;line-height:1.5">Нажимая «Получить код», вы соглашаетесь с <a href="legal/#privacy">политикой обработки персональных данных</a>.</p>
   </main>`;
 }
 let verifyTimer = null;
@@ -636,8 +702,14 @@ function Info() {
     </section>`).join('')}
     <section class="card stack">
       <span class="eyebrow">О доставке</span>
-      <span style="font-size:14px;line-height:1.6;color:var(--text-2)">Доставляем еду и безалкогольные напитки. Алкоголь по закону продаётся только в зале. Оплата картой или наличными курьеру.</span>
+      <span style="font-size:14px;line-height:1.6;color:var(--text-2)">Доставляем еду и безалкогольные напитки. Алкоголь по закону продаётся только в зале. Оплата онлайн (где включена), картой или наличными курьеру.</span>
     </section>
+    <nav class="menu-group" aria-label="Документы">
+      <a class="menu-row" href="legal/#requisites"><span class="row">${icon.id}<span>Реквизиты</span></span>${icon.chev}</a>
+      <a class="menu-row" href="legal/#offer"><span class="row">${icon.info}<span>Оферта и доставка</span></span>${icon.chev}</a>
+      <a class="menu-row" href="legal/#payment"><span class="row">${icon.card}<span>Оплата и возврат</span></span>${icon.chev}</a>
+      <a class="menu-row" href="legal/#privacy"><span class="row">${icon.info}<span>Политика конфиденциальности</span></span>${icon.chev}</a>
+    </nav>
     <footer class="info-foot">
       © 2026 «<span data-act="secret">Патрики</span> Паб» · Санкт-Петербург<br>версия ${esc(CONFIG.APP_VERSION)}${store.demo ? ' · демо' : ''}
     </footer>
@@ -676,6 +748,43 @@ function openItem(id) {
   wrap.querySelector('[data-close]').focus();
 }
 
+/* ---------- подсказка «На экран Домой» для iPhone ---------- */
+function maybeShowInstallHint() {
+  const ua = navigator.userAgent || '';
+  const ios = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  const params = new URLSearchParams(location.search);
+  const asked = params.has('install');
+  if (asked) {
+    // убираем ?install из адреса, чтобы на экран «Домой» добавился чистый адрес приложения
+    params.delete('install');
+    const q = params.toString();
+    history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
+  }
+  if (!ios || standalone || window.Capacitor) return;
+  if (!asked && keep.get('installHintDone', false)) return;
+  // «На экран Домой» есть только в Safari; в Telegram, Instagram, Chrome — просим открыть в Safari
+  const safari = /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|YaBrowser|Telegram|Instagram|FBAN|FBAV|VK|OPiOS/i.test(ua);
+  const shareIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" style="vertical-align:-5px"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>';
+  const plusIcon = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" style="vertical-align:-5px"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></svg>';
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="Установить приложение">
+    <span class="grab"></span>
+    <div class="row" style="gap:14px"><img src="icons/icon-180.png" width="64" height="64" alt="" style="border-radius:16px;border:1px solid var(--line)">
+      <div class="stack" style="gap:2px"><span class="h2">Патрики</span><span class="muted" style="font-size:13px">Добавьте на экран — откроется как приложение</span></div></div>
+    ${safari ? `<ol class="install-steps">
+      <li>Нажмите ${shareIcon} <b>«Поделиться»</b> внизу экрана</li>
+      <li>Пролистайте и выберите ${plusIcon} <b>«На экран “Домой”»</b></li>
+      <li>Нажмите <b>«Добавить»</b> — иконка с бульдогом появится на экране</li>
+    </ol>` : `<p style="margin:0;color:var(--text-2);line-height:1.5">Чтобы добавить приложение на экран, откройте эту страницу в <b>Safari</b>: нажмите «⋯» или значок компаса → «Открыть в Safari».</p>`}
+    <button type="button" class="btn btn-accent btn-block" data-close>Понятно</button>
+  </div>`;
+  const close = () => { wrap.remove(); keep.set('installHintDone', true); };
+  wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) close(); });
+  document.body.appendChild(wrap);
+}
+
 /* ---------- события ---------- */
 app.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
@@ -691,7 +800,13 @@ app.addEventListener('click', async (e) => {
     app.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-current', String(c === b)));
   }
   if (act === 'when') { saveCheckoutForm(); S.checkout.when = v; render(); }
-  if (act === 'pay') { saveCheckoutForm(); S.checkout.payment = v; render(); }
+  if (act === 'pay') { saveCheckoutForm(); S.checkout.payment = v; S.checkout.payChosen = true; render(); }
+  if (act === 'pay-now') payNow(id, b);
+  if (act === 'mock-pay') {
+    b.disabled = true;
+    try { await store.mockPay(id, v); } catch (ex) { toast(ex.message); }
+    location.hash = `#/order/${id}?pay=${v}`;
+  }
   if (act === 'pick-addr') { saveCheckoutForm(); S.checkout.addr = id; render(); }
   if (act === 'repeat') repeatOrder(id);
   if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
@@ -795,6 +910,7 @@ window.addEventListener('hashchange', () => {
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   clearInterval(window.__pkLoaderTimer);
   render();
+  maybeShowInstallHint();
 })();
 
 // В Android-приложении (Capacitor) файлы уже лежат внутри APK — service worker не нужен

@@ -50,7 +50,7 @@ async function loadAll() {
 }
 async function loadOrders() {
   A.orders = await store.listOrders();
-  const fresh = A.orders.filter((o) => o.status === 'new' && !A.seen.has(o.id));
+  const fresh = A.orders.filter((o) => o.status === 'new' && !unpaid(o) && !A.seen.has(o.id));
   if (fresh.length && !A.first) { beep(); ctx.toast(`Новый заказ №${fresh[0].number}`, 4000); }
   fresh.forEach((o) => A.seen.add(o.id));
   A.first = false;
@@ -69,7 +69,7 @@ function beep() {
 
 /* ---------- каркас ---------- */
 function draw() {
-  const newCount = A.orders.filter((o) => o.status === 'new').length;
+  const newCount = A.orders.filter((o) => o.status === 'new' && !unpaid(o)).length;
   const tab = (id, label) => `<button type="button" class="chip" data-a="tab" data-v="${id}" aria-current="${A.tab === id}">${label}</button>`;
   root.innerHTML = `<main class="screen">
     <div class="admin-top">
@@ -83,10 +83,14 @@ function draw() {
 }
 
 /* ---------- заказы ---------- */
+const PAY_RU = { pending: 'ожидает оплаты', held: 'оплачен · сумма заблокирована', paid: 'оплачен · списано', cancelled: 'блокировка снята', refunded: 'деньги возвращены', failed: 'оплата не прошла' };
+const unpaid = (o) => o.payment === 'online' && ['pending', 'failed'].includes(o.payment_status);
+
 function Orders() {
   const { esc, rub } = ctx;
   const venueName = (id) => A.menu.venues.find((v) => v.id === id)?.name || id;
-  const list = A.orders.filter((o) => A.filter === 'all' || ['new', 'cooking', 'delivering'].includes(o.status));
+  // онлайн-заказ без оплаты — ещё не заказ: в «Активных» не показываем
+  const list = A.orders.filter((o) => A.filter === 'all' || (['new', 'cooking', 'delivering'].includes(o.status) && !unpaid(o)));
   const f = (id, label) => `<button type="button" class="chip" data-a="filter" data-v="${id}" aria-current="${A.filter === id}">${label}</button>`;
   // сколько заказов у этого гостя среди загруженных (последние 100)
   const visits = (o) => (o.user_id ? A.orders.filter((x) => x.user_id === o.user_id && x.status !== 'cancelled').length : 0);
@@ -97,7 +101,8 @@ function Orders() {
       <div class="between"><span class="h2" style="font-size:20px">№${esc(o.number)}</span><span class="status-pill ${esc(o.status)}">${STATUS[o.status] || esc(o.status)}</span></div>
       <span class="muted" style="font-size:13px">${new Date(o.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${esc(venueName(o.venue_id))} · ${esc(o.when_text || '')}</span>
       <div class="stack" style="gap:4px">${(o.items || []).map((l) => `<div class="sum-row" style="color:var(--text)"><span>${esc(l.name)} × ${esc(l.qty)}</span><span>${rub(l.price * l.qty)}</span></div>`).join('')}</div>
-      <div class="total"><span class="muted">Итого · ${o.payment === 'cash' ? 'наличные' : 'карта курьеру'}</span><b style="font-size:22px">${rub(o.total)}</b></div>
+      <div class="total"><span class="muted">Итого · ${o.payment === 'cash' ? 'наличные' : o.payment === 'online' ? 'онлайн' : 'карта курьеру'}</span><b style="font-size:22px">${rub(o.total)}</b></div>
+      ${o.payment === 'online' ? `<span class="pay-pill ${esc(o.payment_status)}" style="align-self:flex-start">💳 ${PAY_RU[o.payment_status] || esc(o.payment_status)}</span>` : ''}
       <div class="stack" style="gap:4px;font-size:14px">
         <span><b>${esc(o.customer_name)}</b> · <a href="tel:${esc(String(o.phone).replace(/[^+\d]/g, ''))}">${esc(o.phone)}</a></span>
         <span class="row" style="gap:10px;flex-wrap:wrap">
@@ -108,7 +113,7 @@ function Orders() {
         ${o.comment ? `<span class="muted">«${esc(o.comment)}»</span>` : ''}
       </div>
       <div class="row" style="flex-wrap:wrap">
-        ${NEXT[o.status] ? `<button type="button" class="btn btn-accent btn-sm" data-a="status" data-id="${esc(o.id)}" data-v="${NEXT[o.status][0]}">${NEXT[o.status][1]}</button>` : ''}
+        ${unpaid(o) ? '' : NEXT[o.status] ? `<button type="button" class="btn btn-accent btn-sm" data-a="status" data-id="${esc(o.id)}" data-v="${NEXT[o.status][0]}">${NEXT[o.status][1]}</button>` : ''}
         ${['new', 'cooking', 'delivering'].includes(o.status) ? `<button type="button" class="btn btn-danger btn-sm" data-a="status" data-id="${esc(o.id)}" data-v="cancelled">Отменить</button>` : ''}
       </div>
     </article>`).join('')}</div>` : '<div class="empty">Заказов пока нет. Новые появятся здесь сами, со звуковым сигналом.</div>'}
@@ -269,6 +274,8 @@ function Venues() {
       <label class="field">Мин. заказ, ₽<input class="input" name="min_order" inputmode="numeric" value="${esc(v.min_order)}"></label>
       <label class="field">Время доставки, мин<input class="input" name="eta_minutes" inputmode="numeric" value="${esc(v.eta_minutes)}"></label>
     </div>
+    <div class="between"><span class="stack" style="gap:2px"><span>Онлайн-оплата (Сбер)</span><span class="muted" style="font-size:12px">Карта, СБП, SberPay в приложении</span></span>
+      <button type="button" class="switch" role="switch" data-a="pay_online" aria-checked="${!!v.pay_online}" aria-label="Онлайн-оплата: ${esc(v.name)}"></button></div>
     <button type="submit" class="btn btn-accent">Сохранить</button>
   </form>`).join('')}</div>`;
 }
@@ -283,8 +290,22 @@ function onClick(e) {
     filter: () => { A.filter = v; draw(); },
     logout: async () => { await store.adminSignOut(); A.menu = null; if (A.unsub) { A.unsub(); A.unsub = null; } location.hash = '#/'; },
     status: async () => {
-      if (v === 'cancelled' && !confirm('Отменить заказ?')) return;
+      const o = A.orders.find((x) => x.id === id);
+      const online = o?.payment === 'online' && ['held', 'paid'].includes(o.payment_status);
+      if (v === 'cancelled' && !confirm(online ? 'Отменить заказ? Деньги гостю вернутся автоматически.' : 'Отменить заказ?')) return;
+      b.disabled = true;
+      // онлайн-оплата: при принятии списываем деньги, при отмене — снимаем блокировку / возвращаем
+      if (online && v === 'cooking' && o.payment_status === 'held') {
+        try { await store.capturePayment(id); }
+        catch (ex) { b.disabled = false; ctx.toast('Не удалось списать оплату: ' + ex.message, 5000); return; }
+      }
+      if (online && v === 'cancelled') {
+        try { await store.cancelPayment(id); }
+        catch (ex) { b.disabled = false; ctx.toast('Не удалось вернуть оплату: ' + ex.message + '. Заказ не отменён.', 6000); return; }
+      }
       await store.setOrderStatus(id, v); await loadOrders(); draw();
+      if (online && v === 'cooking') ctx.toast('Оплата списана, заказ принят');
+      if (online && v === 'cancelled') ctx.toast('Заказ отменён, деньги гостю возвращаются');
     },
     cat: () => { A.catId = v; draw(); },
     'cat-add': async () => {
@@ -314,6 +335,7 @@ function onClick(e) {
       ctx.toast(x.available === false ? 'Вернули в продажу' : 'Убрано в стоп-лист');
     },
     accepting: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
+    pay_online: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
   }[a];
   if (act) Promise.resolve(act()).catch((ex) => { console.error(ex); ctx.toast('Ошибка: ' + (ex.message || 'не сохранилось')); });
 }
@@ -348,6 +370,7 @@ async function onVenueSubmit(e) {
       id: f.dataset.venue, name: d.name.trim(), address: d.address.trim(), zone: d.zone.trim(), phone: d.phone.trim(), hours: d.hours.trim(),
       delivery_fee: num(d.delivery_fee), min_order: num(d.min_order), eta_minutes: num(d.eta_minutes) || 45,
       accepting: f.querySelector('[data-a=accepting]').getAttribute('aria-checked') === 'true',
+      pay_online: f.querySelector('[data-a=pay_online]').getAttribute('aria-checked') === 'true',
     });
     await refreshMenu(); ctx.toast('Сохранено');
   } catch (ex) { console.error(ex); ctx.toast('Не удалось сохранить'); }

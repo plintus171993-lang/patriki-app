@@ -90,11 +90,11 @@ export const SEED_VENUES = [
   {
     id: 'petrogradka', name: 'Петроградка', address: 'ул. Куйбышева, 33/8',
     zone: 'Петроградская сторона', phone: '+7 963 302-75-95', hours: '12:00–01:00',
-    delivery_fee: 0, min_order: 0, eta_minutes: 45, accepting: true, sort: 1,
+    delivery_fee: 0, min_order: 0, eta_minutes: 45, accepting: true, pay_online: false, sort: 1,
   },
   {
     id: 'murino', name: 'Мурино', address: 'Екатерининская ул., 16/5',
     zone: 'Мурино', phone: '+7 963 302-75-95', hours: '12:00–01:00',
-    delivery_fee: 0, min_order: 0, eta_minutes: 45, accepting: false, sort: 2,
+    delivery_fee: 0, min_order: 0, eta_minutes: 45, accepting: false, pay_online: false, sort: 2,
   },
 ];

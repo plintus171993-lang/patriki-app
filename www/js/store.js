@@ -27,6 +27,24 @@ const demoInit = () => {
   if (!LS.get('orders')) LS.set('orders', []);
 };
 const bySort = (a, b) => (a.sort ?? 0) - (b.sort ?? 0);
+
+// Имитация функции sber для демо-режима (логика та же, что на сервере)
+function demoSber(b) {
+  const os = LS.get('orders', []); const o = os.find((x) => x.id === b.order_id);
+  const save = () => LS.set('orders', os);
+  if (b.action === 'ping') return { ok: true, mode: 'mock' };
+  if (!o) throw new Error('Заказ не найден');
+  if (b.action === 'create') {
+    if (o.payment !== 'online') throw new Error('Заказ не для онлайн-оплаты');
+    o.payment_status = 'pending'; save();
+    return { formUrl: `${b.return_base}#/pay-test/${o.id}`, mode: 'mock' };
+  }
+  if (b.action === 'status') return { payment_status: o.payment_status, status: o.status, number: o.number };
+  if (b.action === 'mock-pay') { if (o.payment_status === 'pending') o.payment_status = b.result === 'ok' ? 'held' : 'failed'; save(); return { payment_status: o.payment_status }; }
+  if (b.action === 'capture') { if (o.payment_status !== 'held' && o.payment_status !== 'paid') throw new Error('Деньги не заблокированы — списать нельзя'); o.payment_status = 'paid'; save(); return { payment_status: 'paid' }; }
+  if (b.action === 'cancel') { o.payment_status = o.payment_status === 'held' ? 'cancelled' : o.payment_status === 'paid' ? 'refunded' : o.payment_status; save(); return { payment_status: o.payment_status }; }
+  throw new Error('unknown');
+}
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 
 /* ---------------- общий API ---------------- */
@@ -82,8 +100,10 @@ export const store = {
       const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
       const orders = LS.get('orders', []);
       const me = LS.get('me', { verified: false, phone: '' });
+      if (order.payment === 'online' && !venue.pay_online) throw new Error('Онлайн-оплата недоступна');
       const rec = {
         ...order, items: lines, id: uid(), number: 1000 + orders.length + 1, status: 'new', user_id: 'demo-user',
+        payment_status: order.payment === 'online' ? 'pending' : 'none',
         phone_verified: me.verified && order.phone.replace(/\D/g, '').slice(-10) === me.phone.slice(-10),
         subtotal, delivery_fee: venue.delivery_fee || 0, total: subtotal + (venue.delivery_fee || 0),
         created_at: new Date().toISOString(),
@@ -97,8 +117,28 @@ export const store = {
     return data;
   },
 
+  /* ---------------- онлайн-оплата (Сбер) ---------------- */
+  // Вызов серверной функции sber. В демо-режиме — имитация прямо в браузере.
+  async sberCall(body) {
+    if (this.demo) return demoSber(body);
+    const { data, error } = await sb.functions.invoke('sber', { body });
+    if (error) {
+      let msg = error.message;
+      try { msg = (await error.context.json()).error || msg; } catch { /* нет тела */ }
+      throw new Error(msg);
+    }
+    if (data?.error) throw new Error(data.error);
+    return data;
+  },
+  // Начать оплату: вернёт адрес платёжной страницы Сбера (или тестовой страницы)
+  startPayment(orderId, returnBase) { return this.sberCall({ action: 'create', order_id: orderId, return_base: returnBase }); },
+  paymentStatus(orderId) { return this.sberCall({ action: 'status', order_id: orderId }); },
+  mockPay(orderId, result) { return this.sberCall({ action: 'mock-pay', order_id: orderId, result }); },
+  capturePayment(orderId) { return this.sberCall({ action: 'capture', order_id: orderId }); },
+  cancelPayment(orderId) { return this.sberCall({ action: 'cancel', order_id: orderId }); },
+
   async getOrderStatus(id) {
-    if (this.demo) { const o = LS.get('orders', []).find((x) => x.id === id); return o ? { status: o.status, number: o.number } : null; }
+    if (this.demo) { const o = LS.get('orders', []).find((x) => x.id === id); return o ? { status: o.status, number: o.number, payment: o.payment, payment_status: o.payment_status, total: o.total } : null; }
     const { data, error } = await sb.rpc('order_status', { p_id: id });
     if (error) throw error;
     return data;
