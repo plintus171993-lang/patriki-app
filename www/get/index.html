@@ -3,14 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Скачать приложение — Патрики Паб</title>
+<title>Патрики</title>
+<meta name="description" content="Приложение доставки паба «Патрики»">
 <meta name="theme-color" content="#0E0E0D">
+<!-- если всё же добавят эту страницу на экран «Домой» — пусть будет логотип и правильное название -->
+<meta name="apple-mobile-web-app-title" content="Патрики">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="../icons/icon-180.png">
 <link rel="icon" href="../icons/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="../manifest.webmanifest">
+<script>
+  // iPhone: сразу открываем само приложение — устанавливать на экран «Домой» нужно именно его,
+  // а не эту страницу. Внутри приложения покажется подсказка, как добавить иконку.
+  (function () {
+    var ua = navigator.userAgent || '';
+    var ios = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (ios) location.replace('../' + (location.search ? location.search + '&' : '?') + 'install=1');
+  })();
+</script>
 <link rel="stylesheet" href="../css/app.css">
 <style>
   .os { display: none; }
-  body[data-os="ios"] .os-ios, body[data-os="android"] .os-android, body[data-os="other"] .os-other { display: flex; }
-  ol { margin: 0; padding-left: 20px; line-height: 1.7; color: var(--text-2); }
+  body[data-os="android"] .os-android, body[data-os="other"] .os-other { display: flex; }
 </style>
 </head>
 <body data-os="other">
@@ -21,20 +35,9 @@
   <h1 class="h1" style="text-align:center">Патрики Паб</h1>
   <p class="muted" style="text-align:center;margin:0">Доставка из паба: Петроградская сторона и Мурино</p>
 
-  <section class="os os-ios card stack">
-    <span class="eyebrow accent">iPhone</span>
-    <ol>
-      <li>Нажмите «Открыть приложение» ниже — откроется в Safari.</li>
-      <li>Нажмите кнопку «Поделиться» (квадрат со стрелкой вверх).</li>
-      <li>Выберите «На экран “Домой”» → «Добавить».</li>
-    </ol>
-    <span class="muted" style="font-size:13px">Иконка с бульдогом появится на экране, как обычное приложение.</span>
-    <a class="btn btn-accent btn-block" href="../">Открыть приложение</a>
-  </section>
-
   <section class="os os-android card stack">
     <span class="eyebrow accent">Android</span>
-    <a class="btn btn-accent btn-block" href="../download/patriki.apk" download>Скачать приложение (APK)</a>
+    <a class="btn btn-accent btn-block" href="../download/patriki.apk" download>Скачать приложение</a>
     <span class="muted" style="font-size:13px;line-height:1.5">Телефон может спросить разрешение на установку из браузера — нажмите «Настройки» → «Разрешить», затем «Установить».</span>
     <a class="btn btn-ghost btn-block" href="../">Или открыть без установки</a>
   </section>
@@ -46,8 +49,7 @@
 </main>
 <script>
   var ua = navigator.userAgent || '';
-  var ios = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  document.body.dataset.os = ios ? 'ios' : /Android/i.test(ua) ? 'android' : 'other';
+  document.body.dataset.os = /Android/i.test(ua) ? 'android' : 'other';
 </script>
 </body>
 </html>
