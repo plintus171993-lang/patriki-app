@@ -46,6 +46,25 @@ Supabase → **SQL Editor** → New query → вставить весь файл
    on conflict (key) do update set value = excluded.value;
    ```
 
+### 3а. Два заведения: управляющие и чаты (обновление 005)
+Заказ видит только управляющий своей точки и владелец. Управляющий может: принимать заказы своей точки, вести её стоп-лист, менять часы, время доставки, телефон и включать/выключать приём заказов. Цены, меню, стоимость доставки и онлайн-оплату меняет только владелец.
+
+1. **Authentication → Users → Add user** — email и пароль управляющего (пароль задаёте сами и передаёте ему).
+2. В SQL Editor привязать к точке (`petrogradka` или `murino`; владелец — `null`):
+   ```sql
+   insert into public.admins (user_id, venue_id, name)
+   select id, 'petrogradka', 'Управляющий Петроградки' from auth.users where email = 'почта@управляющего'
+   on conflict (user_id) do update set venue_id = excluded.venue_id, name = excluded.name;
+   ```
+3. Свой Telegram-чат у каждой точки (бот один и тот же), а `telegram_chat_id` — общий чат владельца, туда приходят копии всех заказов:
+   ```sql
+   insert into public.app_secrets (key, value) values
+     ('telegram_chat_id:petrogradka', 'ID_ЧАТА_ПЕТРОГРАДКИ'),
+     ('telegram_chat_id:murino',      'ID_ЧАТА_МУРИНО')
+   on conflict (key) do update set value = excluded.value;
+   ```
+4. Если гость ошибся точкой — у нового заказа кнопка «Передать → …»: заказ уходит в другую точку и её чат.
+
 ### 4. GitHub
 1. Залить этот код в репозиторий (ветка `main`).
 2. **Settings → Pages → Source: GitHub Actions.**
