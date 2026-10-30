@@ -88,8 +88,8 @@ function draw() {
       <div class="row"><a class="btn btn-ghost btn-sm" href="#/">В приложение</a><button type="button" class="btn btn-ghost btn-sm" data-a="logout">Выйти</button></div>
     </div>
     ${store.demo ? '<div class="demo-banner">Демо-режим: сервер не подключён, изменения сохраняются только в этом браузере.</div>' : ''}
-    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('menu', 'Меню и цены')}${tab('venues', 'Заведения')}</nav>
-    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : Venues()}</div>
+    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}</nav>
+    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : Venues()}</div>
   </main>`;
 }
 
@@ -297,6 +297,159 @@ async function shrink(file) {
 
 async function refreshMenu() { A.menu = await store.getMenu(); await ctx.reloadMenu(); draw(); }
 
+/* ---------- программа лояльности: правила (владелец) ---------- */
+async function loadLoyalty() {
+  try { A.loy = await store.loyaltySettings(); A.loyStats = await store.loyaltyStats(); } catch (e) { console.error(e); A.loy = null; }
+  if (A.tab === 'loyalty') draw();
+}
+function LoyaltyEditor() {
+  const { esc, rub } = ctx;
+  if (!A.loy) { loadLoyalty(); return '<div class="empty">Загружаем правила…</div>'; }
+  const L = A.loy, S = A.loyStats || {};
+  const sw = (k, label, hint = '') => `<div class="between" style="gap:16px"><span class="stack" style="gap:2px"><span>${label}</span>${hint ? `<span class="muted" style="font-size:12px">${hint}</span>` : ''}</span>
+    <button type="button" class="switch" role="switch" data-a="loy-sw" data-v="${k}" aria-checked="${!!L[k]}" aria-label="${label}"></button></div>`;
+  const num = (k, label, hint = '') => `<label class="field">${label}${hint ? ` <span class="muted" style="font-size:12px">${hint}</span>` : ''}<input class="input" name="${k}" inputmode="numeric" value="${esc(L[k] ?? 0)}"></label>`;
+  return `<form id="loy-form" class="stack" style="gap:16px;max-width:760px">
+    <div class="grid-2">
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Гостей с баллами</span><b style="font-size:22px">${esc(S.guests ?? 0)}</b></div>
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Баллов на картах</span><b style="font-size:22px">${rub(S.balance ?? 0)}</b></div>
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Начислено за 30 дней</span><b style="font-size:22px">${rub(S.accrued_30 ?? 0)}</b></div>
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Списано за 30 дней</span><b style="font-size:22px">${rub(S.redeemed_30 ?? 0)}</b></div>
+    </div>
+    <section class="card stack" style="gap:14px">
+      ${sw('enabled', 'Программа лояльности включена')}
+      ${sw('app_enabled', 'Начислять за заказы в приложении', 'после статуса «Доставлен»')}
+      ${sw('venue_enabled', 'Начислять в пабе по QR-коду', 'вкладка «Касса · QR»')}
+      ${sw('verified_only', 'Только с подтверждённым номером', 'защита от накруток — рекомендуется')}
+      ${sw('accrue_delivery', 'Начислять и на стоимость доставки')}
+    </section>
+    <section class="card stack" style="gap:12px">
+      <span class="eyebrow">Уровни: % начисления от суммы покупок</span>
+      <div class="stack" id="loy-tiers" style="gap:8px">
+        ${(L.tiers || []).map((t, i) => `<div class="tier-row" data-i="${i}">
+          <input class="input" name="t_name" value="${esc(t.name)}" placeholder="Название" aria-label="Название уровня">
+          <label class="tier-f">от<input class="input" name="t_from" inputmode="numeric" value="${esc(t.from)}" aria-label="Сумма покупок от, ₽"></label>
+          <label class="tier-f"><input class="input" name="t_pct" inputmode="numeric" value="${esc(t.pct)}" aria-label="Процент">%</label>
+          <button type="button" class="icon-btn" data-a="tier-del" data-v="${i}" aria-label="Удалить уровень">✕</button></div>`).join('')}
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" data-a="tier-add" style="align-self:flex-start">+ Уровень</button>
+      <label class="field">Уровень считается по покупкам
+        <select class="select" name="period_days">${[[0, 'за всё время'], [365, 'за последний год'], [180, 'за 6 месяцев'], [90, 'за 3 месяца']].map(([v, l]) => `<option value="${v}" ${+L.period_days === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </section>
+    <section class="card stack" style="gap:12px">
+      <span class="eyebrow">Условия</span>
+      <div class="grid-2">
+        ${num('max_redeem_pct', 'Баллами можно оплатить, %', 'до 90')}
+        ${num('app_min_order', 'Мин. заказ в приложении для начисления, ₽')}
+        ${num('burn_after_days', 'Сгорают без покупок, дней', '0 — не сгорают')}
+        ${num('welcome_bonus', 'Приветственные баллы')}
+        ${num('birthday_bonus', 'Баллы в день рождения')}
+      </div>
+      <label class="field">Дополнительные условия (видны гостю)<textarea class="textarea" name="rules_text" placeholder="Например: баллы не начисляются на алкоголь и по акциям">${esc(L.rules_text || '')}</textarea></label>
+    </section>
+    <p class="error" role="alert" style="margin:0"></p>
+    <button type="submit" class="btn btn-accent">Сохранить правила</button>
+    <p class="muted" style="font-size:12px;margin:0;line-height:1.6">Пример: «Гость 0 ₽ — 5%», «Завсегдатай от 5 000 ₽ — 10%», «Свой человек от 15 000 ₽ — 15%». Процент берётся по уровню на момент покупки. Изменения сразу действуют для всех гостей.</p>
+  </form>`;
+}
+function readLoyForm(f) {
+  const d = Object.fromEntries(new FormData(f));
+  const n = (v) => Math.max(0, parseInt(String(v).replace(/\D/g, ''), 10) || 0);
+  const tiers = [...f.querySelectorAll('.tier-row')].map((r) => ({ name: r.querySelector('[name=t_name]').value.trim() || 'Уровень', from: n(r.querySelector('[name=t_from]').value), pct: Math.min(100, n(r.querySelector('[name=t_pct]').value)) }))
+    .sort((a, b) => a.from - b.from);
+  const sw = (k) => f.querySelector(`[data-a=loy-sw][data-v=${k}]`).getAttribute('aria-checked') === 'true';
+  return { ...A.loy, tiers, period_days: n(d.period_days), max_redeem_pct: Math.min(90, n(d.max_redeem_pct)), app_min_order: n(d.app_min_order),
+    burn_after_days: n(d.burn_after_days), welcome_bonus: n(d.welcome_bonus), birthday_bonus: n(d.birthday_bonus), rules_text: (d.rules_text || '').trim(),
+    enabled: sw('enabled'), app_enabled: sw('app_enabled'), venue_enabled: sw('venue_enabled'), verified_only: sw('verified_only'), accrue_delivery: sw('accrue_delivery') };
+}
+async function onLoyaltySubmit(e) {
+  const f = e.target.closest('#loy-form'); if (!f) return;
+  e.preventDefault();
+  const st = readLoyForm(f);
+  if (!st.tiers.length) return (f.querySelector('.error').textContent = 'Нужен хотя бы один уровень');
+  if (st.tiers[0].from !== 0) st.tiers[0].from = 0;
+  try { await store.saveLoyaltySettings(st); A.loy = st; draw(); ctx.toast('Правила сохранены'); }
+  catch (ex) { console.error(ex); f.querySelector('.error').textContent = 'Не удалось сохранить: ' + (ex.message || ''); }
+}
+
+/* ---------- касса: QR гостя → начисление / списание ---------- */
+function Cashier() {
+  const { esc, rub } = ctx;
+  const vs = myVenues();
+  if (!A.cashVenue || !vs.find((v) => v.id === A.cashVenue)) A.cashVenue = vs[0]?.id;
+  const g = A.cashGuest;
+  const max = g ? Math.min(g.balance, Math.floor((A.cashAmount || 0) * (g.max_redeem_pct || 0) / 100)) : 0;
+  const canScan = 'BarcodeDetector' in window && navigator.mediaDevices?.getUserMedia;
+  return `<div class="stack" style="gap:16px;max-width:560px">
+    ${vs.length > 1 ? `<label class="field">Заведение<select class="select" data-a="cash-venue">${vs.map((v) => `<option value="${esc(v.id)}" ${v.id === A.cashVenue ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>` : `<span class="venue-tag v-${esc(A.cashVenue)}">📍 ${esc(vName(A.cashVenue))}</span>`}
+    <form id="cash-find" class="stack" style="gap:10px">
+      <label class="field">QR-код, номер карты или телефон гостя
+        <input class="input" name="code" autocomplete="off" placeholder="Наведите сканер или введите номер" value="${esc(A.cashCode || '')}"></label>
+      <div class="row" style="flex-wrap:wrap">
+        <button type="submit" class="btn btn-accent btn-sm">Найти гостя</button>
+        ${canScan ? '<button type="button" class="btn btn-outline btn-sm" data-a="scan">📷 Сканировать камерой</button>' : ''}
+      </div>
+      ${A.scanning ? '<video id="scan-video" class="scan-video" playsinline muted></video><button type="button" class="btn btn-ghost btn-sm" data-a="scan-stop">Остановить камеру</button>' : ''}
+      ${canScan ? '' : '<span class="muted" style="font-size:12px">Камера в этом браузере не умеет читать QR — используйте сканер штрихкодов (он вводит код сам) или номер карты / телефон.</span>'}
+      <p class="error" role="alert" style="margin:0">${esc(A.cashErr || '')}</p>
+    </form>
+    ${g ? `<form id="cash-go" class="card stack cashier-guest" style="gap:12px">
+      <div class="between"><span class="h2" style="font-size:20px;text-transform:none">${esc(g.name)}</span><span class="pill">${esc(g.tier?.name || '')} · ${esc(g.tier?.pct ?? 0)}%</span></div>
+      <span class="muted" style="font-size:13px">Карта № ${esc(g.card_no)}${g.phone_last4 ? ` · телефон …${esc(g.phone_last4)}` : ''}</span>
+      <div class="sum-row"><span>Баллов на карте</span><b style="font-size:20px">${rub(g.balance)}</b></div>
+      ${g.active ? '' : '<span class="error">У гостя не подтверждён номер — баллы не копятся. Попросите подтвердить номер в приложении.</span>'}
+      <div class="grid-2">
+        <label class="field">Сумма чека, ₽<input class="input" name="amount" inputmode="numeric" required value="${esc(A.cashAmount || '')}" data-a="cash-amount"></label>
+        <label class="field">Списать баллов <span class="muted" style="font-size:12px">до ${esc(max)}</span><input class="input" name="redeem" inputmode="numeric" value="0"></label>
+      </div>
+      <label class="field">Комментарий (номер стола, чека)<input class="input" name="note"></label>
+      <p class="error" role="alert" style="margin:0"></p>
+      <button type="submit" class="btn btn-accent">Провести: начислить${g.tier?.pct ? ` ${esc(g.tier.pct)}%` : ''}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-a="cash-clear">Другой гость</button>
+    </form>` : ''}
+    ${A.cashLast ? `<div class="card" style="border-color:var(--ok)">✓ ${esc(A.cashLast)}</div>` : ''}
+    <p class="muted" style="font-size:12px;line-height:1.6;margin:0">Гость открывает в приложении «Профиль → Карта гостя» и показывает QR. Код меняется каждые 30 секунд, поэтому скриншот чужой карты не сработает. Сначала спишите баллы (если гость хочет), остальное оплачивается обычным способом — баллы начислятся на оплаченную часть.</p>
+  </div>`;
+}
+async function cashLookup(code) {
+  A.cashErr = ''; A.cashCode = code; A.cashLast = '';
+  try { A.cashGuest = await store.staffLookup(code); } catch (ex) { A.cashGuest = null; A.cashErr = ex.message; }
+  draw();
+  document.querySelector('#cash-go [name=amount]')?.focus();
+}
+let scanStream = null;
+async function startScan() {
+  A.scanning = true; draw();
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const v = document.getElementById('scan-video'); v.srcObject = scanStream; await v.play();
+    const det = new window.BarcodeDetector({ formats: ['qr_code'] });
+    const tick = async () => {
+      if (!A.scanning) return;
+      try { const r = await det.detect(v); if (r[0]?.rawValue) { stopScan(); return cashLookup(r[0].rawValue); } } catch { /* кадр не готов */ }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (ex) { console.error(ex); stopScan(); A.cashErr = 'Нет доступа к камере'; draw(); }
+}
+function stopScan() { const was = A.scanning; A.scanning = false; scanStream?.getTracks().forEach((t) => t.stop()); scanStream = null; if (was && A.tab === 'cashier' && A.menu) draw(); }
+async function onCashSubmit(e) {
+  const f = e.target;
+  if (f.id === 'cash-find') { e.preventDefault(); const c = f.code.value.trim(); if (c) cashLookup(c); return true; }
+  if (f.id !== 'cash-go') return false;
+  e.preventDefault();
+  const n = (v) => parseInt(String(v).replace(/\D/g, ''), 10) || 0;
+  const amount = n(f.amount.value), redeem = n(f.redeem.value);
+  const btn = f.querySelector('[type=submit]'); btn.disabled = true;
+  try {
+    const r = await store.staffAccrue(A.cashCode, amount, redeem, A.cashVenue, f.note.value.trim());
+    A.cashLast = `${A.cashGuest.name}: ${redeem ? `списано ${redeem}, ` : ''}начислено +${r.points}. Теперь на карте ${r.balance}${r.tier?.name ? `, уровень «${r.tier.name}»` : ''}.`;
+    A.cashGuest = null; A.cashCode = ''; A.cashAmount = '';
+    draw(); ctx.toast(`Начислено +${r.points}`);
+  } catch (ex) { btn.disabled = false; f.querySelector('.error').textContent = ex.message; }
+  return true;
+}
+
 /* ---------- заведения ---------- */
 function Venues() {
   const { esc } = ctx;
@@ -330,9 +483,16 @@ function onClick(e) {
   const b = e.target.closest('[data-a]'); if (!b || !root.contains(b)) return;
   const { a, v, id } = b.dataset;
   const act = {
-    tab: () => { A.tab = v; draw(); },
+    tab: () => { if (A.scanning) stopScan(); A.tab = v; draw(); },
     filter: () => { A.filter = v; draw(); },
     venue: () => { A.venue = v; draw(); },
+    'loy-sw': () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
+    'tier-add': () => { const f = document.getElementById('loy-form'); A.loy = readLoyForm(f); const last = A.loy.tiers[A.loy.tiers.length - 1] || { from: 0, pct: 5 };
+      A.loy.tiers.push({ name: 'Новый уровень', from: last.from + 5000, pct: last.pct + 5 }); draw(); },
+    'tier-del': () => { const f = document.getElementById('loy-form'); A.loy = readLoyForm(f); A.loy.tiers.splice(+v, 1); draw(); },
+    scan: () => startScan(),
+    'scan-stop': () => stopScan(),
+    'cash-clear': () => { A.cashGuest = null; A.cashCode = ''; A.cashErr = ''; draw(); },
     transfer: async () => {
       const o = A.orders.find((x) => x.id === id);
       if (!confirm(`Передать заказ №${o.number} в «${vName(v)}»? Он исчезнет из вашего списка и придёт управляющему той точки.`)) return;
@@ -345,7 +505,7 @@ function onClick(e) {
       x.stop_in = await store.setStop(id, v, off); await ctx.reloadMenu(); draw();
       ctx.toast(`${vName(v)}: ${x.name} — ${off ? 'в стоп-листе' : 'снова в продаже'}`);
     },
-    logout: async () => { await store.adminSignOut(); A.menu = null; A.me = null; A.venue = 'all'; A.tab = 'orders'; A.filter = 'active'; if (A.unsub) { A.unsub(); A.unsub = null; } location.hash = '#/'; },
+    logout: async () => { stopScan(); await store.adminSignOut(); A.menu = null; A.me = null; A.venue = 'all'; A.tab = 'orders'; A.filter = 'active'; A.loy = null; A.cashGuest = null; if (A.unsub) { A.unsub(); A.unsub = null; } location.hash = '#/'; },
     status: async () => {
       const o = A.orders.find((x) => x.id === id);
       const online = o?.payment === 'online' && ['held', 'paid'].includes(o.payment_status);
@@ -439,4 +599,20 @@ async function onVenueSubmit(e) {
 document.addEventListener('click', onClick);
 document.addEventListener('change', onPriceChange);
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.dataset?.a === 'price') e.target.blur(); });
-document.addEventListener('submit', (e) => { if (location.hash.startsWith('#/admin')) onVenueSubmit(e); });
+document.addEventListener('submit', (e) => {
+  if (!location.hash.startsWith('#/admin')) return;
+  if (e.target.id === 'loy-form') return onLoyaltySubmit(e);
+  if (e.target.id === 'cash-find' || e.target.id === 'cash-go') return onCashSubmit(e);
+  onVenueSubmit(e);
+});
+document.addEventListener('change', (e) => {
+  if (!location.hash.startsWith('#/admin')) return;
+  if (e.target.dataset?.a === 'cash-venue') { A.cashVenue = e.target.value; }
+});
+document.addEventListener('input', (e) => {
+  if (e.target.dataset?.a === 'cash-amount') {
+    A.cashAmount = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
+    const g = A.cashGuest, lab = e.target.closest('form')?.querySelector('[name=redeem]')?.previousElementSibling;
+    if (g && lab) lab.textContent = `до ${Math.min(g.balance, Math.floor(A.cashAmount * (g.max_redeem_pct || 0) / 100))}`;
+  }
+});

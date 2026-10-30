@@ -1,6 +1,7 @@
 // Слой данных: Supabase (боевой режим) или localStorage (демо-режим).
 import { CONFIG, isDemo } from './config.js';
 import { SEED_CATEGORIES, SEED_ITEMS, SEED_VENUES } from './seed.js';
+import { tierFor, otp, DEFAULT_SETTINGS } from './loyalty.js';
 
 const SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 let sb = null;
@@ -20,6 +21,60 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem('patriki.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('patriki.' + k, JSON.stringify(v)); } catch { /* память недоступна */ } },
 };
+// ---- демо-лояльность (в браузере) ----
+const demoLoy = {
+  st: () => ({ ...DEFAULT_SETTINGS, ...LS.get('loy_settings', {}) }),
+  acc() {
+    let a = LS.get('loy_acc', null);
+    if (!a) { a = { card_no: String(10000000 + Math.floor(Math.random() * 89999999)), secret: uid().replace(/-/g, ''), balance: 0, spent: 0 }; LS.set('loy_acc', a); }
+    return a;
+  },
+  verified: () => !!LS.get('me', {}).verified,
+  tx(t) {
+    const a = this.acc(); a.balance += t.points; if (t.kind === 'accrue') a.spent += t.amount; LS.set('loy_acc', a);
+    const h = LS.get('loy_tx', []); h.unshift({ ...t, created_at: new Date().toISOString() }); LS.set('loy_tx', h.slice(0, 50));
+  },
+  add(amount, source, note, venue) {
+    const st = this.st(); if (!st.enabled || amount <= 0 || (st.verified_only && !this.verified())) return 0;
+    const t = tierFor(st.tiers, this.acc().spent); const pts = Math.floor(amount * t.pct / 100);
+    this.tx({ kind: 'accrue', points: pts, amount, pct: t.pct, source, note, venue }); return pts;
+  },
+  my() {
+    const a = this.acc(), st = this.st();
+    return { card_no: a.card_no, secret: a.secret, balance: a.balance, spent: a.spent, tier: tierFor(st.tiers, a.spent), verified: this.verified(), history: LS.get('loy_tx', []), settings: st };
+  },
+  onStatus(o) {
+    const st = this.st();
+    if (o.status === 'done' && st.app_enabled && !o.loy_done) {
+      const base = o.subtotal - (o.points_redeemed || 0) + (st.accrue_delivery ? o.delivery_fee || 0 : 0);
+      if (base >= Math.max(st.app_min_order, 1)) this.add(base, 'app', `Заказ №${o.number}`); o.loy_done = true;
+    }
+    if (o.status === 'cancelled' && o.points_redeemed && !o.loy_refund) { this.tx({ kind: 'refund', points: o.points_redeemed, amount: 0, source: 'app', note: `Возврат баллов: заказ №${o.number} отменён` }); o.loy_refund = true; }
+  },
+  find(code) {
+    const a = this.acc(), s = String(code || '').trim();
+    if (s.startsWith('PK1:')) { const [, card, c] = s.split(':'); if (card !== a.card_no) return null; const w = Math.floor(Date.now() / 30000); if (![w, w - 1, w - 2, w + 1].some((x) => otp(a.secret, x) === c)) throw new Error('QR-код устарел — попросите гостя открыть карту заново'); return a; }
+    const d = s.replace(/\D/g, ''); const me = LS.get('me', {});
+    if (d === a.card_no || (d.length >= 10 && me.phone && me.phone.slice(-10) === d.slice(-10))) return a;
+    return null;
+  },
+  info() { const a = this.acc(), st = this.st(), p = LS.get('profile', {}), me = LS.get('me', {});
+    return { card_no: a.card_no, name: p.name || 'Гость', phone_last4: (me.phone || '').slice(-4), balance: a.balance, tier: tierFor(st.tiers, a.spent), max_redeem_pct: st.max_redeem_pct, active: st.enabled && (!st.verified_only || this.verified()) }; },
+  lookup(code) { if (!this.find(code)) throw new Error('Гость не найден'); return { ...this.info(), code }; },
+  check(code, amount, redeem, venue, note) {
+    if (!this.find(code)) throw new Error('Гость не найден');
+    const st = this.st(), a = this.acc(); redeem = Math.max(0, redeem | 0);
+    if (!st.enabled || !st.venue_enabled) throw new Error('Начисление в заведении выключено в настройках');
+    if (st.verified_only && !this.verified()) throw new Error('У гостя не подтверждён номер — баллы не копятся');
+    if (!(amount > 0)) throw new Error('Укажите сумму чека');
+    if (redeem > a.balance) throw new Error(`У гостя только ${a.balance} баллов`);
+    if (redeem > Math.floor(amount * st.max_redeem_pct / 100)) throw new Error(`Баллами можно оплатить не больше ${st.max_redeem_pct}% чека`);
+    if (redeem) this.tx({ kind: 'redeem', points: -redeem, amount, source: 'venue', note, venue });
+    const pts = this.add(amount - redeem, 'venue', note, venue);
+    return { points: pts, redeemed: redeem, ...this.info() };
+  },
+};
+
 const demoInit = () => {
   if (!LS.get('categories')) LS.set('categories', SEED_CATEGORIES);
   if (!LS.get('items')) LS.set('items', SEED_ITEMS);
@@ -101,15 +156,18 @@ export const store = {
       const orders = LS.get('orders', []);
       const me = LS.get('me', { verified: false, phone: '' });
       if (order.payment === 'online' && !venue.pay_online) throw new Error('Онлайн-оплата недоступна');
+      const red = Math.max(0, order.redeem | 0);
+      if (red) { const a = demoLoy.acc(); if (red > a.balance) throw new Error('Недостаточно баллов'); }
       const rec = {
         ...order, items: lines, id: uid(), number: 1000 + orders.length + 1, status: 'new', user_id: 'demo-user',
         payment_status: order.payment === 'online' ? 'pending' : 'none',
         phone_verified: me.verified && order.phone.replace(/\D/g, '').slice(-10) === me.phone.slice(-10),
-        subtotal, delivery_fee: venue.delivery_fee || 0, total: subtotal + (venue.delivery_fee || 0),
+        subtotal, delivery_fee: venue.delivery_fee || 0, total: subtotal + (venue.delivery_fee || 0) - red, points_redeemed: red,
         created_at: new Date().toISOString(),
       };
       orders.unshift(rec);
       LS.set('orders', orders);
+      if (red) demoLoy.tx({ kind: 'redeem', points: -red, amount: subtotal, source: 'app', note: `Оплата заказа №${rec.number}` });
       return { id: rec.id, number: rec.number, total: rec.total };
     }
     const { data, error } = await sb.rpc('place_order', { p_order: order });
@@ -319,6 +377,45 @@ export const store = {
     return data || [];
   },
 
+  /* ---------------- карта гостя (лояльность) ---------------- */
+  async myLoyalty() {
+    if (this.demo) return demoLoy.my();
+    const { data, error } = await sb.rpc('my_loyalty');
+    if (error) throw error;
+    return data;
+  },
+  async loyaltySettings() {
+    if (this.demo) return { ...DEFAULT_SETTINGS, ...LS.get('loy_settings', {}) };
+    const { data, error } = await sb.from('loyalty_settings').select('*').eq('id', 1).maybeSingle();
+    if (error) throw error;
+    return { ...DEFAULT_SETTINGS, ...(data || {}) };
+  },
+  async saveLoyaltySettings(st) {
+    const row = { ...st }; delete row.id; delete row.updated_at;
+    if (this.demo) { LS.set('loy_settings', row); return row; }
+    const { error } = await sb.from('loyalty_settings').update({ ...row, updated_at: new Date().toISOString() }).eq('id', 1);
+    if (error) throw error;
+    return row;
+  },
+  async loyaltyStats() {
+    if (this.demo) { const a = demoLoy.acc(); return { guests: a.spent ? 1 : 0, balance: a.balance, accrued_30: 0, redeemed_30: 0 }; }
+    const { data } = await sb.rpc('loyalty_stats');
+    return data || {};
+  },
+  // касса: найти гостя по QR / номеру карты / телефону и провести чек
+  async staffLookup(code) {
+    if (this.demo) return demoLoy.lookup(code);
+    const { data, error } = await sb.rpc('staff_lookup', { p_code: code });
+    if (error) throw new Error(error.message);
+    return data;
+  },
+  async staffAccrue(code, amount, redeem, venueId, note = '') {
+    if (this.demo) return demoLoy.check(code, amount, redeem, venueId, note);
+    const { data, error } = await sb.rpc('staff_accrue', { p_code: code, p_amount: amount, p_redeem: redeem, p_venue: venueId, p_note: note });
+    if (error) throw new Error(error.message);
+    return data;
+  },
+
   /* ---------------- управляющий ---------------- */
   // demoVenue — только для демо: войти как управляющий конкретного заведения ('' = владелец)
   async adminSignIn(email, password, demoVenue = '') {
@@ -445,7 +542,7 @@ export const store = {
   async setOrderStatus(id, status) {
     if (this.demo) {
       const os = LS.get('orders', []); const o = os.find((x) => x.id === id);
-      if (o) o.status = status; LS.set('orders', os); return;
+      if (o) { o.status = status; demoLoy.onStatus(o); } LS.set('orders', os); return;
     }
     const { error } = await sb.from('orders').update({ status }).eq('id', id);
     if (error) throw error;

@@ -3,6 +3,7 @@ import { CONFIG } from './config.js';
 import { HERO_IMG } from './seed.js';
 import { logoMark, logoEmblem, bulldogLoader } from './logo.js';
 import { renderAdmin } from './admin.js';
+import { qrSvg, qrPayload } from './loyalty.js';
 
 /* ---------- утилиты ---------- */
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -92,6 +93,7 @@ const S = {
   draftContact: null,                             // { name, phone } пока заполняют форму
   verify: { step: 'phone', phone: '', until: 0, back: '/profile' },
   infoTaps: [],
+  loy: null,                                      // карта гостя: баланс, уровень, история
 };
 const venue = () => S.venues.find((v) => v.id === S.venueId) || S.venues[0] || {};
 const itemById = (id) => S.items.find((x) => x.id === id);
@@ -112,7 +114,19 @@ const verified = () => !!S.me?.verified;
 /* ---------- согласия (152-ФЗ, 38-ФЗ) ---------- */
 const CV = CONFIG.LEGAL.CONSENT_VERSION;
 const hasPdConsent = () => S.profile.pd_consent_version === CV || keep.get('pdConsent', '') === CV;
-const doc = (hash, text) => `<a href="legal/#${hash}" target="_blank" rel="noopener">${text}</a>`;
+// ссылка на документ: открывается поверх экрана, введённые данные не теряются
+const doc = (hash, text) => `<a href="legal/index.html#${hash}" data-act="doc" data-h="${hash}">${text}</a>`;
+function docSheet(hash) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  wrap.innerHTML = `<div class="sheet doc-sheet" role="dialog" aria-modal="true" aria-label="Документ">
+    <span class="grab"></span>
+    <iframe src="legal/index.html?embed=1#${hash}" title="Документ"></iframe>
+    <button type="button" class="btn btn-accent btn-block" data-close>Закрыть</button>
+  </div>`;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]')) wrap.remove(); });
+  document.body.appendChild(wrap);
+}
 // Галочка согласия: не отмечена заранее, без неё заказ и вход не отправляются.
 // Если гость уже дал согласие этой редакции — галочку не показываем.
 const ConsentBox = (checked = false) => hasPdConsent() ? '' : `<label class="check consent">
@@ -164,6 +178,9 @@ async function render() {
   app.classList.toggle('has-cartbar', !!CartBar(r));
   if (r.startsWith('/order/')) pollOrder(r.split('/')[2]);
   if (r === '/profile/orders' && S.history === null) loadHistory();
+  if (r === '/card') startCardQr();
+  // карту гостя освежаем, если данные старше 20 секунд (баллы могли начислить в пабе)
+  if (['/', '/profile', '/card', '/checkout'].includes(r) && (S.loy === null || (S.loy && Date.now() - (S.loyAt || 0) > 20000))) loadLoyalty();
   if (r === '/verify') tickVerify();
 }
 
@@ -214,9 +231,10 @@ function Home() {
     </section>
     ${S.history?.length || S.orders.length ? `<a class="card card-link between" href="#/profile/orders">
       <div class="stack" style="gap:4px"><span class="eyebrow">Мои заказы</span><span style="font-size:15px;font-weight:600">Повторить прошлый заказ</span></div>
-      <span class="row muted">${icon.chev}</span></a>` : `<a class="card card-link between" href="#/card">
-      <div class="stack" style="gap:4px"><span class="eyebrow">Карта гостя</span><span style="font-size:15px;font-weight:600">Баллы за заказы и визиты</span></div>
-      <span class="row muted" style="font-size:13px">Открыть ${icon.chev}</span></a>`}
+      <span class="row muted">${icon.chev}</span></a>` : ''}
+    ${`<a class="card card-link between loy-home" href="#/card">
+      <div class="stack" style="gap:4px"><span class="eyebrow">Карта гостя${S.loy?.tier ? ` · ${esc(S.loy.tier.name)} ${esc(S.loy.tier.pct)}%` : ''}</span><span style="font-size:15px;font-weight:600">${S.loy && S.loy.settings?.enabled ? `${pts(S.loy.balance)} ${ptsWord(S.loy.balance)}` : 'Баллы за заказы и визиты'}</span></div>
+      <span class="row muted" style="font-size:13px">QR ${icon.chev}</span></a>`}
     ${hits.length ? `<section class="stack" style="gap:12px">
       <div class="between"><h2 class="h2">Хиты паба</h2><a href="#/menu" style="font-size:13px;text-decoration:none">Всё меню</a></div>
       <div class="hscroll">${hits.map((x) => `<button type="button" class="mini" data-act="open" data-id="${esc(x.id)}">
@@ -296,7 +314,11 @@ function Checkout() {
   const c = S.draftContact || { name: S.profile.name, phone: S.profile.phone || (S.me?.phone ? fmtPhone(S.me.phone) : '') };
   if (k.addr === null) k.addr = S.addresses[0]?.id || 'new';            // последний использованный адрес
   const isNew = k.addr === 'new' || !S.addresses.find((a) => a.id === k.addr);
-  const total = cartSum() + (v.delivery_fee || 0);
+  const redeemMax = loyActive() ? Math.max(0, Math.min(S.loy.balance, Math.floor(cartSum() * (S.loy.settings.max_redeem_pct || 0) / 100))) : 0;
+  const redeem = k.useBonus ? redeemMax : 0;
+  const total = cartSum() + (v.delivery_fee || 0) - redeem;
+  const st = S.loy?.settings || {};
+  const earn = loyActive() && st.app_enabled && cartSum() - redeem >= Math.max(st.app_min_order || 0, 1) ? Math.floor((cartSum() - redeem) * (S.loy.tier?.pct || 0) / 100) : 0;
   return `<main class="screen">
     <div class="row">${backBtn('/cart', 'Назад в корзину')}<h1 class="h1" style="font-size:26px">Оформление</h1></div>
     <form id="checkout" class="stack" style="gap:20px" novalidate>
@@ -349,11 +371,15 @@ function Checkout() {
           <button type="button" class="opt" data-act="pay" data-v="cash" aria-pressed="${k.payment === 'cash'}">Наличными</button>
         </div>
       </section>
+      ${redeemMax > 0 ? `<section class="stack"><span class="eyebrow">Баллы · на карте ${pts(S.loy.balance)}</span>
+        <label class="check"><input type="checkbox" name="useBonus" data-act="bonus" ${k.useBonus ? 'checked' : ''}><span>Оплатить баллами ${pts(redeemMax)} ₽ <span class="muted">(до ${esc(st.max_redeem_pct)}% заказа)</span></span></label></section>` : ''}
       <label class="field">Комментарий к заказу<textarea class="textarea" name="comment" placeholder="Приборы, пожелания">${esc(k.comment)}</textarea></label>
       <div class="card stack">
         <div class="sum-row"><span>Блюда (${cartCount()})</span><span>${rub(cartSum())}</span></div>
         <div class="sum-row"><span>Доставка</span><span>${v.delivery_fee ? rub(v.delivery_fee) : 'бесплатно'}</span></div>
+        ${redeem ? `<div class="sum-row"><span>Баллами</span><span>−${rub(redeem)}</span></div>` : ''}
         <div class="total"><span class="h2">К оплате</span><b>${rub(total)}</b></div>
+        ${earn ? `<span class="muted" style="font-size:12px">После доставки начислим +${pts(earn)} ${ptsWord(earn)}</span>` : ''}
       </div>
       ${ConsentBox(k.pdTick)}
       <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы принимаете условия ${doc('offer', 'публичной оферты')} и ${doc('terms', 'пользовательского соглашения')}.</p>
@@ -370,6 +396,7 @@ function saveCheckoutForm() {
   if ('street' in d) S.draftAddr = { ...S.draftAddr, street: d.street || '', flat: d.flat || '', entrance: d.entrance || '', floor: d.floor || '', intercom: d.intercom || '', save: !!d.saveAddr || store.guestOff };
   S.checkout.noCall = !!d.noCall;
   S.checkout.pdTick = !!d.pdConsent;
+  if (f.useBonus) S.checkout.useBonus = !!d.useBonus;
   S.checkout.comment = d.comment || '';
   if (d.time !== undefined) S.checkout.time = d.time;
 }
@@ -399,6 +426,7 @@ async function submitCheckout(form) {
       when_text: k.when === 'asap' ? 'Как можно скорее' : `К ${k.time}`,
       payment: k.payment,
       pd_consent: CV,
+      redeem: k.useBonus && loyActive() ? Math.max(0, Math.min(S.loy.balance, Math.floor(cartSum() * (S.loy.settings.max_redeem_pct || 0) / 100))) : 0,
       items: cartLines().map(({ item, qty }) => ({ item_id: item.id, name: item.name, price: item.price, qty })),
     });
     const online = k.payment === 'online';
@@ -414,7 +442,7 @@ async function submitCheckout(form) {
       else if (S.draftAddr.save) { await store.saveAddress(S.draftAddr); S.draftAddr = { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true }; }
       S.addresses = await store.listAddresses();
     } catch (e2) { console.warn('Не сохранили профиль', e2); }
-    S.history = null; S.draftContact = null; S.checkout = { ...S.checkout, addr: null, comment: '', noCall: false, pdTick: false };
+    S.history = null; S.loy = null; S.draftContact = null; S.checkout = { ...S.checkout, addr: null, comment: '', noCall: false, pdTick: false, useBonus: false };
     location.hash = '#/order/' + res.id;
     if (online) payNow(res.id);                                     // сразу на страницу оплаты
   } catch (ex) {
@@ -534,7 +562,7 @@ function Profile() {
     <nav class="menu-group" aria-label="Мой профиль">
       ${row('#/profile/orders', icon.clock, 'История заказов')}
       ${row('#/profile/addresses', icon.pin, 'Мои адреса', S.addresses.length ? `<span class="pill">${S.addresses.length}</span>` : '')}
-      ${row('#/card', icon.card, 'Баллы', '<span class="pill muted-pill">скоро</span>')}
+      ${row('#/card', icon.card, 'Карта гостя', S.loy && S.loy.settings?.enabled ? `<span class="pill">${pts(S.loy.balance)} б.</span>` : '')}
       ${row('#/profile/me', icon.id, 'Личные данные')}
     </nav>
     ${InfoRows()}
@@ -543,8 +571,8 @@ function Profile() {
 }
 const InfoRows = () => `<nav class="menu-group" aria-label="О пабе">
   ${row('#/info', icon.info, 'Адреса и контакты')}
-  ${row('legal/', icon.id, 'Документы')}
-  <a class="menu-row" href="tel:${esc((venue().phone || '').replace(/[^+\d]/g, ''))}"><span class="row">${icon.phone}<span>Позвонить в паб</span></span>${icon.chev}</a>
+  ${row('legal/index.html', icon.id, 'Документы')}
+  <button type="button" class="menu-row" data-act="call"><span class="row">${icon.phone}<span>Позвонить в паб</span></span>${icon.chev}</button>
 </nav>`;
 
 function History() {
@@ -785,7 +813,7 @@ async function finishVerify(r) {
   if (p10 && phone10(S.profile.phone || '') !== p10) {
     try { S.profile = await store.saveProfile({ ...S.profile, phone: fmtPhone(p10) }); } catch (e) { console.warn(e); }
   }
-  S.history = null;
+  S.history = null; S.loy = null;
   const back = S.verify.back || '/profile';
   S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
   toast(r.status === 'login' ? 'Номер подтверждён — вошли в ваш профиль' : 'Номер подтверждён', 3500);
@@ -794,19 +822,90 @@ async function finishVerify(r) {
 }
 
 /* ---------- карта гостя и информация ---------- */
+let loyLoading = false;
+async function loadLoyalty() {
+  if (loyLoading) return; loyLoading = true;
+  if (!S.loy) S.loy = false;                        // первая загрузка
+  try { S.loy = await store.myLoyalty(); S.loyAt = Date.now(); } catch (e) { console.warn('Карта гостя не загрузилась', e); S.loy = null; return; }
+  finally { loyLoading = false; }
+  if (['/', '/profile', '/card', '/checkout'].includes(route())) render();
+}
+const loyActive = () => S.loy && S.loy.settings?.enabled && (!S.loy.settings.verified_only || S.loy.verified);
+const pts = (n) => `${Number(n || 0).toLocaleString('ru-RU')}`;
+const ptsWord = (n) => { n = Math.abs(n) % 100; const d = n % 10; return n > 10 && n < 20 ? 'баллов' : d === 1 ? 'балл' : d >= 2 && d <= 4 ? 'балла' : 'баллов'; };
+const LOY_KIND = { accrue: 'Начислено', redeem: 'Списано', refund: 'Возврат', bonus: 'Бонус', adjust: 'Корректировка', expire: 'Сгорело', reverse: 'Отмена начисления' };
+const LOY_SRC = { app: 'заказ в приложении', venue: 'в пабе', pos: 'касса', admin: 'управляющий', system: '' };
+
 function GuestCard() {
+  const L = S.loy;
+  if (!L) return `<main class="screen"><div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Карта гостя</h1></div>${bulldogLoader('Достаём карту…')}</main>`;
+  const st = L.settings || {};
+  if (!st.enabled) return `<main class="screen"><div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Карта гостя</h1></div>
+    <div class="card"><span style="color:var(--text-2)">Программа лояльности скоро заработает.</span></div></main>`;
+  const t = L.tier || {};
+  const need = t.next_from != null ? Math.max(0, t.next_from - L.spent) : 0;
+  const prog = t.next_from != null ? Math.min(100, Math.round(((L.spent - t.from) / Math.max(1, t.next_from - t.from)) * 100)) : 100;
+  const locked = st.verified_only && !L.verified;
+  const tiers = [...(st.tiers || [])].sort((a, b) => a.from - b.from);
   return `<main class="screen">
-    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Баллы</h1></div>
-    <div class="guest-card">
-      <div class="between"><div class="stack" style="gap:4px"><span style="font-family:var(--display);font-weight:700;font-size:18px;letter-spacing:2px">ПАТРИКИ ПАБ</span><span class="eyebrow">Программа лояльности</span></div>${logoMark(44)}</div>
-      <span style="font-size:15px;line-height:1.5">Скоро здесь будет баланс баллов — тот же, что на вашей карте в Wallet. Копите в зале и в доставке, списывайте при заказе.</span>
-    </div>
-    <div class="card stack">
-      <span class="eyebrow">Уже есть карта в Wallet?</span>
-      <span style="font-size:14px;line-height:1.5;color:var(--text-2)">Подтвердите в профиле тот же номер телефона, что и у карты — так мы свяжем баллы с приложением.</span>
-      ${verified() ? '' : '<a class="btn btn-outline btn-sm" href="#/verify" style="align-self:flex-start">Подтвердить номер</a>'}
-    </div>
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Карта гостя</h1></div>
+    <section class="guest-card loy-card">
+      <div class="between"><div class="stack" style="gap:2px"><span class="eyebrow accent">${esc(t.name || '')} · ${esc(t.pct ?? 0)}%</span><span class="loy-balance">${pts(L.balance)} <small>${ptsWord(L.balance)}</small></span></div>${logoMark(52)}</div>
+      ${t.next_from != null ? `<div class="loy-prog" role="progressbar" aria-valuenow="${prog}" aria-valuemin="0" aria-valuemax="100"><span style="width:${prog}%"></span></div>
+        <span class="muted" style="font-size:12px">До уровня «${esc(t.next_name)}» (${esc(tiers.find((x) => x.name === t.next_name)?.pct ?? '')}%) — ещё ${rub(need)} покупок</span>` : '<span class="muted" style="font-size:12px">Максимальный уровень — спасибо, что вы с нами!</span>'}
+      <span class="loy-no">№ ${esc(String(L.card_no).replace(/(\d{4})(\d{4})/, '$1 $2'))}</span>
+    </section>
+    ${locked ? `<div class="card stack"><b>Подтвердите номер — и баллы начнут копиться</b>
+        <span class="muted" style="font-size:13px;line-height:1.5">Так мы защищаем баллы от чужих рук: карта привязывается к вашему телефону.</span>
+        <a class="btn btn-accent btn-sm" href="#/verify" style="align-self:flex-start">Подтвердить номер</a></div>`
+      : `<section class="card stack" style="align-items:center;gap:10px">
+        <span class="eyebrow">В пабе — покажите бармену</span>
+        <div id="loy-qr" class="loy-qr">${qrSvg(qrPayload(L.card_no, L.secret), 220)}</div>
+        <span class="muted" style="font-size:12px" id="loy-qr-tick">Код обновляется каждые 30 секунд</span>
+        <span class="muted" style="font-size:12px">Не сканируется? Назовите номер карты или телефон.</span>
+      </section>`}
+    <section class="card stack" style="gap:8px">
+      <span class="eyebrow">Как копить</span>
+      ${tiers.map((x) => `<div class="sum-row"><span>${esc(x.name)}${x.from ? ` <span class="muted">· от ${rub(x.from)}</span>` : ''}</span><b>${esc(x.pct)}%</b></div>`).join('')}
+      <span class="muted" style="font-size:12px;line-height:1.6">
+        ${st.app_enabled ? `За заказ в приложении — после доставки${st.app_min_order ? `, от ${rub(st.app_min_order)}` : ''}. ` : ''}${st.venue_enabled ? 'В пабе — по QR-коду при расчёте. ' : ''}
+        Уровень — по сумме покупок${st.period_days ? ` за последние ${esc(st.period_days)} дней` : ' за всё время'}.
+        1 балл = 1 ₽; баллами можно оплатить до ${esc(st.max_redeem_pct)}% заказа.
+        ${st.burn_after_days ? `Баллы сгорают, если ${esc(st.burn_after_days)} дней не было покупок. ` : ''}${st.birthday_bonus ? `В день рождения дарим ${pts(st.birthday_bonus)} ${ptsWord(st.birthday_bonus)}. ` : ''}
+        ${st.rules_text ? esc(st.rules_text) : ''}
+        ${doc('loyalty', 'Правила программы')}.
+      </span>
+    </section>
+    ${(L.history || []).length ? `<section class="stack" style="gap:8px"><span class="eyebrow">История</span>
+      <div class="menu-group">${L.history.slice(0, 20).map((h) => `<div class="menu-row" style="cursor:default">
+        <span class="stack" style="gap:2px"><span>${LOY_KIND[h.kind] || esc(h.kind)}${LOY_SRC[h.source] ? ` · ${LOY_SRC[h.source]}` : ''}</span>
+        <span class="muted" style="font-size:12px">${new Date(h.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}${h.venue ? ` · ${esc(h.venue)}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</span></span>
+        <b style="color:${h.points >= 0 ? 'var(--ok)' : 'var(--text-2)'}">${h.points >= 0 ? '+' : ''}${pts(h.points)}</b></div>`).join('')}</div></section>` : ''}
   </main>`;
+}
+// QR обновляется каждые 30 секунд, пока открыт экран карты
+let qrTimer = null;
+function startCardQr() {
+  clearInterval(qrTimer);
+  qrTimer = setInterval(() => {
+    const box = document.getElementById('loy-qr');
+    if (!box || route() !== '/card' || !S.loy) return clearInterval(qrTimer);
+    box.innerHTML = qrSvg(qrPayload(S.loy.card_no, S.loy.secret), 220);
+  }, 30000);
+}
+
+// выбор паба для звонка
+function callSheet() {
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-label="Позвонить в паб">
+    <span class="grab"></span><h2 class="h2">Позвонить в паб</h2>
+    <div class="menu-group">${S.venues.filter((v) => v.phone).map((v) => `<a class="menu-row" href="tel:${esc(v.phone.replace(/[^+\d]/g, ''))}">
+      <span class="row">${icon.phone}<span class="stack" style="gap:2px"><span>${esc(v.name)}</span><span class="muted" style="font-size:12px">${esc(v.address)} · ${esc(fmtPhone(v.phone) || v.phone)}</span></span></span>${icon.chev}</a>`).join('')}</div>
+    <button type="button" class="btn btn-ghost btn-block" data-close>Отмена</button>
+  </div>`;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target.closest('[data-close]') || e.target.closest('a')) setTimeout(() => wrap.remove(), 50); });
+  document.body.appendChild(wrap);
 }
 
 function Info() {
@@ -827,7 +926,7 @@ function Info() {
     <nav class="menu-group" aria-label="Документы">
       ${[['offer', icon.info, 'Публичная оферта'], ['terms', icon.info, 'Пользовательское соглашение'], ['payment', icon.card, 'Оплата и возврат'],
          ['privacy', icon.id, 'Политика обработки персональных данных'], ['consent', icon.id, 'Согласие на обработку данных'], ['ads', icon.info, 'Согласие на рассылку']]
-        .map(([h, ic, t]) => `<a class="menu-row" href="legal/#${h}"><span class="row">${ic}<span>${t}</span></span>${icon.chev}</a>`).join('')}
+        .map(([h, ic, t]) => `<a class="menu-row" href="legal/index.html#${h}"><span class="row">${ic}<span>${t}</span></span>${icon.chev}</a>`).join('')}
     </nav>
     <footer class="info-foot">
       © 2026 «<span data-act="secret">Патрики</span> Паб» · Санкт-Петербург<br>версия ${esc(CONFIG.APP_VERSION)}${store.demo ? ' · демо' : ''}
@@ -940,7 +1039,7 @@ function deleteSheet() {
     try {
       await store.deleteAccount();
       for (const k of ['customer', 'orders', 'pdConsent']) { try { localStorage.removeItem('patriki.ui.' + k); } catch { /* нет доступа */ } }
-      S.orders = []; S.history = null; S.draftContact = null; S.addresses = [];
+      S.orders = []; S.history = null; S.loy = null; S.draftContact = null; S.addresses = [];
       S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
       await loadGuest();
       wrap.remove(); location.hash = '#/profile'; render(); toast('Профиль и данные удалены', 3500);
@@ -960,6 +1059,9 @@ function deleteSheet() {
 app.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const { act, id, v } = b.dataset;
+  if (act === 'doc') { e.preventDefault(); return docSheet(b.dataset.h); }
+  if (act === 'call') return callSheet();
+  if (act === 'bonus') { saveCheckoutForm(); S.checkout.useBonus = b.checked; const y = window.scrollY; render(); window.scrollTo(0, y); return; }
   if (act === 'venue') { if (route() === '/checkout') saveCheckoutForm(); S.venueId = id; keep.set('venue', id); render(); }
   if (act === 'inc' || act === 'dec') {
     setQty(id, (S.cart[id] || 0) + (act === 'inc' ? 1 : -1));
@@ -987,7 +1089,7 @@ app.addEventListener('click', async (e) => {
   if (act === 'tg-open') { S.verify.tgOpened = true; const w = document.getElementById('tg-wait'); if (w) w.textContent = 'Ждём подтверждения из Telegram…'; }
   if (act === 'logout') {
     await store.guestSignOut();
-    S.history = null; S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
+    S.history = null; S.loy = null; S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
     await loadGuest(); render(); toast('Вы вышли из профиля');
   }
   if (act === 'marketing') {
@@ -1094,3 +1196,10 @@ window.addEventListener('hashchange', () => {
 if ('serviceWorker' in navigator && location.protocol === 'https:' && !window.Capacitor) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
+
+// вернулись в приложение (например, после оплаты в пабе) — обновляем баллы
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !S.loy) return;
+  S.loyAt = 0;
+  if (['/', '/profile', '/card'].includes(route())) loadLoyalty();
+});
