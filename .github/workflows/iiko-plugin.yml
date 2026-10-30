@@ -17,7 +17,14 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Build
         working-directory: iiko-plugin/Resto.Front.Api.Patriki
-        run: dotnet build -c Release
+        run: |
+          set -o pipefail
+          dotnet build -c Release 2>&1 | tee build.log || {
+            echo '## Ошибки сборки' >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            grep -E "error|Error|warning NU|ошибк" build.log | sort -u | head -60 >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1; }
       - name: Collect
         run: |
           OUT=iiko-plugin/Resto.Front.Api.Patriki/bin/Release
@@ -28,6 +35,10 @@ jobs:
           rm -f dist/Resto.Front.Api.Patriki/*.pdb
           cp iiko-plugin/INSTALL.txt iiko-plugin/patriki.json dist/
           find dist -type f | sort
+          echo '## Состав плагина' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          find dist $OUT -type f | sort >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@v4
         with:
           name: Resto.Front.Api.Patriki
