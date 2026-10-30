@@ -1,0 +1,15 @@
+Карта Патрики — плагин iikoFront (баллы по QR)
+===============================================
+Подробная инструкция с картинками — в PDF «Установка плагина Карта Патрики».
+
+1. Закройте iikoFront.
+2. Перенесите папку плагина MACE на рабочий стол (резервная копия):
+   C:\Program Files\iiko\iikoRMS\Front.Net\Plugins\Resto.Front.Api.MaceLoyalty
+3. Скопируйте папку Resto.Front.Api.Patriki в
+   C:\Program Files\iiko\iikoRMS\Front.Net\Plugins\
+4. Положите patriki.json внутрь этой папки (рядом с Resto.Front.Api.Patriki.dll),
+   откройте Блокнотом и вместо ВПИШИТЕ_КЛЮЧ_КАССЫ вставьте ключ кассы. Сохраните.
+5. Запустите iikoFront. В заказе появится кнопка «Карта Патрики».
+
+Лог: %AppData%\iiko\CashServer\Logs\plugin-Resto.Front.Api.Patriki.log
+Откат: закройте iikoFront, удалите папку Resto.Front.Api.Patriki, верните MaceLoyalty.
