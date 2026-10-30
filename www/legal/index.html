@@ -26,7 +26,8 @@
 </head>
 <body>
 <main class="doc">
-  <a href="../" class="btn btn-ghost btn-sm">← В приложение</a>
+  <a href="../index.html" class="btn btn-ghost btn-sm">← В приложение</a>
+  <img src="../img/logo-full.svg" alt="Патрики Паб" width="200" height="136" style="display:block;margin:12px 0 0">
   <h1 class="h1">Документы</h1>
   <p class="muted">Редакция от <span data-l="EDITION"></span></p>
   <nav class="toc card" aria-label="Содержание" id="toc">
@@ -37,6 +38,7 @@
     <a href="#privacy">Политика обработки персональных данных</a>
     <a href="#consent">Согласие на обработку персональных данных</a>
     <a href="#ads">Согласие на получение рекламы</a>
+    <a href="#loyalty">Правила программы лояльности</a>
   </nav>
 
   <!-- ============================== РЕКВИЗИТЫ ============================== -->
@@ -205,6 +207,31 @@
   <p>Согласие не обязательно для заказа. Оно действует до отзыва. Отозвать его можно в любой момент: выключить переключатель в «Профиль → Личные данные», ответить «СТОП» на сообщение (если такая возможность указана в нём) или написать на <span data-l="EMAIL"></span>. После отзыва рассылка прекращается.</p>
   <p>Сообщения о статусе заказа и коды подтверждения рекламой не являются и отправляются независимо от этого согласия.</p>
   <a class="top" href="#toc">↑ К содержанию</a>
+
+  <!-- ============================== ЛОЯЛЬНОСТЬ ============================== -->
+  <h2 id="loyalty">Правила программы лояльности</h2>
+  <p class="muted">«Карта гостя Патрики Паб»</p>
+  <h3>1. Участие</h3>
+  <p>1.1. Программу проводит <span data-l="SELLER"></span> (далее — «Организатор»). Участником может стать любое дееспособное лицо, установившее Приложение. Карта гостя создаётся автоматически в разделе «Профиль → Карта гостя».</p>
+  <p class="loy-verified">1.2. Баллы начисляются и списываются только при подтверждённом номере телефона.</p>
+  <p>1.3. Участие бесплатное и добровольное. Участник может выйти из программы, удалив профиль; неиспользованные баллы при этом аннулируются.</p>
+  <h3>2. Начисление баллов</h3>
+  <p>2.1. Баллы начисляются в процентах от суммы покупки, фактически оплаченной деньгами (без части, оплаченной баллами). Процент зависит от уровня участника:</p>
+  <table id="loy-tiers"><tr><td>Уровень</td><td>Условия загружаются…</td></tr></table>
+  <p id="loy-period">2.2. Уровень определяется по сумме покупок участника.</p>
+  <p id="loy-app">2.3. За заказ в Приложении баллы начисляются после его доставки. За отменённый заказ баллы не начисляются, списанные баллы возвращаются.</p>
+  <p id="loy-venue">2.4. В заведении баллы начисляются при расчёте по QR-коду из Приложения (или номеру карты / телефону). Код в QR меняется каждые 30 секунд; передача карты третьим лицам не допускается.</p>
+  <p id="loy-bonus"></p>
+  <h3>3. Списание баллов</h3>
+  <p id="loy-redeem">3.1. 1 балл = 1 рубль скидки. Баллами можно оплатить часть заказа.</p>
+  <p>3.2. Баллы не обмениваются на деньги, не передаются другим участникам и не начисляются на алкогольную продукцию, если это запрещено законом.</p>
+  <p id="loy-burn">3.3. Баллы не имеют срока действия, пока программа действует.</p>
+  <h3>4. Прочее</h3>
+  <p id="loy-extra"></p>
+  <p>4.1. Организатор вправе изменять условия программы (проценты, уровни, ограничения), публикуя новые условия в Приложении. Изменения не затрагивают уже начисленные баллы.</p>
+  <p>4.2. Организатор вправе аннулировать баллы, начисленные в результате ошибки или злоупотребления.</p>
+  <p>4.3. Обработка персональных данных участников — в соответствии с <a href="#privacy">Политикой</a>.</p>
+  <a class="top" href="#toc">↑ К содержанию</a>
 </main>
 <script type="module">
   import { CONFIG } from '../js/config.js';
@@ -220,6 +247,30 @@
     else if (hint[k]) { el.textContent = '[' + hint[k] + ']'; el.classList.add('fill'); }
     else el.textContent = '';
   });
+  // внутри приложения (окно поверх экрана) — без кнопки «В приложение»
+  if (new URLSearchParams(location.search).has('embed')) document.querySelector('.doc > .btn')?.remove();
+  // условия программы лояльности — из настроек управляющего
+  try {
+    const r = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/loyalty_settings?id=eq.1&select=*', { headers: { apikey: CONFIG.SUPABASE_ANON_KEY } });
+    const st = (await r.json())[0];
+    if (st) {
+      const rub = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';
+      const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+      const tiers = [...(st.tiers || [])].sort((a, b) => a.from - b.from);
+      document.getElementById('loy-tiers').innerHTML = tiers.map((t) => `<tr><td>${esc(t.name)}</td><td>${t.from ? 'от ' + rub(t.from) + ' покупок — ' : ''}${esc(t.pct)}%</td></tr>`).join('');
+      document.getElementById('loy-period').textContent = '2.2. Уровень определяется по сумме покупок ' + (st.period_days ? `за последние ${st.period_days} дней.` : 'за всё время участия.');
+      if (!st.app_enabled) document.getElementById('loy-app').textContent = '2.3. За заказы в Приложении баллы сейчас не начисляются.';
+      else if (st.app_min_order) document.getElementById('loy-app').textContent += ` Минимальная сумма заказа для начисления — ${rub(st.app_min_order)}.`;
+      if (!st.venue_enabled) document.getElementById('loy-venue').textContent = '2.4. В заведении баллы сейчас не начисляются.';
+      const bonus = [st.welcome_bonus ? `приветственные ${st.welcome_bonus} баллов` : '', st.birthday_bonus ? `${st.birthday_bonus} баллов в день рождения (если дата указана в профиле)` : ''].filter(Boolean);
+      document.getElementById('loy-bonus').textContent = bonus.length ? '2.5. Бонусы: ' + bonus.join('; ') + '.' : '';
+      document.getElementById('loy-redeem').textContent = `3.1. 1 балл = 1 рубль скидки. Баллами можно оплатить не более ${st.max_redeem_pct}% суммы заказа или чека.`;
+      if (st.burn_after_days) document.getElementById('loy-burn').textContent = `3.3. Баллы аннулируются, если в течение ${st.burn_after_days} дней не было покупок.`;
+      if (!st.verified_only) document.querySelector('.loy-verified')?.remove();
+      if (st.rules_text) document.getElementById('loy-extra').textContent = st.rules_text;
+      if (!st.enabled) document.getElementById('loy-tiers').insertAdjacentHTML('beforebegin', '<p><b>Программа временно приостановлена.</b></p>');
+    }
+  } catch (e) { console.warn(e); }
   if (location.hash) document.querySelector(location.hash)?.scrollIntoView();
 </script>
 </body>
