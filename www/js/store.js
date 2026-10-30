@@ -252,41 +252,58 @@ export const store = {
     return data;
   },
 
-  // Подтверждение номера. phone — 10 цифр после +7.
-  // Возвращает «режим», который нужно передать в confirmPhone.
-  async sendCode(phone10) {
-    const phone = '+7' + phone10;
-    if (this.demo) {
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      LS.set('demo_code', { phone, code });
-      const out = LS.get('sms_outbox', []); out.unshift({ phone: phone.slice(1), otp: code, created_at: new Date().toISOString() });
-      LS.set('sms_outbox', out.slice(0, 20));
-      return { mode: 'demo', demoCode: code };
+  /* ---------------- подтверждение номера: Telegram-бот или звонок ---------------- */
+  async verifyCall(body) {
+    const { data, error } = await sb.functions.invoke('verify', { body });
+    if (error) {
+      let msg = error.message;
+      try { msg = (await error.context.json()).error || msg; } catch { /* нет тела */ }
+      throw new Error(msg);
     }
-    // 1) привязываем номер к текущему профилю
-    const r = await sb.auth.updateUser({ phone });
-    if (!r.error) return { mode: 'link' };
-    // 2) номер уже есть у другого профиля (вход с нового телефона) — входим в него,
-    //    а накопленное здесь заберём после входа
-    const { data: token } = await sb.rpc('create_transfer');
-    const s = await sb.auth.signInWithOtp({ phone, options: { shouldCreateUser: true } });
-    if (s.error) throw s.error;
-    return { mode: 'login', transfer: token };
+    if (data?.error) throw new Error(data.error);
+    return data;
   },
-
-  async confirmPhone(phone10, code, ctx) {
-    const phone = '+7' + phone10;
+  // 1) Telegram: { token, url } — открыть url, затем опрашивать tgStatus
+  async tgStart() {
+    if (this.demo) { LS.set('demo_tg', { token: uid(), at: Date.now() }); return { ...LS.get('demo_tg'), url: 'https://t.me/PatrikiPubBot', demo: true }; }
+    return this.verifyCall({ action: 'tg-start' });
+  },
+  async tgStatus(token) {
+    if (this.demo) {
+      const d = LS.get('demo_tg', {});
+      if (d.token !== token) return { status: 'failed' };
+      if (Date.now() - d.at < 4000) return { status: 'pending' };
+      LS.set('me', { id: 'demo-user', phone: '79990000000', verified: true });
+      return { status: 'done', phone: '79990000000' };
+    }
+    return this.verifyCall({ action: 'tg-status', token });
+  },
+  // 2) Звонок-сброс: код — последние 4 цифры входящего номера
+  async callStart(phone10) {
+    if (this.demo) {
+      const code = String(Math.floor(1000 + Math.random() * 9000));
+      LS.set('demo_code', { phone: '7' + phone10, code });
+      const out = LS.get('sms_outbox', []); out.unshift({ phone: '7' + phone10, otp: code, created_at: new Date().toISOString() }); LS.set('sms_outbox', out.slice(0, 20));
+      return { ok: true, test: true, demoCode: code };
+    }
+    return this.verifyCall({ action: 'call-start', phone: '7' + phone10 });
+  },
+  async callCheck(phone10, code) {
     if (this.demo) {
       const d = LS.get('demo_code', {});
-      if (d.phone !== phone || d.code !== code.trim()) throw new Error('Неверный код');
-      LS.set('me', { id: 'demo-user', phone: phone.slice(1), verified: true });
-      return true;
+      if (d.phone !== '7' + phone10 || d.code !== String(code).trim()) throw new Error('Неверный код — это последние 4 цифры номера, с которого звонили');
+      LS.set('me', { id: 'demo-user', phone: '7' + phone10, verified: true });
+      return { status: 'done', phone: '7' + phone10 };
     }
-    const { error } = await sb.auth.verifyOtp({ phone, token: code.trim(), type: ctx.mode === 'link' ? 'phone_change' : 'sms' });
-    if (error) throw new Error('Неверный или устаревший код');
-    if (ctx.mode === 'login' && ctx.transfer) await sb.rpc('claim_transfer', { p_token: ctx.transfer });
-    return true;
+    return this.verifyCall({ action: 'call-check', phone: '7' + phone10, code });
   },
+  // номер уже был у другого профиля — входим в него одноразовым ключом
+  async applyLogin(hash) {
+    if (this.demo || !hash) return;
+    const { error } = await sb.auth.verifyOtp({ token_hash: hash, type: 'magiclink' });
+    if (error) throw new Error('Не удалось войти в профиль, попробуйте ещё раз');
+  },
+  async refreshUser() { if (!this.demo) await sb.auth.refreshSession(); },
 
   // Выйти из профиля гостя: дальше он снова анонимный гость на этом устройстве
   async guestSignOut() {

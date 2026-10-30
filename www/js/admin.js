@@ -145,8 +145,8 @@ function SmsCodes() {
   if (!A.codes?.length) return '';
   const { esc, fmtPhone } = ctx;
   return `<section class="card stack" style="gap:8px;border-color:#5A4A22">
-    <span class="eyebrow accent">Коды подтверждения · тестовый режим</span>
-    <span class="muted" style="font-size:12px;line-height:1.4">SMS ещё не подключены. Если гость просит код — продиктуйте ему его по телефону.</span>
+    <span class="eyebrow accent">Коды подтверждения · тестовый режим звонка</span>
+    <span class="muted" style="font-size:12px;line-height:1.4">Звонок-сброс ещё не подключён. Если гость подтверждает номер звонком и просит код — продиктуйте ему 4 цифры. Через Telegram код не нужен.</span>
     ${A.codes.slice(0, 5).map((c) => `<div class="between"><span>${esc(fmtPhone(c.phone))}</span><b style="font-family:var(--display);font-size:20px;letter-spacing:3px">${esc(c.otp)}</b><span class="muted" style="font-size:12px">${new Date(c.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span></div>`).join('')}
   </section>`;
 }

@@ -90,7 +90,7 @@ const S = {
   checkout: { when: 'asap', time: '', payment: 'card', noCall: false, addr: null, comment: '' },
   draftAddr: { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true },
   draftContact: null,                             // { name, phone } пока заполняют форму
-  verify: { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' },
+  verify: { step: 'phone', phone: '', until: 0, back: '/profile' },
   infoTaps: [],
 };
 const venue = () => S.venues.find((v) => v.id === S.venueId) || S.venues[0] || {};
@@ -659,65 +659,138 @@ function PersonalData() {
   </main>`;
 }
 
-/* ---------- подтверждение номера ---------- */
+/* ---------- подтверждение номера: Telegram-бот или звонок-сброс ---------- */
+const tgIcon = '<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.4 4.1 2.9 11.3c-1.3.5-1.3 1.2-.2 1.6l4.7 1.5 1.8 5.6c.2.6.1.9.8.9.5 0 .7-.2 1-.5l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8l3.1-14.7c.3-1.3-.5-1.9-1.5-1.5ZM8.7 14l9.6-6.1c.5-.3.9-.1.5.2l-8.2 7.4-.3 3.4-1.6-4.9Z"/></svg>';
 function Verify() {
   const v = S.verify;
   const pre = v.phone || S.profile.phone || '';
+  const head = (title, backAct) => `<div class="row">${backAct ? `<button type="button" class="icon-btn" data-act="${backAct}" aria-label="Назад">${icon.back}</button>` : backBtn(v.back || '/profile')}<h1 class="h1" style="font-size:26px">${title}</h1></div>`;
+  if (v.step === 'tg') {
+    return `<main class="screen">
+      ${head('Через Telegram', 'verify-back')}
+      <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
+      <ol class="install-steps">
+        <li>Откройте нашего бота — кнопка ниже</li>
+        <li>Нажмите в боте <b>«Start»</b>, затем <b>«📱 Поделиться номером»</b></li>
+        <li>Вернитесь сюда — экран обновится сам</li>
+      </ol>
+      <a class="btn btn-accent btn-block" href="${esc(v.tgUrl || '#')}" target="_blank" rel="noopener" data-act="tg-open">${tgIcon} Открыть Telegram</a>
+      <p class="muted" id="tg-wait" style="text-align:center;margin:0">${v.tgOpened ? 'Ждём подтверждения из Telegram…' : ''}</p>
+      <p class="error" role="alert" style="margin:0;text-align:center">${esc(v.err || '')}</p>
+      <button type="button" class="btn btn-ghost btn-block" data-act="verify-back">Подтвердить звонком</button>
+    </main>`;
+  }
   if (v.step === 'code') {
     const left = Math.max(0, Math.ceil((v.until - Date.now()) / 1000));
     return `<main class="screen">
-      <div class="row"><button type="button" class="icon-btn" data-act="verify-back" aria-label="Изменить номер">${icon.back}</button><h1 class="h1" style="font-size:26px">Код из SMS</h1></div>
+      ${head('Звонок', 'verify-back')}
       <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
-      <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.5">Отправили код на<br><b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b></p>
+      <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.6">Сейчас на <b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b> поступит звонок.<br><b style="color:var(--text)">Трубку брать не нужно</b> — введите последние 4 цифры номера, с которого звонят.</p>
       <form id="code-form" class="stack" style="gap:14px">
-        <label class="sr-only" for="otp">Код подтверждения</label>
-        <input id="otp" class="input otp" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" required>
+        <label class="sr-only" for="otp">Последние 4 цифры номера</label>
+        <input id="otp" class="input otp" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="4" placeholder="••••" required>
         <p class="error" role="alert" style="margin:0"></p>
         <button type="submit" class="btn btn-accent btn-block">Подтвердить</button>
       </form>
-      ${left > 0 ? `<p class="muted" style="text-align:center;margin:0" id="resend">Отправить ещё раз через ${left} с</p>`
-        : '<button type="button" class="btn btn-ghost btn-block" data-act="resend">Отправить код ещё раз</button>'}
-      ${CONFIG.SMS_TEST_MODE ? '<p class="demo-banner" style="margin:0">Тестовый режим: SMS пока не отправляются. Код виден управляющему в админке и приходит в чат заведения.</p>' : ''}
+      ${left > 0 ? `<p class="muted" style="text-align:center;margin:0" id="resend">Позвонить ещё раз через ${left} с</p>`
+        : '<button type="button" class="btn btn-ghost btn-block" data-act="resend">Позвонить ещё раз</button>'}
+      ${v.test ? '<p class="demo-banner" style="margin:0">Тестовый режим: звонок пока не совершается. Код виден управляющему в админке и в Telegram-группе.</p>' : ''}
     </main>`;
   }
   return `<main class="screen">
-    <div class="row">${backBtn(v.back || '/profile')}<h1 class="h1" style="font-size:26px">Вход по номеру</h1></div>
+    ${head('Подтвердить номер')}
     <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
     <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.5">Подтвердите номер — и заказы, адреса и баллы будут с вами на любом телефоне</p>
     <form id="phone-form" class="stack" style="gap:14px">
-      <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone required placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
       ${ConsentBox()}
+      <button type="button" class="btn btn-accent btn-block" data-act="tg-start">${tgIcon} Через Telegram</button>
+      <span class="muted" style="font-size:12px;text-align:center;margin-top:-6px">быстро и бесплатно — номер возьмём из Telegram</span>
+      <div class="or-line"><span>или звонком</span></div>
+      <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
       <p class="error" role="alert" style="margin:0"></p>
-      <button type="submit" class="btn btn-accent btn-block">Получить код</button>
+      <button type="submit" class="btn btn-outline btn-block">Позвонить мне</button>
     </form>
   </main>`;
 }
 let verifyTimer = null;
 function tickVerify() {
   clearInterval(verifyTimer);
+  if (S.verify.step === 'tg') { pollTg(); return; }
   if (S.verify.step !== 'code') return;
   verifyTimer = setInterval(() => {
     const el = document.getElementById('resend');
     if (!el || route() !== '/verify') return clearInterval(verifyTimer);
     const left = Math.ceil((S.verify.until - Date.now()) / 1000);
-    if (left <= 0) { clearInterval(verifyTimer); render(); } else el.textContent = `Отправить ещё раз через ${left} с`;
+    if (left <= 0) { clearInterval(verifyTimer); render(); } else el.textContent = `Позвонить ещё раз через ${left} с`;
   }, 1000);
   document.getElementById('otp')?.focus();
 }
-async function sendCode(p10, errEl, btn) {
-  if (p10.length !== 10) { if (errEl) errEl.textContent = 'Введите номер полностью'; return; }
-  if (btn) { btn.disabled = true; btn.textContent = 'Отправляем…'; }
+// согласие перед любым способом подтверждения
+function consentOk(form) {
+  if (hasPdConsent()) return true;
+  if (form?.pdConsent?.checked) { keep.set('pdConsent', CV); return true; }
+  const e = form?.querySelector('.error'); if (e) e.textContent = 'Отметьте согласие на обработку персональных данных';
+  return false;
+}
+async function startTg(btn) {
+  btn.disabled = true;
   try {
-    const ctx = await store.sendCode(p10);
-    S.verify = { ...S.verify, step: 'code', phone: p10, ctx, until: Date.now() + 60000 };
+    const r = await store.tgStart();
+    S.verify = { ...S.verify, step: 'tg', tgToken: r.token, tgUrl: r.url, tgOpened: false, err: '' };
     render();
-    if (ctx.demoCode) toast(`Демо-режим: код ${ctx.demoCode}`, 6000);
+    // сразу открываем бота (в приложении на телефоне откроется Telegram)
+    if (!r.demo) { S.verify.tgOpened = true; window.open(r.url, '_blank'); }
+  } catch (ex) {
+    console.error(ex); btn.disabled = false;
+    const e = document.querySelector('#phone-form .error'); if (e) e.textContent = ex.message || 'Не получилось. Попробуйте звонком';
+  }
+}
+let tgPoll = null;
+function pollTg() {
+  clearTimeout(tgPoll);
+  const tick = async () => {
+    if (route() !== '/verify' || S.verify.step !== 'tg') return;
+    try {
+      const r = await store.tgStatus(S.verify.tgToken);
+      if (r.status === 'done' || r.status === 'login') return finishVerify(r);
+      if (r.status === 'failed') { S.verify.err = r.message || 'Не получилось, попробуйте ещё раз'; return render(); }
+    } catch (e) { console.warn(e); }
+    tgPoll = setTimeout(tick, 2500);
+  };
+  tgPoll = setTimeout(tick, 1500);
+}
+async function startCall(p10, errEl, btn) {
+  if (p10.length !== 10) { if (errEl) errEl.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Звоним…'; }
+  try {
+    const r = await store.callStart(p10);
+    S.verify = { ...S.verify, step: 'code', phone: p10, test: !!r.test, until: Date.now() + 60000 };
+    render();
+    if (r.demoCode) toast(`Демо-режим: код ${r.demoCode}`, 6000);
   } catch (ex) {
     console.error(ex);
-    const m = String(ex.message || '');
-    if (errEl) errEl.textContent = /rate|seconds|limit/i.test(m) ? 'Слишком часто. Подождите минуту и попробуйте снова' : 'Не удалось отправить код. Попробуйте позже';
-    if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
+    if (errEl) errEl.textContent = ex.message || 'Не удалось позвонить. Попробуйте через Telegram';
+    if (btn) { btn.disabled = false; btn.textContent = 'Позвонить мне'; }
   }
+}
+async function finishVerify(r) {
+  clearTimeout(tgPoll);
+  try {
+    if (r.status === 'login') await store.applyLogin(r.login_hash);
+    else await store.refreshUser();
+  } catch (e) { console.error(e); S.verify.err = e.message; return render(); }
+  await loadGuest();
+  if (keep.get('pdConsent', '') === CV && S.profile.pd_consent_version !== CV) await grantPd('verify');
+  const p10 = phone10(r.phone || S.me?.phone || '');
+  if (p10 && phone10(S.profile.phone || '') !== p10) {
+    try { S.profile = await store.saveProfile({ ...S.profile, phone: fmtPhone(p10) }); } catch (e) { console.warn(e); }
+  }
+  S.history = null;
+  const back = S.verify.back || '/profile';
+  S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
+  toast(r.status === 'login' ? 'Номер подтверждён — вошли в ваш профиль' : 'Номер подтверждён', 3500);
+  location.hash = '#' + back;
+  render();
 }
 
 /* ---------- карта гостя и информация ---------- */
@@ -868,7 +941,7 @@ function deleteSheet() {
       await store.deleteAccount();
       for (const k of ['customer', 'orders', 'pdConsent']) { try { localStorage.removeItem('patriki.ui.' + k); } catch { /* нет доступа */ } }
       S.orders = []; S.history = null; S.draftContact = null; S.addresses = [];
-      S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
+      S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
       await loadGuest();
       wrap.remove(); location.hash = '#/profile'; render(); toast('Профиль и данные удалены', 3500);
     } catch (ex) {
@@ -908,11 +981,13 @@ app.addEventListener('click', async (e) => {
   if (act === 'pick-addr') { saveCheckoutForm(); S.checkout.addr = id; render(); }
   if (act === 'repeat') repeatOrder(id);
   if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
-  if (act === 'verify-back') { S.verify.step = 'phone'; render(); }
-  if (act === 'resend') sendCode(S.verify.phone, null, null);
+  if (act === 'verify-back') { clearTimeout(tgPoll); S.verify.step = 'phone'; S.verify.err = ''; render(); }
+  if (act === 'resend') startCall(S.verify.phone, null, null);
+  if (act === 'tg-start') { if (consentOk(b.closest('form'))) startTg(b); }
+  if (act === 'tg-open') { S.verify.tgOpened = true; const w = document.getElementById('tg-wait'); if (w) w.textContent = 'Ждём подтверждения из Telegram…'; }
   if (act === 'logout') {
     await store.guestSignOut();
-    S.history = null; S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
+    S.history = null; S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
     await loadGuest(); render(); toast('Вы вышли из профиля');
   }
   if (act === 'marketing') {
@@ -938,28 +1013,18 @@ app.addEventListener('submit', async (e) => {
   if (f.id === 'checkout') { e.preventDefault(); return submitCheckout(f); }
   if (f.id === 'phone-form') {
     e.preventDefault();
-    if (!hasPdConsent() && !f.pdConsent?.checked) return (f.querySelector('.error').textContent = 'Отметьте согласие на обработку персональных данных');
-    if (!hasPdConsent()) keep.set('pdConsent', CV);
-    return sendCode(phone10(f.phone.value), f.querySelector('.error'), f.querySelector('[type=submit]'));
+    if (!consentOk(f)) return;
+    return startCall(phone10(f.phone.value), f.querySelector('.error'), f.querySelector('[type=submit]'));
   }
   if (f.id === 'code-form') {
     e.preventDefault();
     const err = f.querySelector('.error'), btn = f.querySelector('[type=submit]');
     const code = f.code.value.replace(/\D/g, '');
-    if (code.length < 4) return (err.textContent = 'Введите код из сообщения');
+    if (code.length !== 4) return (err.textContent = 'Введите 4 цифры');
     btn.disabled = true; btn.textContent = 'Проверяем…';
     try {
-      await store.confirmPhone(S.verify.phone, code, S.verify.ctx);
-      await loadGuest();
-      if (keep.get('pdConsent', '') === CV && S.profile.pd_consent_version !== CV) await grantPd('verify');
-      if (!S.profile.phone || phone10(S.profile.phone) !== S.verify.phone) {
-        S.profile = await store.saveProfile({ ...S.profile, phone: fmtPhone(S.verify.phone) });
-      }
-      S.history = null;
-      const back = S.verify.back || '/profile';
-      S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
-      toast('Номер подтверждён');
-      location.hash = '#' + back;
+      const r = await store.callCheck(S.verify.phone, code);
+      await finishVerify(r);
     } catch (ex) {
       err.textContent = ex.message || 'Неверный код';
       btn.disabled = false; btn.textContent = 'Подтвердить';
