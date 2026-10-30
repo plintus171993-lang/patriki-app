@@ -182,6 +182,12 @@ img { display: block; max-width: 100%; }
 .check input:checked { background: var(--accent); border-color: var(--accent); }
 .check input:checked::after { content: ''; width: 10px; height: 6px; border-left: 2.5px solid #0E0E0D; border-bottom: 2.5px solid #0E0E0D; transform: rotate(-45deg) translate(1px, -1px); }
 .check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.check.consent { align-items: flex-start; font-size: 13px; line-height: 1.5; min-height: 0; }
+.check.consent input { margin-top: 1px; }
+.check.consent a { color: var(--accent); }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13px; line-height: 1.5; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; color: var(--text-2); }
 .badge-ok { font-size: 12px; font-weight: 600; color: var(--ok); }
 
 .opt-wide { width: 100%; min-height: 60px; padding: 10px 16px; display: flex; align-items: center; }
@@ -247,3 +253,12 @@ img { display: block; max-width: 100%; }
 }
 .table-wrap { overflow-x: auto; }
 .demo-banner { background: #2B2414; border: 1px solid #5A4A22; color: var(--accent-hi); padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.4; }
+
+/* ---------- два заведения: цветовая метка, чтобы заказы не путались ---------- */
+.venue-tag { align-self: flex-start; font-size: 12px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; background: var(--surface-2); color: var(--text); }
+.venue-tag.v-petrogradka, .chip.v-petrogradka[aria-current="true"] { background: #2B4A6B; color: #E8F1FB; border-color: #2B4A6B; }
+.venue-tag.v-murino, .chip.v-murino[aria-current="true"] { background: #2F5A3A; color: #E6F5EA; border-color: #2F5A3A; }
+.card.order.v-petrogradka { border-left: 4px solid #4A7FB5; }
+.card.order.v-murino { border-left: 4px solid #4E9A60; }
+.stop-chip { font-size: 12px; min-height: 32px; padding: 4px 10px; }
+.stop-chip.off { border-color: var(--danger); color: var(--danger); }
