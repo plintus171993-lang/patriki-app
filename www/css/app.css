@@ -184,6 +184,21 @@ img { display: block; max-width: 100%; }
 .check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .badge-ok { font-size: 12px; font-weight: 600; color: var(--ok); }
 
+.opt-wide { width: 100%; min-height: 60px; padding: 10px 16px; display: flex; align-items: center; }
+.pay-box { gap: 8px; }
+.pay-box.ok { border-color: var(--ok); }
+.pay-box.ok b { color: var(--ok); }
+.pay-box.bad { border-color: var(--danger); }
+.pay-box.bad b { color: var(--danger); }
+.pay-box.wait { border-color: var(--accent); }
+.pay-pill { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.pay-pill.held, .pay-pill.paid { color: var(--ok); border-color: var(--ok); }
+.pay-pill.pending { color: var(--accent); border-color: var(--accent); }
+.pay-pill.failed { color: var(--danger); border-color: var(--danger); }
+.install-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 14px; font-size: 15px; line-height: 1.5; color: var(--text-2); }
+.install-steps b { color: var(--text); }
+.install-steps svg { color: var(--accent); }
+
 /* загрузка: бульдог */
 .pk-loader { min-height: 70dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text); }
 .pk-dog { animation: pk-bounce .55s cubic-bezier(.3,.7,.4,1) infinite alternate; }
