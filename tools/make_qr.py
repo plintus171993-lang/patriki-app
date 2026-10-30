@@ -42,9 +42,9 @@ html,body {{ margin:0; background:#0E0E0D; }}
 .p {{ width:148mm; height:210mm; box-sizing:border-box; padding:14mm 12mm; background:#0E0E0D; color:#F2EFE8;
      font-family:'IBM Plex Sans',Arial,sans-serif; display:flex; flex-direction:column; align-items:center; text-align:center; position:relative; overflow:hidden; }}
 .eyebrow {{ font-family:Oswald,'Arial Narrow',sans-serif; letter-spacing:3px; font-size:11pt; color:#D4A84B; }}
-h1 {{ font-family:Oswald,'Arial Narrow',sans-serif; font-weight:700; font-size:34pt; line-height:1; margin:4mm 0 3mm; letter-spacing:1px; }}
+h1 {{ font-family:Oswald,'Arial Narrow',sans-serif; font-weight:700; font-size:28pt; line-height:1; margin:2mm 0 2mm; letter-spacing:1px; }}
 .sub {{ font-size:11.5pt; color:#C9C5BC; line-height:1.45; margin:0 0 7mm; }}
-.qr {{ width:78mm; height:78mm; border-radius:4mm; overflow:hidden; border:1.2mm solid #D4A84B; }}
+.qr {{ width:72mm; height:72mm; border-radius:4mm; overflow:hidden; border:1.2mm solid #D4A84B; }}
 .qr img {{ width:100%; height:100%; display:block; }}
 .cta {{ font-family:Oswald,sans-serif; font-size:15pt; letter-spacing:2px; margin:6mm 0 2mm; }}
 .small {{ font-size:9.5pt; color:#A19D93; line-height:1.5; }}
@@ -52,13 +52,13 @@ h1 {{ font-family:Oswald,'Arial Narrow',sans-serif; font-weight:700; font-size:3
 .draft {{ position:absolute; top:150mm; left:-20mm; right:-20mm; transform:rotate(-24deg); background:rgba(229,115,95,.85); color:#fff;
          font-family:Oswald,sans-serif; font-size:22pt; letter-spacing:4px; padding:3mm 0; }}
 </style></head><body><div class="p">
-<span class="eyebrow">ПАТРИКИ ПАБ · САНКТ-ПЕТЕРБУРГ</span>
+<img src="../www/img/logo-full.svg" style="width:62mm;height:auto;margin:-4mm 0 2mm">
 <h1>ДОСТАВКА<br>ИЗ ПАБА</h1>
 <p class="sub">Мясо из смокера, бургеры и закуски — домой<br>Петроградская сторона и Мурино · 12:00–01:00</p>
 <div class="qr"><img src="qr.svg"></div>
 <div class="cta">НАВЕДИТЕ КАМЕРУ</div>
 <div class="small">iPhone и Android · заказ в пару касаний<br>оплата онлайн или курьеру</div>
-<div class="foot"><img src="../www/icons/icon-192.png" width="40" height="40" style="border-radius:8px">ПАТРИКИ ПАБ</div>
+<div class="foot"><img src="../www/img/emblem.svg" width="34" height="34">КАРТА ГОСТЯ: БАЛЛЫ ЗА КАЖДЫЙ ЗАКАЗ</div>
 {'<div class="draft">ОБРАЗЕЦ · QR ВРЕМЕННЫЙ</div>' if draft else ''}
 </div></body></html>'''
 (out / 'poster.html').write_text(poster)
