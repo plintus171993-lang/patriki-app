@@ -36,10 +36,13 @@ jobs:
           npm install --no-audit --no-fund
           mkdir -p www/vendor
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
+          cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
 
       - name: Android-проект, иконки и заставка
         run: |
           npx cap add android
+          # камера — для «Кассы · QR» в админке (сканирование карты гостя)
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#&\n    <uses-permission android:name="android.permission.CAMERA" />#' android/app/src/main/AndroidManifest.xml
           npx @capacitor/assets generate --android \
             --iconBackgroundColor '#0E0E0D' --iconBackgroundColorDark '#0E0E0D' \
             --splashBackgroundColor '#0E0E0D' --splashBackgroundColorDark '#0E0E0D'
@@ -108,9 +111,10 @@ jobs:
 
       - name: Библиотека Supabase внутрь сайта
         run: |
-          npm install --no-audit --no-fund --no-save @supabase/supabase-js@2
+          npm install --no-audit --no-fund --no-save @supabase/supabase-js@2 qrcode-generator@1
           mkdir -p www/vendor
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
+          cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
 
       - uses: actions/configure-pages@v5
 
