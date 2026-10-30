@@ -95,9 +95,11 @@ const S = {
 };
 const venue = () => S.venues.find((v) => v.id === S.venueId) || S.venues[0] || {};
 const itemById = (id) => S.items.find((x) => x.id === id);
+// блюдо доступно: в продаже и не в стоп-листе выбранного заведения
+const onSale = (x) => x && x.available !== false && !(x.stop_in || []).includes(S.venueId);
 const cartLines = () => Object.entries(S.cart)
   .map(([id, qty]) => ({ item: itemById(id), qty }))
-  .filter((l) => l.item && l.item.available !== false && l.qty > 0);
+  .filter((l) => onSale(l.item) && l.qty > 0);
 const cartCount = () => cartLines().reduce((s, l) => s + l.qty, 0);
 const cartSum = () => cartLines().reduce((s, l) => s + l.qty * l.item.price, 0);
 function setQty(id, qty) {
@@ -106,6 +108,22 @@ function setQty(id, qty) {
 }
 const addrLine = (a) => [a.street, a.flat && `кв. ${a.flat}`, a.entrance && `под. ${a.entrance}`, a.floor && `эт. ${a.floor}`, a.intercom && `домофон ${a.intercom}`].filter(Boolean).join(', ');
 const verified = () => !!S.me?.verified;
+
+/* ---------- согласия (152-ФЗ, 38-ФЗ) ---------- */
+const CV = CONFIG.LEGAL.CONSENT_VERSION;
+const hasPdConsent = () => S.profile.pd_consent_version === CV || keep.get('pdConsent', '') === CV;
+const doc = (hash, text) => `<a href="legal/#${hash}" target="_blank" rel="noopener">${text}</a>`;
+// Галочка согласия: не отмечена заранее, без неё заказ и вход не отправляются.
+// Если гость уже дал согласие этой редакции — галочку не показываем.
+const ConsentBox = (checked = false) => hasPdConsent() ? '' : `<label class="check consent">
+  <input type="checkbox" name="pdConsent" ${checked ? 'checked' : ''}>
+  <span>Даю ${doc('consent', 'согласие на обработку персональных данных')} в соответствии с ${doc('privacy', 'Политикой')}</span></label>`;
+async function grantPd(source) {
+  keep.set('pdConsent', CV);
+  if (S.profile.pd_consent_version === CV) return;
+  try { await store.recordConsent('pd', true, CV, source); S.profile = { ...S.profile, pd_consent_version: CV }; }
+  catch (e) { console.warn('Согласие не записалось', e); }
+}
 
 async function loadGuest() {
   try {
@@ -175,7 +193,7 @@ function VenueSwitch() {
 /* ---------- главная и меню ---------- */
 function Home() {
   const v = venue();
-  const hits = S.items.filter((x) => x.popular && x.available !== false).slice(0, 8);
+  const hits = S.items.filter((x) => x.popular && onSale(x)).slice(0, 8);
   const hello = S.profile.name ? `Привет, ${esc(S.profile.name.split(' ')[0])}!` : 'САНКТ-ПЕТЕРБУРГ';
   return `<main class="screen">
     <header class="between">
@@ -217,12 +235,13 @@ function Menu() {
       <h2 class="eyebrow accent" style="margin:0">${esc(c.name)}</h2>
       ${S.items.filter((x) => x.category_id === c.id).map(Dish).join('')}
     </section>`).join('')}
+    <p class="muted" style="font-size:12px;line-height:1.6;margin:0">Состав, пищевая ценность и аллергены — в карточке блюда (нажмите на фото). Фото блюд иллюстративные. Цены указаны в рублях. Алкоголь доставкой не продаётся.</p>
     </div>
   </main>`;
 }
 
 function Dish(x) {
-  const off = x.available === false;
+  const off = !onSale(x);
   const q = S.cart[x.id] || 0;
   const desc = [x.weight, x.description].filter(Boolean).join(' · ');
   return `<article class="dish ${off ? 'off' : ''}">
@@ -282,6 +301,11 @@ function Checkout() {
     <div class="row">${backBtn('/cart', 'Назад в корзину')}<h1 class="h1" style="font-size:26px">Оформление</h1></div>
     <form id="checkout" class="stack" style="gap:20px" novalidate>
       <section class="stack">
+        <span class="eyebrow">Откуда везём</span>
+        ${VenueSwitch()}
+        <span class="muted" style="font-size:13px;line-height:1.5">Заказ получит паб «${esc(v.name)}» — доставка: ${esc(v.zone || '')}. Если адрес в другой зоне, переключите заведение.</span>
+      </section>
+      <section class="stack">
         <span class="eyebrow">Куда доставить · ${esc(v.zone || v.name)}</span>
         ${S.addresses.length ? `<div class="stack" role="radiogroup" aria-label="Сохранённые адреса">
           ${S.addresses.slice(0, 5).map((a) => `<button type="button" class="addr-opt" role="radio" aria-checked="${k.addr === a.id}" data-act="pick-addr" data-id="${esc(a.id)}">
@@ -331,7 +355,8 @@ function Checkout() {
         <div class="sum-row"><span>Доставка</span><span>${v.delivery_fee ? rub(v.delivery_fee) : 'бесплатно'}</span></div>
         <div class="total"><span class="h2">К оплате</span><b>${rub(total)}</b></div>
       </div>
-      <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы принимаете <a href="legal/#offer">условия оферты</a> и соглашаетесь с <a href="legal/#privacy">политикой обработки персональных данных</a>.</p>
+      ${ConsentBox(k.pdTick)}
+      <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы принимаете условия ${doc('offer', 'публичной оферты')} и ${doc('terms', 'пользовательского соглашения')}.</p>
       <p id="co-err" class="error" role="alert" style="margin:0"></p>
       <button class="btn btn-accent btn-block" type="submit">Отправить заказ · ${rub(total)}</button>
     </form>
@@ -344,6 +369,7 @@ function saveCheckoutForm() {
   S.draftContact = { name: d.name || '', phone: d.phone || '' };
   if ('street' in d) S.draftAddr = { ...S.draftAddr, street: d.street || '', flat: d.flat || '', entrance: d.entrance || '', floor: d.floor || '', intercom: d.intercom || '', save: !!d.saveAddr || store.guestOff };
   S.checkout.noCall = !!d.noCall;
+  S.checkout.pdTick = !!d.pdConsent;
   S.checkout.comment = d.comment || '';
   if (d.time !== undefined) S.checkout.time = d.time;
 }
@@ -354,11 +380,17 @@ async function submitCheckout(form) {
   const saved = S.addresses.find((a) => a.id === k.addr);
   const addr = saved || S.draftAddr;
   if (!addr.street?.trim()) return (err.textContent = 'Укажите улицу и дом');
+  // защита от ошибки точкой: адрес в Мурино, а выбран паб на Петроградке (и наоборот)
+  const where = addrLine(addr).toLowerCase();
+  if (S.venueId !== 'murino' && /мурин|девятк/.test(where)) return (err.textContent = 'Похоже, адрес в Мурино — выберите вверху заведение «Мурино»');
+  if (S.venueId === 'murino' && !/мурин/.test(where) && /петроград|пушкарск|большой пр|каменноостров|кронверк/.test(where)) return (err.textContent = 'Похоже, адрес на Петроградской стороне — выберите вверху заведение «Петроградка»');
   if (!c.name.trim()) return (err.textContent = 'Укажите имя');
   if (phone10(c.phone).length !== 10) return (err.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX');
   if (k.when === 'time' && !k.time) return (err.textContent = 'Выберите время доставки');
+  if (!hasPdConsent() && !k.pdTick) return (err.textContent = 'Отметьте согласие на обработку персональных данных — без него мы не сможем доставить заказ');
   const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Отправляем…';
   try {
+    await grantPd('checkout');
     const comment = [k.noCall ? '⚑ Не звонить для подтверждения' : '', addr.comment || '', k.comment.trim()].filter(Boolean).join('. ');
     const res = await store.placeOrder({
       venue_id: S.venueId,
@@ -366,6 +398,7 @@ async function submitCheckout(form) {
       address: addrLine(addr), comment,
       when_text: k.when === 'asap' ? 'Как можно скорее' : `К ${k.time}`,
       payment: k.payment,
+      pd_consent: CV,
       items: cartLines().map(({ item, qty }) => ({ item_id: item.id, name: item.name, price: item.price, qty })),
     });
     const online = k.payment === 'online';
@@ -381,7 +414,7 @@ async function submitCheckout(form) {
       else if (S.draftAddr.save) { await store.saveAddress(S.draftAddr); S.draftAddr = { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true }; }
       S.addresses = await store.listAddresses();
     } catch (e2) { console.warn('Не сохранили профиль', e2); }
-    S.history = null; S.draftContact = null; S.checkout = { ...S.checkout, addr: null, comment: '', noCall: false };
+    S.history = null; S.draftContact = null; S.checkout = { ...S.checkout, addr: null, comment: '', noCall: false, pdTick: false };
     location.hash = '#/order/' + res.id;
     if (online) payNow(res.id);                                     // сразу на страницу оплаты
   } catch (ex) {
@@ -510,6 +543,7 @@ function Profile() {
 }
 const InfoRows = () => `<nav class="menu-group" aria-label="О пабе">
   ${row('#/info', icon.info, 'Адреса и контакты')}
+  ${row('legal/', icon.id, 'Документы')}
   <a class="menu-row" href="tel:${esc((venue().phone || '').replace(/[^+\d]/g, ''))}"><span class="row">${icon.phone}<span>Позвонить в паб</span></span>${icon.chev}</a>
 </nav>`;
 
@@ -537,7 +571,7 @@ function repeatOrder(id) {
   let added = 0, missing = 0;
   for (const l of o.items || []) {
     const it = itemById(l.item_id);
-    if (it && it.available !== false) { setQty(it.id, (S.cart[it.id] || 0) + l.qty); added += l.qty; } else missing++;
+    if (onSale(it)) { setQty(it.id, (S.cart[it.id] || 0) + l.qty); added += l.qty; } else missing++;
   }
   toast(missing ? `Добавили ${added} шт. Некоторых блюд сейчас нет` : 'Заказ добавлен в корзину');
   location.hash = '#/cart';
@@ -610,6 +644,18 @@ function PersonalData() {
       <p class="error" role="alert" style="margin:0"></p>
       <button type="submit" class="btn btn-accent btn-block">Сохранить</button>
     </form>
+    <section class="card stack">
+      <div class="between" style="gap:16px">
+        <span class="stack" style="gap:4px"><b>Акции и новости</b>
+          <span class="muted" style="font-size:12px;line-height:1.5">SMS, push и сообщения в мессенджерах о скидках и событиях паба. ${doc('ads', 'Согласие на рассылку')}. Отключить можно здесь в любой момент.</span></span>
+        <button type="button" class="switch" role="switch" data-act="marketing" aria-checked="${!!p.marketing_consent}" aria-label="Акции и новости"></button>
+      </div>
+    </section>
+    <section class="stack" style="gap:8px">
+      <span class="eyebrow">Мои данные</span>
+      <span class="muted" style="font-size:13px;line-height:1.5">${p.pd_consent_version ? `Согласие на обработку персональных данных дано${p.pd_consent_at ? ' ' + new Date(p.pd_consent_at).toLocaleDateString('ru-RU') : ''}. ` : ''}Удаление профиля = отзыв согласия: сотрём имя, телефон, адреса и день рождения. В истории заказов останутся только суммы — их требует бухгалтерский учёт.</span>
+      <button type="button" class="btn btn-danger btn-block" data-act="delete-account">Удалить профиль и мои данные</button>
+    </section>
   </main>`;
 }
 
@@ -640,10 +686,10 @@ function Verify() {
     <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.5">Подтвердите номер — и заказы, адреса и баллы будут с вами на любом телефоне</p>
     <form id="phone-form" class="stack" style="gap:14px">
       <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone required placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
+      ${ConsentBox()}
       <p class="error" role="alert" style="margin:0"></p>
       <button type="submit" class="btn btn-accent btn-block">Получить код</button>
     </form>
-    <p class="muted" style="font-size:12px;text-align:center;margin:0;line-height:1.5">Нажимая «Получить код», вы соглашаетесь с <a href="legal/#privacy">политикой обработки персональных данных</a>.</p>
   </main>`;
 }
 let verifyTimer = null;
@@ -704,16 +750,27 @@ function Info() {
       <span class="eyebrow">О доставке</span>
       <span style="font-size:14px;line-height:1.6;color:var(--text-2)">Доставляем еду и безалкогольные напитки. Алкоголь по закону продаётся только в зале. Оплата онлайн (где включена), картой или наличными курьеру.</span>
     </section>
+    ${Seller()}
     <nav class="menu-group" aria-label="Документы">
-      <a class="menu-row" href="legal/#requisites"><span class="row">${icon.id}<span>Реквизиты</span></span>${icon.chev}</a>
-      <a class="menu-row" href="legal/#offer"><span class="row">${icon.info}<span>Оферта и доставка</span></span>${icon.chev}</a>
-      <a class="menu-row" href="legal/#payment"><span class="row">${icon.card}<span>Оплата и возврат</span></span>${icon.chev}</a>
-      <a class="menu-row" href="legal/#privacy"><span class="row">${icon.info}<span>Политика конфиденциальности</span></span>${icon.chev}</a>
+      ${[['offer', icon.info, 'Публичная оферта'], ['terms', icon.info, 'Пользовательское соглашение'], ['payment', icon.card, 'Оплата и возврат'],
+         ['privacy', icon.id, 'Политика обработки персональных данных'], ['consent', icon.id, 'Согласие на обработку данных'], ['ads', icon.info, 'Согласие на рассылку']]
+        .map(([h, ic, t]) => `<a class="menu-row" href="legal/#${h}"><span class="row">${ic}<span>${t}</span></span>${icon.chev}</a>`).join('')}
     </nav>
     <footer class="info-foot">
       © 2026 «<span data-act="secret">Патрики</span> Паб» · Санкт-Петербург<br>версия ${esc(CONFIG.APP_VERSION)}${store.demo ? ' · демо' : ''}
     </footer>
   </main>`;
+}
+
+// Сведения о продавце — Закон «О защите прав потребителей», ст. 8–9
+function Seller() {
+  const L = CONFIG.LEGAL;
+  const rows = [['Продавец', L.SELLER], ['ИНН', L.INN], ['ОГРН', L.OGRN], ['Адрес', L.ADDRESS], ['Почта', L.EMAIL], ['Телефон', L.PHONE]].filter(([, v]) => v);
+  if (!L.SELLER) return '';
+  return `<section class="card stack" style="gap:6px">
+    <span class="eyebrow">Продавец</span>
+    ${rows.map(([k, v]) => `<div class="sum-row" style="font-size:13px"><span class="muted">${k}</span><span style="text-align:right">${esc(v)}</span></div>`).join('')}
+  </section>`;
 }
 
 /* ---------- лист с блюдом ---------- */
@@ -729,8 +786,14 @@ function openItem(id) {
       <div class="stack" style="gap:6px"><h2 class="h2" style="text-transform:none;font-size:24px;letter-spacing:.3px">${esc(x.name)}</h2>
         ${x.weight ? `<span class="muted">${esc(x.weight)}</span>` : ''}
         ${x.description ? `<span style="color:var(--text-2);line-height:1.5">${esc(x.description)}</span>` : ''}</div>
+      ${x.composition || x.nutrition || x.allergens ? `<dl class="facts">
+        ${x.composition ? `<dt>Состав</dt><dd>${esc(x.composition)}</dd>` : ''}
+        ${x.nutrition ? `<dt>Пищевая ценность</dt><dd>${esc(x.nutrition)}</dd>` : ''}
+        ${x.allergens ? `<dt>Аллергены</dt><dd>${esc(x.allergens)}</dd>` : ''}
+      </dl>` : ''}
+      <span class="muted" style="font-size:12px;line-height:1.5">Есть аллергия? Напишите в комментарии к заказу или позвоните — подскажем по составу.</span>
       <div class="between"><span class="price" style="font-size:26px">${rub(x.price)}</span>
-        ${x.available === false ? '<span class="muted">Нет в наличии</span>' : Stepper(x.id, q)}</div>
+        ${!onSale(x) ? '<span class="muted">Нет в наличии</span>' : Stepper(x.id, q)}</div>
       <button type="button" class="btn btn-ghost btn-block" data-close>Закрыть</button>
     </div>`;
   };
@@ -785,11 +848,46 @@ function maybeShowInstallHint() {
   document.body.appendChild(wrap);
 }
 
+/* ---------- удаление профиля ---------- */
+function deleteSheet() {
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  wrap.innerHTML = `<div class="sheet" role="alertdialog" aria-modal="true" aria-labelledby="del-h">
+    <span class="grab"></span>
+    <h2 class="h2" id="del-h">Удалить профиль?</h2>
+    <p style="margin:0;color:var(--text-2);line-height:1.6">Сотрём имя, телефон, адреса, день рождения и привязку номера. В прошлых заказах останутся только состав и суммы — без ваших данных. Баллы, если они были, сгорят. Отменить удаление нельзя.</p>
+    <p class="error" role="alert" style="margin:0"></p>
+    <button type="button" class="btn btn-danger btn-block" data-x="yes">Удалить навсегда</button>
+    <button type="button" class="btn btn-ghost btn-block" data-x="no">Оставить</button>
+  </div>`;
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap || e.target.closest('[data-x=no]')) return wrap.remove();
+    const yes = e.target.closest('[data-x=yes]'); if (!yes) return;
+    yes.disabled = true; yes.textContent = 'Удаляем…';
+    try {
+      await store.deleteAccount();
+      for (const k of ['customer', 'orders', 'pdConsent']) { try { localStorage.removeItem('patriki.ui.' + k); } catch { /* нет доступа */ } }
+      S.orders = []; S.history = null; S.draftContact = null; S.addresses = [];
+      S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
+      await loadGuest();
+      wrap.remove(); location.hash = '#/profile'; render(); toast('Профиль и данные удалены', 3500);
+    } catch (ex) {
+      console.error(ex);
+      wrap.querySelector('.error').textContent = ex.message === 'ACTIVE_ORDER'
+        ? 'Сейчас у вас есть незавершённый заказ. Удалить профиль можно после доставки.'
+        : 'Не получилось удалить. Попробуйте позже или напишите нам — удалим вручную.';
+      yes.disabled = false; yes.textContent = 'Удалить навсегда';
+    }
+  });
+  document.body.appendChild(wrap);
+  wrap.querySelector('[data-x=no]').focus();
+}
+
 /* ---------- события ---------- */
 app.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const { act, id, v } = b.dataset;
-  if (act === 'venue') { S.venueId = id; keep.set('venue', id); render(); }
+  if (act === 'venue') { if (route() === '/checkout') saveCheckoutForm(); S.venueId = id; keep.set('venue', id); render(); }
   if (act === 'inc' || act === 'dec') {
     setQty(id, (S.cart[id] || 0) + (act === 'inc' ? 1 : -1));
     const y = window.scrollY; render(); window.scrollTo(0, y);
@@ -817,6 +915,17 @@ app.addEventListener('click', async (e) => {
     S.history = null; S.verify = { step: 'phone', phone: '', ctx: null, until: 0, back: '/profile' };
     await loadGuest(); render(); toast('Вы вышли из профиля');
   }
+  if (act === 'marketing') {
+    const on = b.getAttribute('aria-checked') !== 'true';
+    b.setAttribute('aria-checked', String(on));
+    try {
+      if (on && !hasPdConsent()) await grantPd('profile');
+      await store.recordConsent('marketing', on, CONFIG.LEGAL.EDITION, 'profile');
+      S.profile = { ...S.profile, marketing_consent: on };
+      toast(on ? 'Будем присылать акции' : 'Рассылка отключена');
+    } catch (ex) { console.error(ex); b.setAttribute('aria-checked', String(!on)); toast('Не удалось сохранить'); }
+  }
+  if (act === 'delete-account') deleteSheet();
   if (act === 'secret') {
     const now = Date.now();
     S.infoTaps = [...S.infoTaps.filter((t) => now - t < 3000), now];
@@ -829,6 +938,8 @@ app.addEventListener('submit', async (e) => {
   if (f.id === 'checkout') { e.preventDefault(); return submitCheckout(f); }
   if (f.id === 'phone-form') {
     e.preventDefault();
+    if (!hasPdConsent() && !f.pdConsent?.checked) return (f.querySelector('.error').textContent = 'Отметьте согласие на обработку персональных данных');
+    if (!hasPdConsent()) keep.set('pdConsent', CV);
     return sendCode(phone10(f.phone.value), f.querySelector('.error'), f.querySelector('[type=submit]'));
   }
   if (f.id === 'code-form') {
@@ -840,6 +951,7 @@ app.addEventListener('submit', async (e) => {
     try {
       await store.confirmPhone(S.verify.phone, code, S.verify.ctx);
       await loadGuest();
+      if (keep.get('pdConsent', '') === CV && S.profile.pd_consent_version !== CV) await grantPd('verify');
       if (!S.profile.phone || phone10(S.profile.phone) !== S.verify.phone) {
         S.profile = await store.saveProfile({ ...S.profile, phone: fmtPhone(S.verify.phone) });
       }
@@ -858,7 +970,7 @@ app.addEventListener('submit', async (e) => {
     const d = Object.fromEntries(new FormData(f));
     if (d.phone && phone10(d.phone).length !== 10) return (f.querySelector('.error').textContent = 'Введите номер полностью');
     try {
-      S.profile = await store.saveProfile({ name: d.name, phone: fmtPhone(d.phone), birthday: d.birthday || null });
+      S.profile = await store.saveProfile({ ...S.profile, name: d.name, phone: fmtPhone(d.phone), birthday: d.birthday || null });
       toast('Сохранено'); location.hash = '#/profile';
     } catch (ex) { console.error(ex); f.querySelector('.error').textContent = 'Не удалось сохранить'; }
   }

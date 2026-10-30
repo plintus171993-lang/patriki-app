@@ -159,19 +159,52 @@ export const store = {
   },
 
   async getProfile() {
-    if (this.demo) return LS.get('profile', { name: '', phone: '', birthday: null });
-    const me = await this.me(); if (!me) return { name: '', phone: '', birthday: null };
+    const empty = { name: '', phone: '', birthday: null, pd_consent_version: null, marketing_consent: false };
+    if (this.demo) return { ...empty, ...LS.get('profile', {}) };
+    const me = await this.me(); if (!me) return empty;
     const { data } = await sb.from('profiles').select('*').eq('id', me.id).maybeSingle();
-    return data || { name: '', phone: '', birthday: null };
+    return { ...empty, ...(data || {}) };
+  },
+
+  // Согласия: kind = 'pd' (обработка персональных данных) или 'marketing' (рекламные рассылки).
+  // Сервер пишет журнал согласий: кто, когда, какая редакция.
+  async recordConsent(kind, granted, version, source) {
+    if (this.demo) {
+      const p = LS.get('profile', {});
+      if (kind === 'pd') { p.pd_consent_version = granted ? version : null; p.pd_consent_at = granted ? new Date().toISOString() : null; }
+      else { p.marketing_consent = granted; p.marketing_consent_at = new Date().toISOString(); }
+      LS.set('profile', p);
+      const log = LS.get('consent_log', []); log.unshift({ kind, granted, version, source, created_at: new Date().toISOString() }); LS.set('consent_log', log.slice(0, 50));
+      return;
+    }
+    if (!(await this.me())) return;
+    const { error } = await sb.rpc('record_consent', { p_kind: kind, p_granted: granted, p_version: version, p_source: source });
+    if (error) throw error;
+  },
+
+  // Удалить профиль: профиль, адреса и коды входа стираются, в заказах — имя, телефон и адрес.
+  async deleteAccount() {
+    if (this.demo) {
+      const os = LS.get('orders', []);
+      if (os.some((o) => o.user_id === 'demo-user' && ['new', 'cooking', 'delivering'].includes(o.status) && !(o.payment === 'online' && ['pending', 'failed'].includes(o.payment_status)))) throw new Error('ACTIVE_ORDER');
+      LS.set('orders', os.map((o) => (o.user_id === 'demo-user' ? { ...o, user_id: null, customer_name: 'Профиль удалён', phone: '', address: 'удалено', comment: '' } : o)));
+      LS.set('me', { id: 'demo-user', phone: '', verified: false });
+      LS.set('profile', {}); LS.set('addresses', []);
+      return;
+    }
+    const { error } = await sb.rpc('delete_my_account');
+    if (error) throw new Error(/ACTIVE_ORDER/.test(error.message) ? 'ACTIVE_ORDER' : error.message);
+    await sb.auth.signOut();
+    await this.ensureGuest();
   },
 
   async saveProfile(p) {
     const row = { name: (p.name || '').trim(), phone: p.phone || '', birthday: p.birthday || null };
-    if (this.demo) { LS.set('profile', row); return row; }
-    const me = await this.me(); if (!me) return row;
+    if (this.demo) { const all = { ...LS.get('profile', {}), ...row }; LS.set('profile', all); return { ...p, ...all }; }
+    const me = await this.me(); if (!me) return { ...p, ...row };
     const { error } = await sb.from('profiles').upsert({ id: me.id, ...row, updated_at: new Date().toISOString() });
     if (error) throw error;
-    return row;
+    return { ...p, ...row };
   },
 
   async listAddresses() {
@@ -270,10 +303,12 @@ export const store = {
   },
 
   /* ---------------- управляющий ---------------- */
-  async adminSignIn(email, password) {
+  // demoVenue — только для демо: войти как управляющий конкретного заведения ('' = владелец)
+  async adminSignIn(email, password, demoVenue = '') {
     if (this.demo) {
       if (password !== CONFIG.DEMO_ADMIN_PASSWORD) throw new Error('Неверный пароль');
       sessionStorage.setItem('patriki.admin', '1');
+      sessionStorage.setItem('patriki.adminVenue', demoVenue);
       return true;
     }
     const { error } = await sb.auth.signInWithPassword({ email, password });
@@ -284,9 +319,41 @@ export const store = {
   },
 
   async adminSignOut() {
-    if (this.demo) { sessionStorage.removeItem('patriki.admin'); return; }
+    if (this.demo) { sessionStorage.removeItem('patriki.admin'); sessionStorage.removeItem('patriki.adminVenue'); return; }
     await sb.auth.signOut();
     await this.ensureGuest();
+  },
+
+  // Кто я: { venue_id: null|'petrogradka'|…, owner: true|false }
+  async myAdmin() {
+    if (this.demo) { const v = sessionStorage.getItem('patriki.adminVenue') || null; return { venue_id: v, owner: !v, name: '' }; }
+    const { data, error } = await sb.rpc('my_admin');
+    if (error) throw error;
+    return data || { venue_id: null, owner: true };
+  },
+
+  // Стоп-лист конкретного заведения
+  async setStop(itemId, venueId, stopped) {
+    if (this.demo) {
+      const items = LS.get('items', []); const x = items.find((i) => i.id === itemId);
+      const cur = new Set(x.stop_in || []); stopped ? cur.add(venueId) : cur.delete(venueId); x.stop_in = [...cur];
+      LS.set('items', items); return x.stop_in;
+    }
+    const { data, error } = await sb.rpc('set_stop', { p_item: itemId, p_venue: venueId, p_stopped: stopped });
+    if (error) throw error;
+    return data;
+  },
+
+  // Передать новый заказ в другое заведение
+  async transferOrder(id, toVenue) {
+    if (this.demo) {
+      const os = LS.get('orders', []); const o = os.find((x) => x.id === id);
+      const from = LS.get('venues', []).find((v) => v.id === o.venue_id)?.name || o.venue_id;
+      o.transferred_from = o.venue_id; o.venue_id = toVenue; o.comment = (`⇄ Передан из «${from}». ` + (o.comment || '')).trim();
+      LS.set('orders', os); return;
+    }
+    const { error } = await sb.rpc('transfer_order', { p_id: id, p_to: toVenue });
+    if (error) throw error;
   },
 
   async isAdmin() {
@@ -352,7 +419,7 @@ export const store = {
   },
 
   async listOrders() {
-    if (this.demo) return LS.get('orders', []).slice(0, 100);
+    if (this.demo) { const v = sessionStorage.getItem('patriki.adminVenue'); return LS.get('orders', []).filter((o) => !v || o.venue_id === v).slice(0, 100); }
     const { data, error } = await sb.from('orders').select('*').order('created_at', { ascending: false }).limit(100);
     if (error) throw error;
     return data;

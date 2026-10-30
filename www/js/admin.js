@@ -2,7 +2,7 @@
 import { store } from './store.js';
 import { logoMark } from './logo.js';
 
-const A = { tab: 'orders', filter: 'active', orders: [], menu: null, catId: null, unsub: null, seen: new Set(), first: true };
+const A = { tab: 'orders', filter: 'active', venue: 'all', me: null, orders: [], menu: null, catId: null, unsub: null, seen: new Set(), first: true };
 let root, ctx;
 
 const STATUS = { new: 'Новый', cooking: 'Готовим', delivering: 'В пути', done: 'Доставлен', cancelled: 'Отменён' };
@@ -23,7 +23,8 @@ function drawLogin(msg = '') {
     <h1 class="h1" style="text-align:center;font-size:24px">Вход для управляющего</h1>
     <form id="adm-login" class="stack" style="gap:14px">
       ${store.demo
-        ? '<div class="demo-banner">Демо-режим: сервер ещё не подключён. Пароль для входа — <b>patriki</b>. Изменения видны только в этом браузере.</div>'
+        ? `<div class="demo-banner">Демо-режим: сервер ещё не подключён. Пароль для входа — <b>patriki</b>. Изменения видны только в этом браузере.</div>
+           <label class="field">Войти как (только в демо)<select class="select" name="demoVenue"><option value="">Владелец — оба заведения</option><option value="petrogradka">Управляющий Петроградки</option><option value="murino">Управляющий Мурино</option></select></label>`
         : '<label class="field">Email<input class="input" name="email" type="email" autocomplete="username" required></label>'}
       <label class="field">Пароль<input class="input" name="password" type="password" autocomplete="current-password" required></label>
       <p class="error" role="alert" style="margin:0">${esc(msg)}</p>
@@ -35,13 +36,15 @@ function drawLogin(msg = '') {
     e.preventDefault();
     const d = Object.fromEntries(new FormData(e.target));
     const b = e.target.querySelector('[type=submit]'); b.disabled = true; b.textContent = 'Проверяем…';
-    try { await store.adminSignIn(d.email || '', d.password || ''); A.menu = null; renderAdmin(root, ctx); }
+    try { await store.adminSignIn(d.email || '', d.password || '', d.demoVenue || ''); A.menu = null; A.me = null; renderAdmin(root, ctx); }
     catch (ex) { drawLogin(ex.message || 'Не удалось войти'); }
   });
 }
 
 /* ---------- данные ---------- */
 async function loadAll() {
+  A.me = await store.myAdmin();
+  if (!A.me.owner) A.venue = A.me.venue_id;
   A.menu = await store.getMenu();
   A.catId = A.catId || A.menu.categories[0]?.id;
   await loadOrders();
@@ -67,13 +70,21 @@ function beep() {
   } catch { /* звук недоступен */ }
 }
 
+/* ---------- роли и заведения ---------- */
+const owner = () => !!A.me?.owner;
+const vName = (id) => A.menu?.venues.find((v) => v.id === id)?.name || id;
+const myVenues = () => (owner() ? A.menu.venues : A.menu.venues.filter((v) => v.id === A.me.venue_id));
+const VCLASS = (id) => 'v-' + String(id).replace(/[^a-z0-9_-]/gi, '');
+const inScope = (o) => A.venue === 'all' || o.venue_id === A.venue;
+
 /* ---------- каркас ---------- */
 function draw() {
-  const newCount = A.orders.filter((o) => o.status === 'new' && !unpaid(o)).length;
+  const newCount = A.orders.filter((o) => o.status === 'new' && !unpaid(o) && inScope(o)).length;
+  const role = owner() ? 'ВЛАДЕЛЕЦ · ВСЕ ЗАВЕДЕНИЯ' : 'УПРАВЛЯЮЩИЙ · ' + vName(A.me.venue_id).toUpperCase();
   const tab = (id, label) => `<button type="button" class="chip" data-a="tab" data-v="${id}" aria-current="${A.tab === id}">${label}</button>`;
   root.innerHTML = `<main class="screen">
     <div class="admin-top">
-      <div class="brand">${logoMark(40)}<div><div class="brand-name" style="font-size:18px">УПРАВЛЕНИЕ</div><div class="brand-sub">ПАТРИКИ ПАБ</div></div></div>
+      <div class="brand">${logoMark(40)}<div><div class="brand-name" style="font-size:18px">УПРАВЛЕНИЕ</div><div class="brand-sub">${ctx.esc(role)}</div></div></div>
       <div class="row"><a class="btn btn-ghost btn-sm" href="#/">В приложение</a><button type="button" class="btn btn-ghost btn-sm" data-a="logout">Выйти</button></div>
     </div>
     ${store.demo ? '<div class="demo-banner">Демо-режим: сервер не подключён, изменения сохраняются только в этом браузере.</div>' : ''}
@@ -88,18 +99,25 @@ const unpaid = (o) => o.payment === 'online' && ['pending', 'failed'].includes(o
 
 function Orders() {
   const { esc, rub } = ctx;
-  const venueName = (id) => A.menu.venues.find((v) => v.id === id)?.name || id;
+  const venueName = vName;
+  const active = (o) => ['new', 'cooking', 'delivering'].includes(o.status) && !unpaid(o);
   // онлайн-заказ без оплаты — ещё не заказ: в «Активных» не показываем
-  const list = A.orders.filter((o) => A.filter === 'all' || (['new', 'cooking', 'delivering'].includes(o.status) && !unpaid(o)));
+  const list = A.orders.filter((o) => inScope(o) && (A.filter === 'all' || active(o)));
+  const vchip = (id, label) => {
+    const n = A.orders.filter((o) => active(o) && (id === 'all' || o.venue_id === id)).length;
+    return `<button type="button" class="chip ${id === 'all' ? '' : VCLASS(id)}" data-a="venue" data-v="${esc(id)}" aria-current="${A.venue === id}">${esc(label)}${n ? ` · ${n}` : ''}</button>`;
+  };
   const f = (id, label) => `<button type="button" class="chip" data-a="filter" data-v="${id}" aria-current="${A.filter === id}">${label}</button>`;
   // сколько заказов у этого гостя среди загруженных (последние 100)
   const visits = (o) => (o.user_id ? A.orders.filter((x) => x.user_id === o.user_id && x.status !== 'cancelled').length : 0);
   return `<div class="stack" style="gap:14px">
     <div id="sms-box">${SmsCodes()}</div>
+    ${owner() && A.menu.venues.length > 1 ? `<div class="tabs" aria-label="Заведение">${vchip('all', 'Все заведения')}${A.menu.venues.map((v) => vchip(v.id, v.name)).join('')}</div>` : ''}
     <div class="tabs">${f('active', 'Активные')}${f('all', 'Все за последнее время')}</div>
-    ${list.length ? `<div class="admin-grid">${list.map((o) => `<article class="card order ${o.status === 'new' ? 'new' : ''}">
+    ${list.length ? `<div class="admin-grid">${list.map((o) => `<article class="card order ${o.status === 'new' ? 'new' : ''} ${VCLASS(o.venue_id)}">
+      <span class="venue-tag ${VCLASS(o.venue_id)}">📍 ${esc(venueName(o.venue_id))}${o.transferred_from ? ` · передан из «${esc(venueName(o.transferred_from))}»` : ''}</span>
       <div class="between"><span class="h2" style="font-size:20px">№${esc(o.number)}</span><span class="status-pill ${esc(o.status)}">${STATUS[o.status] || esc(o.status)}</span></div>
-      <span class="muted" style="font-size:13px">${new Date(o.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${esc(venueName(o.venue_id))} · ${esc(o.when_text || '')}</span>
+      <span class="muted" style="font-size:13px">${new Date(o.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${esc(o.when_text || '')}</span>
       <div class="stack" style="gap:4px">${(o.items || []).map((l) => `<div class="sum-row" style="color:var(--text)"><span>${esc(l.name)} × ${esc(l.qty)}</span><span>${rub(l.price * l.qty)}</span></div>`).join('')}</div>
       <div class="total"><span class="muted">Итого · ${o.payment === 'cash' ? 'наличные' : o.payment === 'online' ? 'онлайн' : 'карта курьеру'}</span><b style="font-size:22px">${rub(o.total)}</b></div>
       ${o.payment === 'online' ? `<span class="pay-pill ${esc(o.payment_status)}" style="align-self:flex-start">💳 ${PAY_RU[o.payment_status] || esc(o.payment_status)}</span>` : ''}
@@ -115,6 +133,8 @@ function Orders() {
       <div class="row" style="flex-wrap:wrap">
         ${unpaid(o) ? '' : NEXT[o.status] ? `<button type="button" class="btn btn-accent btn-sm" data-a="status" data-id="${esc(o.id)}" data-v="${NEXT[o.status][0]}">${NEXT[o.status][1]}</button>` : ''}
         ${['new', 'cooking', 'delivering'].includes(o.status) ? `<button type="button" class="btn btn-danger btn-sm" data-a="status" data-id="${esc(o.id)}" data-v="cancelled">Отменить</button>` : ''}
+        ${o.status === 'new' && !(o.payment === 'online' && ['held', 'paid'].includes(o.payment_status)) ? A.menu.venues.filter((v) => v.id !== o.venue_id).map((v) =>
+          `<button type="button" class="btn btn-ghost btn-sm" data-a="transfer" data-id="${esc(o.id)}" data-v="${esc(v.id)}">Передать → ${esc(v.name)}</button>`).join('') : ''}
       </div>
     </article>`).join('')}</div>` : '<div class="empty">Заказов пока нет. Новые появятся здесь сами, со звуковым сигналом.</div>'}
   </div>`;
@@ -143,6 +163,20 @@ function MenuEditor() {
   const cats = A.menu.categories;
   const cat = cats.find((c) => c.id === A.catId) || cats[0];
   const items = cat ? A.menu.items.filter((x) => x.category_id === cat.id) : [];
+  const own = owner();
+  const stopChips = (x) => myVenues().map((v) => {
+    const off = (x.stop_in || []).includes(v.id);
+    return `<button type="button" class="chip stop-chip ${off ? 'off' : ''}" data-a="stop" data-id="${esc(x.id)}" data-v="${esc(v.id)}" aria-pressed="${off}" title="${off ? 'Вернуть в продажу' : 'В стоп-лист'}">${esc(v.name)}: ${off ? 'стоп' : 'есть'}</button>`;
+  }).join('');
+  if (!own) return `<div class="stack" style="gap:16px">
+    <div class="tabs cat-tabs">${cats.map((c) => `<button type="button" class="chip" data-a="cat" data-v="${esc(c.id)}" aria-current="${c.id === cat?.id}">${esc(c.name)}</button>`).join('')}</div>
+    <div class="card" style="padding:4px 16px">
+      ${items.map((x) => `<div class="adm-item">${photo(x.image_url)}
+        <div class="grow"><div class="name">${esc(x.name)}</div><div class="muted" style="font-size:12px">${esc(ctx.rub(x.price))}${x.available === false ? ' · снято с меню владельцем' : ''}</div></div>
+        <div class="ctl">${stopChips(x)}</div></div>`).join('') || '<div class="empty">В категории пока нет позиций.</div>'}
+    </div>
+    <p class="muted" style="font-size:12px;margin:0">Стоп-лист вашего заведения: нажмите, если блюдо закончилось — гости этой точки не смогут его заказать. Цены и состав меню меняет владелец.</p>
+  </div>`;
   return `<div class="stack" style="gap:16px">
     <div class="tabs cat-tabs">${cats.map((c) => `<button type="button" class="chip" data-a="cat" data-v="${esc(c.id)}" aria-current="${c.id === cat?.id}">${esc(c.name)}</button>`).join('')}
       <button type="button" class="chip" data-a="cat-add" style="border-style:dashed">+ Категория</button></div>
@@ -159,16 +193,17 @@ function MenuEditor() {
     <div class="card" style="padding:4px 16px">
       ${items.length ? items.map((x) => `<div class="adm-item">
         ${photo(x.image_url)}
-        <div class="grow"><div class="name">${esc(x.name)}</div><div class="muted" style="font-size:12px">${esc([x.weight, x.popular ? 'хит' : '', x.available === false ? 'стоп-лист' : ''].filter(Boolean).join(' · '))}</div></div>
+        <div class="grow"><div class="name">${esc(x.name)}</div><div class="muted" style="font-size:12px">${esc([x.weight, x.popular ? 'хит' : '', x.available === false ? 'стоп-лист' : '', !x.composition ? 'нет состава' : ''].filter(Boolean).join(' · '))}</div></div>
         <div class="ctl">
           <label class="sr-only" for="p-${esc(x.id)}">Цена ${esc(x.name)}</label>
           <input id="p-${esc(x.id)}" class="input price-input" inputmode="numeric" data-a="price" data-id="${esc(x.id)}" value="${esc(x.price)}">
-          <button type="button" class="switch" role="switch" aria-checked="${x.available !== false}" aria-label="В наличии: ${esc(x.name)}" data-a="avail" data-id="${esc(x.id)}"></button>
+          ${stopChips(x)}
+          <button type="button" class="switch" role="switch" aria-checked="${x.available !== false}" aria-label="В меню: ${esc(x.name)}" title="Показывать в меню (во всех заведениях)" data-a="avail" data-id="${esc(x.id)}"></button>
           <button type="button" class="icon-btn" data-a="item-edit" data-id="${esc(x.id)}" aria-label="Изменить ${esc(x.name)}">✎</button>
         </div>
       </div>`).join('') : '<div class="empty">В категории пока нет позиций.</div>'}
     </div>
-    <p class="muted" style="font-size:12px;margin:0">Цену можно менять прямо в поле — сохраняется при выходе из поля. Переключатель — «есть в наличии» (стоп-лист).</p>` : '<div class="empty">Добавьте первую категорию.</div>'}
+    <p class="muted" style="font-size:12px;margin:0">Цену можно менять прямо в поле — сохраняется при выходе из поля. Кнопки с названием заведения — стоп-лист этой точки. Переключатель — показывать блюдо в меню вообще.</p>` : '<div class="empty">Добавьте первую категорию.</div>'}
   </div>`;
 }
 
@@ -186,13 +221,16 @@ function itemSheet(item) {
       <button type="button" class="btn btn-ghost btn-sm" data-x="img-clear">Убрать фото</button>
     </div>
     <label class="field">Ссылка на фото (необязательно)<input class="input" name="image_url" value="${esc(x.image_url && !x.image_url.startsWith('data:') ? x.image_url : '')}"></label>
-    <label class="field">Название<input class="input" name="name" required value="${esc(x.name)}"></label>
+    <label class="field">Название<input class="input" name="name" ${lock} required value="${esc(x.name)}"></label>
     <div class="grid-2">
       <label class="field">Цена, ₽<input class="input" name="price" inputmode="numeric" required value="${esc(x.price)}"></label>
       <label class="field">Вес / объём<input class="input" name="weight" placeholder="300 г" value="${esc(x.weight)}"></label>
     </div>
     <label class="field">Категория<select class="select" name="category_id">${A.menu.categories.map((c) => `<option value="${esc(c.id)}" ${c.id === x.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
-    <label class="field">Описание / состав<textarea class="textarea" name="description">${esc(x.description)}</textarea></label>
+    <label class="field">Описание<textarea class="textarea" name="description">${esc(x.description)}</textarea></label>
+    <label class="field">Состав (по закону — для гостя)<textarea class="textarea" name="composition" placeholder="Говядина, булочка, сыр чеддер, соус…">${esc(x.composition || '')}</textarea></label>
+    <label class="field">Пищевая ценность на 100 г<input class="input" name="nutrition" placeholder="Ккал 250 · Б 15 · Ж 12 · У 20" value="${esc(x.nutrition || '')}"></label>
+    <label class="field">Аллергены<input class="input" name="allergens" placeholder="Глютен, молоко, горчица" value="${esc(x.allergens || '')}"></label>
     <div class="between"><span>В наличии</span><button type="button" class="switch" role="switch" data-x="available" aria-checked="${x.available !== false}" aria-label="В наличии"></button></div>
     <div class="between"><span>Показывать в «Хитах паба»</span><button type="button" class="switch" role="switch" data-x="popular" aria-checked="${!!x.popular}" aria-label="Хит"></button></div>
     <p class="error" role="alert" style="margin:0"></p>
@@ -231,6 +269,7 @@ function itemSheet(item) {
     const row = {
       ...(item ? { id: item.id } : {}),
       name: d.name.trim(), price, weight: d.weight.trim(), description: d.description.trim(),
+      composition: d.composition.trim(), nutrition: d.nutrition.trim(), allergens: d.allergens.trim(),
       category_id: d.category_id, image_url: imageUrl,
       available: wrap.querySelector('[data-x=available]').getAttribute('aria-checked') === 'true',
       popular: wrap.querySelector('[data-x=popular]').getAttribute('aria-checked') === 'true',
@@ -261,23 +300,28 @@ async function refreshMenu() { A.menu = await store.getMenu(); await ctx.reloadM
 /* ---------- заведения ---------- */
 function Venues() {
   const { esc } = ctx;
-  return `<div class="admin-grid">${A.menu.venues.map((v) => `<form class="card stack" data-venue="${esc(v.id)}" style="gap:12px">
+  const lock = owner() ? '' : 'disabled title="Меняет владелец"';
+  return `<div class="admin-grid">${myVenues().map((v) => `<form class="card stack" data-venue="${esc(v.id)}" style="gap:12px">
     <div class="between"><span class="h2">${esc(v.name)}</span>
       <div class="row"><span class="muted" style="font-size:13px">Принимаем заказы</span><button type="button" class="switch" role="switch" data-a="accepting" aria-checked="${v.accepting !== false}" aria-label="Принимаем заказы: ${esc(v.name)}"></button></div></div>
     <label class="field">Название<input class="input" name="name" value="${esc(v.name)}"></label>
-    <label class="field">Адрес<input class="input" name="address" value="${esc(v.address)}"></label>
-    <label class="field">Зона доставки (видна гостям)<input class="input" name="zone" value="${esc(v.zone)}"></label>
+    <label class="field">Адрес<input class="input" name="address" ${lock} value="${esc(v.address)}"></label>
+    <label class="field">Зона доставки (видна гостям)<input class="input" name="zone" ${lock} value="${esc(v.zone)}"></label>
     <div class="grid-2">
       <label class="field">Телефон<input class="input" name="phone" type="tel" data-phone placeholder="+7 (___) ___-__-__" value="${esc(ctx.fmtPhone(v.phone) || v.phone)}"></label>
       <label class="field">Часы работы<input class="input" name="hours" value="${esc(v.hours)}"></label>
-      <label class="field">Доставка, ₽<input class="input" name="delivery_fee" inputmode="numeric" value="${esc(v.delivery_fee)}"></label>
-      <label class="field">Мин. заказ, ₽<input class="input" name="min_order" inputmode="numeric" value="${esc(v.min_order)}"></label>
+      <label class="field">Доставка, ₽<input class="input" name="delivery_fee" ${lock} inputmode="numeric" value="${esc(v.delivery_fee)}"></label>
+      <label class="field">Мин. заказ, ₽<input class="input" name="min_order" ${lock} inputmode="numeric" value="${esc(v.min_order)}"></label>
       <label class="field">Время доставки, мин<input class="input" name="eta_minutes" inputmode="numeric" value="${esc(v.eta_minutes)}"></label>
     </div>
     <div class="between"><span class="stack" style="gap:2px"><span>Онлайн-оплата (Сбер)</span><span class="muted" style="font-size:12px">Карта, СБП, SberPay в приложении</span></span>
-      <button type="button" class="switch" role="switch" data-a="pay_online" aria-checked="${!!v.pay_online}" aria-label="Онлайн-оплата: ${esc(v.name)}"></button></div>
+      <button type="button" class="switch" role="switch" data-a="pay_online" aria-checked="${!!v.pay_online}" aria-label="Онлайн-оплата: ${esc(v.name)}" ${lock}></button></div>
     <button type="submit" class="btn btn-accent">Сохранить</button>
-  </form>`).join('')}</div>`;
+  </form>`).join('')}</div>
+  ${owner() ? `<section class="card stack" style="gap:8px;margin-top:16px">
+    <span class="eyebrow">Как заказы разделяются по заведениям</span>
+    <span style="font-size:14px;line-height:1.6;color:var(--text-2)">Гость выбирает точку при оформлении. Заказ видит только управляющий этой точки и вы. В Telegram он уходит в чат своего заведения (и копия — в ваш общий чат). Если гость ошибся точкой, управляющий нажимает «Передать → …» у нового заказа.</span>
+  </section>` : ''}`;
 }
 
 /* ---------- события ---------- */
@@ -288,7 +332,20 @@ function onClick(e) {
   const act = {
     tab: () => { A.tab = v; draw(); },
     filter: () => { A.filter = v; draw(); },
-    logout: async () => { await store.adminSignOut(); A.menu = null; if (A.unsub) { A.unsub(); A.unsub = null; } location.hash = '#/'; },
+    venue: () => { A.venue = v; draw(); },
+    transfer: async () => {
+      const o = A.orders.find((x) => x.id === id);
+      if (!confirm(`Передать заказ №${o.number} в «${vName(v)}»? Он исчезнет из вашего списка и придёт управляющему той точки.`)) return;
+      b.disabled = true;
+      await store.transferOrder(id, v); await loadOrders(); draw(); ctx.toast(`Заказ передан в «${vName(v)}»`);
+    },
+    stop: async () => {
+      const x = A.menu.items.find((i) => i.id === id);
+      const off = !(x.stop_in || []).includes(v);
+      x.stop_in = await store.setStop(id, v, off); await ctx.reloadMenu(); draw();
+      ctx.toast(`${vName(v)}: ${x.name} — ${off ? 'в стоп-листе' : 'снова в продаже'}`);
+    },
+    logout: async () => { await store.adminSignOut(); A.menu = null; A.me = null; A.venue = 'all'; A.tab = 'orders'; A.filter = 'active'; if (A.unsub) { A.unsub(); A.unsub = null; } location.hash = '#/'; },
     status: async () => {
       const o = A.orders.find((x) => x.id === id);
       const online = o?.payment === 'online' && ['held', 'paid'].includes(o.payment_status);
@@ -366,10 +423,13 @@ async function onVenueSubmit(e) {
   const d = Object.fromEntries(new FormData(f));
   const num = (s) => parseInt(String(s).replace(/\D/g, ''), 10) || 0;
   try {
-    await store.saveVenue({
-      id: f.dataset.venue, name: d.name.trim(), address: d.address.trim(), zone: d.zone.trim(), phone: d.phone.trim(), hours: d.hours.trim(),
-      delivery_fee: num(d.delivery_fee), min_order: num(d.min_order), eta_minutes: num(d.eta_minutes) || 45,
+    const ops = {   // оперативное — может и управляющий своей точки
+      id: f.dataset.venue, phone: d.phone.trim(), hours: d.hours.trim(), eta_minutes: num(d.eta_minutes) || 45,
       accepting: f.querySelector('[data-a=accepting]').getAttribute('aria-checked') === 'true',
+    };
+    await store.saveVenue(!owner() ? ops : {
+      ...ops, name: d.name.trim(), address: d.address.trim(), zone: d.zone.trim(),
+      delivery_fee: num(d.delivery_fee), min_order: num(d.min_order),
       pay_online: f.querySelector('[data-a=pay_online]').getAttribute('aria-checked') === 'true',
     });
     await refreshMenu(); ctx.toast('Сохранено');
