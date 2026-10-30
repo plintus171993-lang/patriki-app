@@ -35,6 +35,11 @@ Supabase → **SQL Editor** → New query → вставить весь файл
 Пока SMS-сервис не подключён (`SMS_TEST_MODE: true` в `www/js/config.js`), коды подтверждения видны управляющему в админке (вкладка «Заказы») и приходят в Telegram-чат.
 Подключить SMS.ru/SMSC: дописать отправку в функцию `pk_send_sms` через `net.http_post`, затем поставить `SMS_TEST_MODE: false`.
 
+### 2б. Подтверждение номера: Telegram-бот и звонок (обновление 007)
+Гость выбирает: «Через Telegram» (бот @PatrikiPubBot, бесплатно) или «Позвонить мне» (звонок-сброс, код — последние 4 цифры номера).
+Логика — в серверной функции `verify` (разворачивается **с выключенной проверкой JWT**). Вебхук бота указывает на `https://<проект>.supabase.co/functions/v1/verify` с секретом из `app_secrets.telegram_webhook_secret`.
+Звонок пока в тестовом режиме (`CALL_PROVIDER` не задан = `mock`): звонка нет, код виден в админке и в теме «Все заказы». Подключить SMS.ru: Edge Functions → Secrets → `CALL_PROVIDER = smsru`, `SMSRU_API_ID = ключ из кабинета SMS.ru`.
+
 ### 3. Telegram (необязательно)
 1. В Telegram написать @BotFather → `/newbot` → получить токен.
 2. Добавить бота в чат заведения, написать в чат любое сообщение. Открыть `https://api.telegram.org/bot<ТОКЕН>/getUpdates` и найти там `"chat":{"id":-100…}`.
