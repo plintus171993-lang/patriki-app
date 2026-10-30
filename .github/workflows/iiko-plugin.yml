@@ -1,0 +1,36 @@
+name: iiko plugin
+
+on:
+  push:
+    paths:
+      - 'iiko-plugin/**'
+      - '.github/workflows/iiko-plugin.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        working-directory: iiko-plugin/Resto.Front.Api.Patriki
+        run: dotnet build -c Release
+      - name: Collect
+        shell: pwsh
+        run: |
+          $out = "iiko-plugin/Resto.Front.Api.Patriki/bin/Release"
+          Get-ChildItem -Recurse $out | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300
+          New-Item -ItemType Directory -Force dist/Resto.Front.Api.Patriki | Out-Null
+          $dll = Get-ChildItem -Recurse $out -Filter Resto.Front.Api.Patriki.dll | Select-Object -First 1
+          Copy-Item "$($dll.DirectoryName)\*" dist/Resto.Front.Api.Patriki -Recurse -Exclude *.pdb
+          Copy-Item iiko-plugin/INSTALL.txt dist/
+          Copy-Item iiko-plugin/patriki.json dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Resto.Front.Api.Patriki
+          path: |
+            dist/
+            iiko-plugin/Resto.Front.Api.Patriki/bin/Release/**/*.zip
