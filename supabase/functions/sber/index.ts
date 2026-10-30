@@ -26,7 +26,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const db = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
 
 const RETURN_OK = (Deno.env.get('APP_RETURN_URLS') ||
-  'https://plintus171993-lang.github.io/patriki-app/,https://localhost/,http://localhost:8765/,capacitor://localhost/')
+  'https://patrikipab.ru/,https://www.patrikipab.ru/,https://plintus171993-lang.github.io/patriki-app/,https://localhost/,http://localhost:8765/,capacitor://localhost/')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 const CORS = {
