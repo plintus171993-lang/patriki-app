@@ -103,7 +103,7 @@ namespace Resto.Front.Api.Patriki
                     case CardInputDialogResult c: code = c.Track2; break;
                     default: return;
                 }
-                code = (code ?? "").Trim();
+                code = NormalizeCode(code);
                 if (code.Length == 0) return;
 
                 vm.ChangeProgressBarMessage("Ищем гостя…");
@@ -127,6 +127,18 @@ namespace Resto.Front.Api.Patriki
                 PluginContext.Log.Error("Карта Патрики: ошибка кнопки", ex);
                 vm.ShowErrorPopup("Не удалось проверить карту: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Сканер работает как клавиатура: при русской раскладке «PK1:…» приходит как «ЗЛ1Ж…».
+        /// Возвращаем латиницу, убираем пробелы и переводы строк.
+        /// </summary>
+        internal static string NormalizeCode(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return "";
+            var map = new Dictionary<char, char> { ['З'] = 'P', ['з'] = 'P', ['Л'] = 'K', ['л'] = 'K', ['Ж'] = ':', ['ж'] = ':', ['p'] = 'P', ['k'] = 'K', [';'] = ':' };
+            var chars = code.Trim().Where(c => !char.IsWhiteSpace(c)).Select(c => map.TryGetValue(c, out var m) ? m : c).ToArray();
+            return new string(chars);
         }
 
         /* ---------------- закрытие заказа ---------------- */
