@@ -175,7 +175,10 @@ namespace Resto.Front.Api.Patriki
         private static Config current;
         public static Config Current => current ?? (current = Load());
 
-        public static string Path => System.IO.Path.Combine(PluginContext.Integration.GetConfigsDirectoryPath(), "patriki.json");
+        // Файл настроек ищем сначала рядом с плагином (Plugins\Resto.Front.Api.Patriki\patriki.json),
+        // затем в папке настроек плагинов iikoFront.
+        private static string LocalPath => System.IO.Path.Combine(System.IO.Path.GetDirectoryName(typeof(Config).Assembly.Location) ?? "", "patriki.json");
+        public static string Path => File.Exists(LocalPath) ? LocalPath : System.IO.Path.Combine(PluginContext.Integration.GetConfigsDirectoryPath(), "patriki.json");
 
         private static Config Load()
         {
