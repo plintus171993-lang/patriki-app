@@ -52,4 +52,5 @@ export const DEFAULT_SETTINGS = {
   enabled: true, verified_only: true, app_enabled: true, venue_enabled: true,
   tiers: [{ name: 'Гость', from: 0, pct: 5 }, { name: 'Завсегдатай', from: 5000, pct: 10 }, { name: 'Свой человек', from: 15000, pct: 15 }],
   period_days: 0, app_min_order: 0, accrue_delivery: false, max_redeem_pct: 30, burn_after_days: 0, welcome_bonus: 0, birthday_bonus: 0, rules_text: '',
+  fixed_levels: [], accrue_if_redeem: true, accrue_delay_days: 0,
 };

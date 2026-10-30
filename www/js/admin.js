@@ -316,12 +316,14 @@ function LoyaltyEditor() {
       <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Начислено за 30 дней</span><b style="font-size:22px">${rub(S.accrued_30 ?? 0)}</b></div>
       <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Списано за 30 дней</span><b style="font-size:22px">${rub(S.redeemed_30 ?? 0)}</b></div>
     </div>
+    ${S.imported ? `<div class="card" style="font-size:13px;color:var(--text-2)">Перенесено из MACE Loyalty: ${esc(S.imported)} гостей, уже в приложении: ${esc(S.imported_claimed || 0)}. Остальные получат баллы, когда подтвердят номер; бармен может проводить им чеки по телефону.</div>` : ''}
     <section class="card stack" style="gap:14px">
       ${sw('enabled', 'Программа лояльности включена')}
       ${sw('app_enabled', 'Начислять за заказы в приложении', 'после статуса «Доставлен»')}
       ${sw('venue_enabled', 'Начислять в пабе по QR-коду', 'вкладка «Касса · QR»')}
       ${sw('verified_only', 'Только с подтверждённым номером', 'защита от накруток — рекомендуется')}
       ${sw('accrue_delivery', 'Начислять и на стоимость доставки')}
+      ${sw('accrue_if_redeem', 'Начислять, если гость платит баллами', 'выключено — как было в MACE')}
     </section>
     <section class="card stack" style="gap:12px">
       <span class="eyebrow">Уровни: % начисления от суммы покупок</span>
@@ -333,6 +335,17 @@ function LoyaltyEditor() {
           <button type="button" class="icon-btn" data-a="tier-del" data-v="${i}" aria-label="Удалить уровень">✕</button></div>`).join('')}
       </div>
       <button type="button" class="btn btn-ghost btn-sm" data-a="tier-add" style="align-self:flex-start">+ Уровень</button>
+      <span class="eyebrow" style="margin-top:6px">Особые уровни (назначаются вручную, % фиксированный)</span>
+      <div class="stack" style="gap:8px">${(L.fixed_levels || []).map((t, i) => `<div class="tier-row fixed-row" data-i="${i}">
+          <input class="input" name="f_name" value="${esc(t.name)}" aria-label="Название особого уровня">
+          <label class="tier-f"><input class="input" name="f_pct" inputmode="numeric" value="${esc(t.pct)}" aria-label="Процент">%</label>
+          <button type="button" class="icon-btn" data-a="fixed-del" data-v="${i}" aria-label="Удалить">✕</button><span></span></div>`).join('')}</div>
+      <button type="button" class="btn btn-ghost btn-sm" data-a="fixed-add" style="align-self:flex-start">+ Особый уровень</button>
+      <div class="card stack" style="gap:8px;background:var(--surface-2)">
+        <span style="font-size:13px">Назначить особый уровень гостю</span>
+        <div class="grid-2"><input class="input" id="fx-code" placeholder="Телефон или номер карты"><select class="select" id="fx-level"><option value="">— обычный —</option>${(L.fixed_levels || []).map((t) => `<option>${esc(t.name)}</option>`).join('')}</select></div>
+        <button type="button" class="btn btn-outline btn-sm" data-a="fixed-set" style="align-self:flex-start">Назначить</button>
+      </div>
       <label class="field">Уровень считается по покупкам
         <select class="select" name="period_days">${[[0, 'за всё время'], [365, 'за последний год'], [180, 'за 6 месяцев'], [90, 'за 3 месяца']].map(([v, l]) => `<option value="${v}" ${+L.period_days === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     </section>
@@ -342,6 +355,7 @@ function LoyaltyEditor() {
         ${num('max_redeem_pct', 'Баллами можно оплатить, %', 'до 90')}
         ${num('app_min_order', 'Мин. заказ в приложении для начисления, ₽')}
         ${num('burn_after_days', 'Сгорают без покупок, дней', '0 — не сгорают')}
+        ${num('accrue_delay_days', 'Баллы приходят через, дней', '0 — сразу')}
         ${num('welcome_bonus', 'Приветственные баллы')}
         ${num('birthday_bonus', 'Баллы в день рождения')}
       </div>
@@ -355,10 +369,12 @@ function LoyaltyEditor() {
 function readLoyForm(f) {
   const d = Object.fromEntries(new FormData(f));
   const n = (v) => Math.max(0, parseInt(String(v).replace(/\D/g, ''), 10) || 0);
-  const tiers = [...f.querySelectorAll('.tier-row')].map((r) => ({ name: r.querySelector('[name=t_name]').value.trim() || 'Уровень', from: n(r.querySelector('[name=t_from]').value), pct: Math.min(100, n(r.querySelector('[name=t_pct]').value)) }))
+  const tiers = [...f.querySelectorAll('#loy-tiers .tier-row')].map((r) => ({ name: r.querySelector('[name=t_name]').value.trim() || 'Уровень', from: n(r.querySelector('[name=t_from]').value), pct: Math.min(100, n(r.querySelector('[name=t_pct]').value)) }))
     .sort((a, b) => a.from - b.from);
   const sw = (k) => f.querySelector(`[data-a=loy-sw][data-v=${k}]`).getAttribute('aria-checked') === 'true';
+  const fixed_levels = [...f.querySelectorAll('.fixed-row')].map((r) => ({ name: r.querySelector('[name=f_name]').value.trim() || 'Особый', pct: Math.min(100, n(r.querySelector('[name=f_pct]').value)) }));
   return { ...A.loy, tiers, period_days: n(d.period_days), max_redeem_pct: Math.min(90, n(d.max_redeem_pct)), app_min_order: n(d.app_min_order),
+    fixed_levels, accrue_delay_days: n(d.accrue_delay_days), accrue_if_redeem: sw('accrue_if_redeem'),
     burn_after_days: n(d.burn_after_days), welcome_bonus: n(d.welcome_bonus), birthday_bonus: n(d.birthday_bonus), rules_text: (d.rules_text || '').trim(),
     enabled: sw('enabled'), app_enabled: sw('app_enabled'), venue_enabled: sw('venue_enabled'), verified_only: sw('verified_only'), accrue_delivery: sw('accrue_delivery') };
 }
@@ -396,6 +412,7 @@ function Cashier() {
     ${g ? `<form id="cash-go" class="card stack cashier-guest" style="gap:12px">
       <div class="between"><span class="h2" style="font-size:20px;text-transform:none">${esc(g.name)}</span><span class="pill">${esc(g.tier?.name || '')} · ${esc(g.tier?.pct ?? 0)}%</span></div>
       <span class="muted" style="font-size:13px">Карта № ${esc(g.card_no)}${g.phone_last4 ? ` · телефон …${esc(g.phone_last4)}` : ''}</span>
+      ${g.legacy ? '<span class="pill" style="align-self:flex-start">прежняя карта MACE · приложение ещё не установлено</span>' : ''}
       <div class="sum-row"><span>Баллов на карте</span><b style="font-size:20px">${rub(g.balance)}</b></div>
       ${g.active ? '' : '<span class="error">У гостя не подтверждён номер — баллы не копятся. Попросите подтвердить номер в приложении.</span>'}
       <div class="grid-2">
@@ -443,7 +460,7 @@ async function onCashSubmit(e) {
   const btn = f.querySelector('[type=submit]'); btn.disabled = true;
   try {
     const r = await store.staffAccrue(A.cashCode, amount, redeem, A.cashVenue, f.note.value.trim());
-    A.cashLast = `${A.cashGuest.name}: ${redeem ? `списано ${redeem}, ` : ''}начислено +${r.points}. Теперь на карте ${r.balance}${r.tier?.name ? `, уровень «${r.tier.name}»` : ''}.`;
+    A.cashLast = `${A.cashGuest.name}: ${redeem ? `списано ${redeem}, ` : ''}начислено +${r.points}${r.delay_days ? ` (придут через ${r.delay_days} дн.)` : ''}. Теперь на карте ${r.balance}${r.tier?.name ? `, уровень «${r.tier.name}»` : ''}.`;
     A.cashGuest = null; A.cashCode = ''; A.cashAmount = '';
     draw(); ctx.toast(`Начислено +${r.points}`);
   } catch (ex) { btn.disabled = false; f.querySelector('.error').textContent = ex.message; }
@@ -489,6 +506,13 @@ function onClick(e) {
     'loy-sw': () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
     'tier-add': () => { const f = document.getElementById('loy-form'); A.loy = readLoyForm(f); const last = A.loy.tiers[A.loy.tiers.length - 1] || { from: 0, pct: 5 };
       A.loy.tiers.push({ name: 'Новый уровень', from: last.from + 5000, pct: last.pct + 5 }); draw(); },
+    'fixed-add': () => { const f = document.getElementById('loy-form'); A.loy = readLoyForm(f); A.loy.fixed_levels.push({ name: 'Особый', pct: 10 }); draw(); },
+    'fixed-del': () => { const f = document.getElementById('loy-form'); A.loy = readLoyForm(f); A.loy.fixed_levels.splice(+v, 1); draw(); },
+    'fixed-set': async () => {
+      const code = document.getElementById('fx-code').value.trim(), lvl = document.getElementById('fx-level').value;
+      if (!code) return ctx.toast('Укажите телефон или номер карты');
+      const r = await store.setFixedLevel(code, lvl); ctx.toast(`${r.name}: ${r.tier?.name} ${r.tier?.pct}%`);
+    },
     'tier-del': () => { const f = document.getElementById('loy-form'); A.loy = readLoyForm(f); A.loy.tiers.splice(+v, 1); draw(); },
     scan: () => startScan(),
     'scan-stop': () => stopScan(),

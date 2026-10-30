@@ -318,7 +318,8 @@ function Checkout() {
   const redeem = k.useBonus ? redeemMax : 0;
   const total = cartSum() + (v.delivery_fee || 0) - redeem;
   const st = S.loy?.settings || {};
-  const earn = loyActive() && st.app_enabled && cartSum() - redeem >= Math.max(st.app_min_order || 0, 1) ? Math.floor((cartSum() - redeem) * (S.loy.tier?.pct || 0) / 100) : 0;
+  const noEarn = redeem > 0 && st.accrue_if_redeem === false;
+  const earn = !noEarn && loyActive() && st.app_enabled && cartSum() - redeem >= Math.max(st.app_min_order || 0, 1) ? Math.floor((cartSum() - redeem) * (S.loy.tier?.pct || 0) / 100) : 0;
   return `<main class="screen">
     <div class="row">${backBtn('/cart', 'Назад в корзину')}<h1 class="h1" style="font-size:26px">Оформление</h1></div>
     <form id="checkout" class="stack" style="gap:20px" novalidate>
@@ -379,7 +380,7 @@ function Checkout() {
         <div class="sum-row"><span>Доставка</span><span>${v.delivery_fee ? rub(v.delivery_fee) : 'бесплатно'}</span></div>
         ${redeem ? `<div class="sum-row"><span>Баллами</span><span>−${rub(redeem)}</span></div>` : ''}
         <div class="total"><span class="h2">К оплате</span><b>${rub(total)}</b></div>
-        ${earn ? `<span class="muted" style="font-size:12px">После доставки начислим +${pts(earn)} ${ptsWord(earn)}</span>` : ''}
+        ${earn ? `<span class="muted" style="font-size:12px">После доставки начислим +${pts(earn)} ${ptsWord(earn)}${st.accrue_delay_days ? ` (придут через ${esc(st.accrue_delay_days)} дн.)` : ''}</span>` : noEarn ? '<span class="muted" style="font-size:12px">При оплате баллами новые баллы за этот заказ не начисляются</span>' : ''}
       </div>
       ${ConsentBox(k.pdTick)}
       <p class="muted" style="font-size:12px;margin:0;line-height:1.5">Нажимая «Отправить заказ», вы принимаете условия ${doc('offer', 'публичной оферты')} и ${doc('terms', 'пользовательского соглашения')}.</p>
@@ -833,7 +834,7 @@ async function loadLoyalty() {
 const loyActive = () => S.loy && S.loy.settings?.enabled && (!S.loy.settings.verified_only || S.loy.verified);
 const pts = (n) => `${Number(n || 0).toLocaleString('ru-RU')}`;
 const ptsWord = (n) => { n = Math.abs(n) % 100; const d = n % 10; return n > 10 && n < 20 ? 'баллов' : d === 1 ? 'балл' : d >= 2 && d <= 4 ? 'балла' : 'баллов'; };
-const LOY_KIND = { accrue: 'Начислено', redeem: 'Списано', refund: 'Возврат', bonus: 'Бонус', adjust: 'Корректировка', expire: 'Сгорело', reverse: 'Отмена начисления' };
+const LOY_KIND = { accrue: 'Начислено', pending: 'Начислится', redeem: 'Списано', refund: 'Возврат', bonus: 'Бонус', adjust: 'Корректировка', expire: 'Сгорело', reverse: 'Отмена начисления', import: 'Перенос с прежней карты' };
 const LOY_SRC = { app: 'заказ в приложении', venue: 'в пабе', pos: 'касса', admin: 'управляющий', system: '' };
 
 function GuestCard() {
@@ -851,8 +852,9 @@ function GuestCard() {
     <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Карта гостя</h1></div>
     <section class="guest-card loy-card">
       <div class="between"><div class="stack" style="gap:2px"><span class="eyebrow accent">${esc(t.name || '')} · ${esc(t.pct ?? 0)}%</span><span class="loy-balance">${pts(L.balance)} <small>${ptsWord(L.balance)}</small></span></div>${logoMark(52)}</div>
-      ${t.next_from != null ? `<div class="loy-prog" role="progressbar" aria-valuenow="${prog}" aria-valuemin="0" aria-valuemax="100"><span style="width:${prog}%"></span></div>
+      ${t.fixed ? '<span class="muted" style="font-size:12px">Особый уровень</span>' : t.next_from != null ? `<div class="loy-prog" role="progressbar" aria-valuenow="${prog}" aria-valuemin="0" aria-valuemax="100"><span style="width:${prog}%"></span></div>
         <span class="muted" style="font-size:12px">До уровня «${esc(t.next_name)}» (${esc(tiers.find((x) => x.name === t.next_name)?.pct ?? '')}%) — ещё ${rub(need)} покупок</span>` : '<span class="muted" style="font-size:12px">Максимальный уровень — спасибо, что вы с нами!</span>'}
+      ${L.pending ? `<span class="muted" style="font-size:12px">+${pts(L.pending)} ${ptsWord(L.pending)} ещё в пути — начислятся через ${esc(st.accrue_delay_days || 0)} дн. после покупки</span>` : ''}
       <span class="loy-no">№ ${esc(String(L.card_no).replace(/(\d{4})(\d{4})/, '$1 $2'))}</span>
     </section>
     ${locked ? `<div class="card stack"><b>Подтвердите номер — и баллы начнут копиться</b>
@@ -870,7 +872,8 @@ function GuestCard() {
       <span class="muted" style="font-size:12px;line-height:1.6">
         ${st.app_enabled ? `За заказ в приложении — после доставки${st.app_min_order ? `, от ${rub(st.app_min_order)}` : ''}. ` : ''}${st.venue_enabled ? 'В пабе — по QR-коду при расчёте. ' : ''}
         Уровень — по сумме покупок${st.period_days ? ` за последние ${esc(st.period_days)} дней` : ' за всё время'}.
-        1 балл = 1 ₽; баллами можно оплатить до ${esc(st.max_redeem_pct)}% заказа.
+        1 балл = 1 ₽; баллами можно оплатить до ${esc(st.max_redeem_pct)}% заказа${st.accrue_if_redeem === false ? ' — в этом случае на покупку баллы не начисляются' : ''}.
+        ${st.accrue_delay_days ? `Баллы приходят через ${esc(st.accrue_delay_days)} дн. после покупки. ` : ''}${st.welcome_bonus ? `За выпуск карты — ${pts(st.welcome_bonus)} ${ptsWord(st.welcome_bonus)}. ` : ''}
         ${st.burn_after_days ? `Баллы сгорают, если ${esc(st.burn_after_days)} дней не было покупок. ` : ''}${st.birthday_bonus ? `В день рождения дарим ${pts(st.birthday_bonus)} ${ptsWord(st.birthday_bonus)}. ` : ''}
         ${st.rules_text ? esc(st.rules_text) : ''}
         ${doc('loyalty', 'Правила программы')}.
@@ -880,7 +883,7 @@ function GuestCard() {
       <div class="menu-group">${L.history.slice(0, 20).map((h) => `<div class="menu-row" style="cursor:default">
         <span class="stack" style="gap:2px"><span>${LOY_KIND[h.kind] || esc(h.kind)}${LOY_SRC[h.source] ? ` · ${LOY_SRC[h.source]}` : ''}</span>
         <span class="muted" style="font-size:12px">${new Date(h.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}${h.venue ? ` · ${esc(h.venue)}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</span></span>
-        <b style="color:${h.points >= 0 ? 'var(--ok)' : 'var(--text-2)'}">${h.points >= 0 ? '+' : ''}${pts(h.points)}</b></div>`).join('')}</div></section>` : ''}
+        <b style="color:${h.kind === 'pending' ? 'var(--muted)' : h.points >= 0 ? 'var(--ok)' : 'var(--text-2)'}">${h.points >= 0 ? '+' : ''}${pts(h.points)}</b></div>`).join('')}</div></section>` : ''}
   </main>`;
 }
 // QR обновляется каждые 30 секунд, пока открыт экран карты

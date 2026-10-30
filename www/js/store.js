@@ -409,6 +409,12 @@ export const store = {
     if (error) throw new Error(error.message);
     return data;
   },
+  async setFixedLevel(code, level) {
+    if (this.demo) { const a = demoLoy.acc(); a.fixed_level = level || null; LS.set('loy_acc', a); return demoLoy.info(); }
+    const { data, error } = await sb.rpc('set_fixed_level', { p_code: code, p_level: level || '' });
+    if (error) throw new Error(error.message);
+    return data;
+  },
   async staffAccrue(code, amount, redeem, venueId, note = '') {
     if (this.demo) return demoLoy.check(code, amount, redeem, venueId, note);
     const { data, error } = await sb.rpc('staff_accrue', { p_code: code, p_amount: amount, p_redeem: redeem, p_venue: venueId, p_note: note });
