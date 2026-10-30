@@ -7,6 +7,9 @@ on:
       - '.github/workflows/iiko-plugin.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -45,3 +48,13 @@ jobs:
           path: |
             dist/
             iiko-plugin/Resto.Front.Api.Patriki/bin/Release/**/*.zip
+      - name: Publish to branch iiko-plugin-dist
+        run: |
+          cd dist
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout -q -b iiko-plugin-dist
+          git add -A
+          git commit -q -m "Плагин iiko ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" iiko-plugin-dist
