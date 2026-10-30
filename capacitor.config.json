@@ -3,6 +3,9 @@
   "appName": "Патрики Паб",
   "webDir": "www",
   "backgroundColor": "#0E0E0D",
+  "server": {
+    "allowNavigation": ["*.sberbank.ru", "*.sber.ru", "qr.nspk.ru"]
+  },
   "android": {
     "allowMixedContent": false
   }
