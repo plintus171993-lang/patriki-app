@@ -113,7 +113,9 @@ async function tgStatus(req: Request, body: any) {
 
 async function tgWebhook(update: any) {
   const m = update.message;
-  if (!m || m.chat?.type !== 'private') return;              // группы с заказами бот не обрабатывает
+  if (!m) return;
+  if (m.chat?.type === 'group' || m.chat?.type === 'supergroup') return groupMessage(m);
+  if (m.chat?.type !== 'private') return;
   const chat = m.chat.id;
   const text: string = m.text || '';
 
@@ -164,6 +166,32 @@ async function tgWebhook(update: any) {
   }
 
   await tg('sendMessage', { chat_id: chat, text: 'Я умею только подтверждать номер для приложения. Заказать доставку — в приложении «Патрики Паб».' });
+}
+
+/* ---------------- 1б. Группы: привязка группы учредителей и ответы на обращения ---------------- */
+async function groupMessage(m: any) {
+  const chat = String(m.chat.id);
+  const text: string = m.text || '';
+  // «/id» в группе — бот присылает номер чата; привязку подтверждает владелец (запись в app_secrets)
+  if (/^\/id(@\w+)?$/i.test(text.trim())) {
+    await db.from('app_secrets').upsert({ key: 'telegram_group_candidate', value: `${chat}|${m.chat.title || ''}|${m.message_thread_id || ''}` });
+    await tg('sendMessage', { chat_id: chat, text: `ID этой группы: ${chat}${m.message_thread_id ? `\nТема: ${m.message_thread_id}` : ''}`, ...(m.message_thread_id ? { message_thread_id: m.message_thread_id } : {}) });
+    return;
+  }
+  // ответ (Reply) на сообщение бота об обращении — только в группе учредителей
+  const rep = m.reply_to_message;
+  if (!rep || !rep.from?.is_bot || !text.trim()) return;
+  const { data: f } = await db.from('app_secrets').select('value').eq('key', 'telegram_chat_id:founders').maybeSingle();
+  if (!f?.value || f.value.split('/')[0] !== chat) return;
+  const mm = String(rep.text || '').match(/Обращение \([^)]*\) №(\d+)/);
+  if (!mm) return;
+  const who = [m.from?.first_name, m.from?.last_name].filter(Boolean).join(' ');
+  const { error } = await db.rpc('feedback_reply', { p_number: Number(mm[1]), p_reply: text.trim() });
+  await tg('sendMessage', {
+    chat_id: chat, reply_to_message_id: m.message_id,
+    ...(m.message_thread_id ? { message_thread_id: m.message_thread_id } : {}),
+    text: error ? `Не удалось сохранить ответ: ${error.message}` : `✅ Ответ на обращение №${mm[1]} отправлен гостю${who ? ` (${who})` : ''}. Он увидит его в приложении.`,
+  });
 }
 
 /* ---------------- 2. Звонок-сброс ---------------- */
