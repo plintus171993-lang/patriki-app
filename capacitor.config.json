@@ -4,9 +4,25 @@
   "webDir": "www",
   "backgroundColor": "#0E0E0D",
   "server": {
-    "allowNavigation": ["*.sberbank.ru", "*.sber.ru", "qr.nspk.ru"]
+    "allowNavigation": [
+      "*.sberbank.ru",
+      "*.sber.ru",
+      "qr.nspk.ru"
+    ]
   },
   "android": {
     "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorUpdater": {
+      "autoUpdate": false,
+      "statsUrl": "",
+      "updateUrl": "",
+      "channelUrl": "",
+      "resetWhenUpdate": true,
+      "autoDeleteFailed": true,
+      "autoDeletePrevious": true,
+      "appReadyTimeout": 15000
+    }
   }
 }
