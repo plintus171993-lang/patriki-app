@@ -833,6 +833,25 @@ function Verify() {
       <button type="button" class="btn btn-ghost btn-block" data-act="verify-back">Подтвердить звонком</button>
     </main>`;
   }
+  if (v.step === 'in') {
+    const left = Math.max(0, Math.ceil((v.until - Date.now()) / 1000));
+    const n = v.number || '';
+    const shown = n.length === 11 ? fmtPhone(n.slice(1)) : n;
+    return `<main class="screen">
+      ${head('Звонок', 'verify-back')}
+      <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
+      ${v.failed ? `<p style="text-align:center;color:var(--text-2);margin:0;line-height:1.6">${esc(v.err || 'Звонок не поступил')}</p>
+        <button type="button" class="btn btn-accent btn-block" data-act="in-retry">Попробовать ещё раз</button>`
+      : `<p style="text-align:center;color:var(--text-2);margin:0;line-height:1.6">Позвоните с номера <b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b> на номер ниже.<br><b style="color:var(--text)">Звонок бесплатный</b> и сбросится сам — разговаривать не нужно.</p>
+        <div class="in-number">${esc(shown)}</div>
+        ${v.test ? `<button type="button" class="btn btn-accent btn-block" data-act="in-call">${icon.phone} Позвонить</button>` : `<a class="btn btn-accent btn-block" href="tel:+${esc(n)}" data-act="in-call">${icon.phone} Позвонить</a>`}
+        <p class="muted" id="in-wait" style="text-align:center;margin:0">${v.called ? 'Ждём ваш звонок…' : 'Номер действует'} ${left ? `· ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : ''}</p>`}
+      <p class="error" role="alert" style="margin:0;text-align:center">${v.failed ? '' : esc(v.err || '')}</p>
+      ${v.test ? '<p class="demo-banner" style="margin:0">Тестовый режим: звонить не нужно — нажмите «Позвонить», и номер подтвердится через несколько секунд.</p>' : ''}
+      <div class="or-line"><span>или</span></div>
+      <button type="button" class="btn btn-ghost btn-block" data-act="tg-start">${tgIcon} Через Telegram</button>
+    </main>`;
+  }
   if (v.step === 'code') {
     const left = Math.max(0, Math.ceil((v.until - Date.now()) / 1000));
     return `<main class="screen">
@@ -862,8 +881,8 @@ function Verify() {
       <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
       ${ConsentBox()}
       <p class="error" role="alert" style="margin:0"></p>
-      <button type="submit" class="btn btn-accent btn-block">Получить код</button>
-      <span class="muted" style="font-size:12px;text-align:center;margin-top:-6px">Позвоним и сразу сбросим — код это последние 4 цифры номера. Если звонок не придёт, отправим SMS.</span>
+      <button type="submit" class="btn btn-accent btn-block">Подтвердить звонком</button>
+      <span class="muted" style="font-size:12px;text-align:center;margin-top:-6px">Покажем номер — позвоните на него со своего телефона. Звонок бесплатный и сбросится сам.</span>
       <div class="or-line"><span>или</span></div>
       <button type="button" class="btn btn-ghost btn-block" data-act="tg-start">${tgIcon} Через Telegram</button>
     </form>
@@ -873,6 +892,7 @@ let verifyTimer = null;
 function tickVerify() {
   clearInterval(verifyTimer);
   if (S.verify.step === 'tg') { pollTg(); return; }
+  if (S.verify.step === 'in') { pollIn(); return; }
   if (S.verify.step !== 'code') return;
   verifyTimer = setInterval(() => {
     const el = document.getElementById('resend');
@@ -931,8 +951,39 @@ async function startCall(p10, errEl, btn, channel = 'call') {
     if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
   }
 }
+async function startIncoming(p10, errEl, btn) {
+  if (p10.length !== 10) { if (errEl) errEl.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX'; return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Получаем номер…'; }
+  try {
+    const r = await store.inStart(p10);
+    S.verify = { ...S.verify, step: 'in', phone: p10, inId: r.id, number: r.number, test: !!r.test, called: false, failed: false, err: '', until: Date.now() + (r.timeout || 120) * 1000 };
+    render();
+  } catch (ex) {
+    console.error(ex);
+    if (errEl) errEl.textContent = ex.message || 'Не получилось. Попробуйте через Telegram';
+    else toast(ex.message || 'Не получилось', 4000);
+    if (btn) { btn.disabled = false; btn.textContent = 'Подтвердить звонком'; }
+  }
+}
+let inPoll = null;
+function pollIn() {
+  clearTimeout(inPoll);
+  const tick = async () => {
+    if (route() !== '/verify' || S.verify.step !== 'in' || S.verify.failed) return;
+    const left = Math.max(0, Math.ceil((S.verify.until - Date.now()) / 1000));
+    const w = document.getElementById('in-wait');
+    if (w) w.textContent = `${S.verify.called ? 'Ждём ваш звонок…' : 'Номер действует'}${left ? ` · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}` : ''}`;
+    try {
+      const r = await store.inCheck(S.verify.inId, S.verify.called);
+      if (r.status === 'done' || r.status === 'login') return finishVerify(r);
+      if (r.status === 'failed') { S.verify.failed = true; S.verify.err = r.message || 'Звонок не поступил'; return render(); }
+    } catch (e) { console.warn(e); }
+    inPoll = setTimeout(tick, 2000);
+  };
+  inPoll = setTimeout(tick, 1000);
+}
 async function finishVerify(r) {
-  clearTimeout(tgPoll);
+  clearTimeout(tgPoll); clearTimeout(inPoll);
   try {
     if (r.status === 'login') await store.applyLogin(r.login_hash);
     else await store.refreshUser();
@@ -1223,7 +1274,9 @@ app.addEventListener('click', async (e) => {
   if (act === 'pick-addr') { saveCheckoutForm(); S.checkout.addr = id; render(); }
   if (act === 'repeat') repeatOrder(id);
   if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
-  if (act === 'verify-back') { clearTimeout(tgPoll); S.verify.step = 'phone'; S.verify.err = ''; render(); }
+  if (act === 'verify-back') { clearTimeout(tgPoll); clearTimeout(inPoll); S.verify.step = 'phone'; S.verify.err = ''; render(); }
+  if (act === 'in-call') { S.verify.called = true; const w = document.getElementById('in-wait'); if (w) w.textContent = 'Ждём ваш звонок…'; }
+  if (act === 'in-retry') startIncoming(S.verify.phone, null, null);
   if (act === 'resend') startCall(S.verify.phone, null, null, v === 'sms' ? 'sms' : 'call');
   if (act === 'tg-start') { if (consentOk(b.closest('form'))) startTg(b); }
   if (act === 'tg-open') { S.verify.tgOpened = true; const w = document.getElementById('tg-wait'); if (w) w.textContent = 'Ждём подтверждения из Telegram…'; }
@@ -1257,7 +1310,7 @@ app.addEventListener('submit', async (e) => {
   if (f.id === 'phone-form') {
     e.preventDefault();
     if (!consentOk(f)) return;
-    return startCall(phone10(f.phone.value), f.querySelector('.error'), f.querySelector('[type=submit]'));
+    return startIncoming(phone10(f.phone.value), f.querySelector('.error'), f.querySelector('[type=submit]'));
   }
   if (f.id === 'code-form') {
     e.preventDefault();
@@ -1343,6 +1396,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:' && !window.Ca
 
 // вернулись в приложение (например, после оплаты в пабе) — обновляем баллы
 document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && route() === '/verify' && S.verify.step === 'in' && !S.verify.failed) pollIn();
   if (document.hidden || !S.loy) return;
   S.loyAt = 0;
   if (['/', '/profile', '/card'].includes(route())) loadLoyalty();

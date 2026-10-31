@@ -395,6 +395,21 @@ export const store = {
     }
     return this.verifyCall({ action: 'call-check', phone: '7' + phone10, code });
   },
+  // 3) Гость звонит сам: { id, number } — показать номер, гость звонит, опрашиваем inCheck
+  async inStart(phone10) {
+    if (this.demo) { LS.set('demo_in', { id: uid(), phone: '7' + phone10, at: Date.now() }); return { ...LS.get('demo_in'), number: '78000000000', timeout: 120, test: true }; }
+    return this.verifyCall({ action: 'in-start', phone: '7' + phone10 });
+  },
+  async inCheck(id, called = false) {
+    if (this.demo) {
+      const d = LS.get('demo_in', {});
+      if (d.id !== id) return { status: 'failed', message: 'Заявка не найдена' };
+      if (!called || Date.now() - d.at < 4000) return { status: 'pending' };
+      LS.set('me', { id: 'demo-user', phone: d.phone, verified: true });
+      return { status: 'done', phone: d.phone };
+    }
+    return this.verifyCall({ action: 'in-check', id, called });
+  },
   // номер уже был у другого профиля — входим в него одноразовым ключом
   async applyLogin(hash) {
     if (this.demo || !hash) return;
