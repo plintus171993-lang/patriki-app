@@ -88,8 +88,8 @@ function draw() {
       <div class="row"><a class="btn btn-ghost btn-sm" href="#/">В приложение</a><button type="button" class="btn btn-ghost btn-sm" data-a="logout">Выйти</button></div>
     </div>
     ${store.demo ? '<div class="demo-banner">Демо-режим: сервер не подключён, изменения сохраняются только в этом браузере.</div>' : ''}
-    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('bookings', `Брони${A.bk ? (() => { const n = A.bk.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}</nav>
-    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : A.tab === 'bookings' ? Bookings() : Venues()}</div>
+    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('bookings', `Брони${A.bk ? (() => { const n = A.bk.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('feedback', `Отзывы${A.fb ? (() => { const n = A.fb.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}</nav>
+    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : A.tab === 'bookings' ? Bookings() : A.tab === 'feedback' ? FeedbackAdmin() : Venues()}</div>
   </main>`;
 }
 
@@ -467,6 +467,45 @@ async function onCashSubmit(e) {
   return true;
 }
 
+/* ---------- отзывы и обращения к руководству ---------- */
+const FB_RU = { complaint: '🔴 Жалоба', idea: '💡 Предложение', thanks: '🙏 Благодарность', review: '⭐ Отзыв' };
+async function loadFb() {
+  try { A.fb = await store.listFeedback(); } catch (e) { console.error(e); A.fb = []; }
+  if (A.tab === 'feedback') draw();
+}
+setInterval(() => { if (location.hash.startsWith('#/admin') && A.menu && A.tab === 'feedback') loadFb(); }, 30000);
+function FeedbackAdmin() {
+  const { esc } = ctx;
+  if (!A.fb) { loadFb(); return '<div class="empty">Загружаем…</div>'; }
+  const list = A.fb.filter((x) => A.venue === 'all' || !x.venue_id || x.venue_id === A.venue);
+  if (!list.length) return `<div class="empty">Отзывов и обращений пока нет</div>`;
+  const vn = (id) => (A.menu.venues.find((v) => v.id === id) || {}).name || '';
+  return `<div class="stack" style="gap:10px">
+    ${owner() ? '' : '<div class="muted" style="font-size:13px">Обращения к руководству видит только владелец. Здесь — отзывы гостей вашего заведения.</div>'}
+    ${list.map((x) => `<article class="card stack" style="gap:6px">
+      <div class="between"><b>${FB_RU[x.kind] || esc(x.kind)} №${esc(x.number)}</b>
+        <span class="status-pill ${x.status === 'new' ? 'new' : x.status === 'answered' ? 'done' : 'cancelled'}">${x.kind === 'review' ? (x.published ? 'Опубликован' : 'Не опубликован') : x.status === 'new' ? 'Новое' : x.status === 'answered' ? 'Есть ответ' : 'Закрыто'}</span></div>
+      <span class="muted" style="font-size:12px">${new Date(x.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })}${x.venue_id ? ` · ${esc(vn(x.venue_id))}` : ''}${x.order_number ? ` · заказ №${esc(x.order_number)}` : ''}</span>
+      ${x.rating ? `<span style="color:#D4A84B">${'★'.repeat(x.rating)}${'☆'.repeat(5 - x.rating)}</span>` : ''}
+      ${x.text ? `<p style="margin:0;line-height:1.5;white-space:pre-line">${esc(x.text)}</p>` : ''}
+      <span style="font-size:14px">${esc(x.name || 'Гость')}${x.phone ? ` · <a href="tel:${esc(x.phone)}">${esc(ctx.fmtPhone(x.phone) || x.phone)}</a>` : ''}${x.wants_call ? ' · <b>просит перезвонить</b>' : ''}</span>
+      ${x.reply ? `<div style="border-left:3px solid #D4A84B;padding:6px 10px;font-size:14px"><b>Ответ:</b> ${esc(x.reply)}</div>` : ''}
+      ${owner() ? `<form class="fb-reply stack" data-n="${esc(x.number)}" style="gap:8px"><textarea class="input" name="reply" rows="2" placeholder="${x.reply ? 'Изменить ответ' : 'Ответ гостю — увидит в приложении'}"></textarea>
+        <div class="row" style="gap:8px;flex-wrap:wrap"><button type="submit" class="btn btn-accent btn-sm">Ответить</button>
+        ${x.kind === 'review' ? `<button type="button" class="btn btn-outline btn-sm" data-a="fb-pub" data-v="${x.published ? '0' : '1'}" data-id="${esc(x.id)}">${x.published ? 'Скрыть' : 'Опубликовать'}</button>` : ''}
+        ${x.status !== 'closed' && x.kind !== 'review' ? `<button type="button" class="btn btn-ghost btn-sm" data-a="fb-close" data-id="${esc(x.id)}">Закрыть</button>` : ''}</div></form>`
+      : x.kind === 'review' ? `<div class="row"><button type="button" class="btn btn-outline btn-sm" data-a="fb-pub" data-v="${x.published ? '0' : '1'}" data-id="${esc(x.id)}">${x.published ? 'Скрыть' : 'Опубликовать'}</button></div>` : ''}
+    </article>`).join('')}</div>`;
+}
+async function onFbReply(e) {
+  e.preventDefault();
+  const f = e.target, text = f.reply.value.trim(), btn = f.querySelector('[type=submit]');
+  if (!text) return ctx.toast('Напишите ответ');
+  btn.disabled = true;
+  try { await store.replyFeedback(Number(f.dataset.n), text); ctx.toast('Ответ сохранён — гость увидит его в приложении'); await loadFb(); }
+  catch (ex) { btn.disabled = false; ctx.toast(ex.message || 'Не удалось'); }
+}
+
 /* ---------- брони столов ---------- */
 const BK_RU = { new: 'Новая', confirmed: 'Подтверждена', declined: 'Отклонена', cancelled: 'Отменена гостем', done: 'Состоялась', noshow: 'Не пришли' };
 async function loadBookings() {
@@ -539,7 +578,15 @@ function onClick(e) {
   const b = e.target.closest('[data-a]'); if (!b || !root.contains(b)) return;
   const { a, v, id } = b.dataset;
   const act = {
-    tab: () => { if (A.scanning) stopScan(); A.tab = v; if (v === 'bookings') A.bk = null; draw(); },
+    tab: () => { if (A.scanning) stopScan(); A.tab = v; if (v === 'bookings') A.bk = null; if (v === 'feedback') A.fb = null; draw(); },
+    'fb-pub': async () => {
+      try { await store.setFeedback(id, null, v === '1'); ctx.toast(v === '1' ? 'Отзыв опубликован' : 'Отзыв скрыт'); await loadFb(); }
+      catch (ex) { ctx.toast(ex.message || 'Не удалось'); }
+    },
+    'fb-close': async () => {
+      try { await store.setFeedback(id, 'closed'); ctx.toast('Закрыто'); await loadFb(); }
+      catch (ex) { ctx.toast(ex.message || 'Не удалось'); }
+    },
     bk: async () => {
       try { await store.setReservationStatus(b.dataset.id, v); ctx.toast(BK_RU[v] || 'Готово'); await loadBookings(); }
       catch (ex) { ctx.toast(ex.message || 'Не удалось'); }
@@ -674,6 +721,7 @@ document.addEventListener('submit', (e) => {
   if (!location.hash.startsWith('#/admin')) return;
   if (e.target.id === 'loy-form') return onLoyaltySubmit(e);
   if (e.target.id === 'cash-find' || e.target.id === 'cash-go') return onCashSubmit(e);
+  if (e.target.classList?.contains('fb-reply')) return onFbReply(e);
   onVenueSubmit(e);
 });
 document.addEventListener('change', (e) => {

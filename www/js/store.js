@@ -350,6 +350,49 @@ export const store = {
     if (error) throw new Error(error.message);
   },
 
+  /* ---------------- связь с руководством и отзывы ---------------- */
+  async submitFeedback(p) {
+    if (this.demo) {
+      const l = LS.get('feedback', []);
+      const row = { id: uid(), number: 1001 + l.length, user_id: 'demo-user', status: 'new', published: false, created_at: new Date().toISOString(), reply: null, ...p };
+      l.unshift(row); LS.set('feedback', l);
+      return { id: row.id, number: row.number };
+    }
+    await this.ensureGuest();
+    const { data, error } = await sb.rpc('submit_feedback', { p });
+    if (error) throw new Error(error.message);
+    return data;
+  },
+  async myFeedback() {
+    if (this.demo) return LS.get('feedback', []).filter((x) => x.user_id === 'demo-user');
+    const me = await this.me(); if (!me) return [];
+    const { data, error } = await sb.from('feedback').select('*').eq('user_id', me.id).order('created_at', { ascending: false }).limit(30);
+    if (error) throw error;
+    return data;
+  },
+  async publicReviews() {
+    if (this.demo) return LS.get('feedback', []).filter((x) => x.kind === 'review' && x.published).map((x) => ({ ...x, name: (x.name || 'Гость').split(' ')[0] }));
+    const { data, error } = await sb.rpc('public_reviews', { p_limit: 30 });
+    if (error) throw error;
+    return data || [];
+  },
+  async listFeedback() {
+    if (this.demo) return LS.get('feedback', []);
+    const { data, error } = await sb.from('feedback').select('*').order('created_at', { ascending: false }).limit(100);
+    if (error) throw error;
+    return data;
+  },
+  async setFeedback(id, status = null, published = null) {
+    if (this.demo) { const l = LS.get('feedback', []); const x = l.find((y) => y.id === id); if (x) { if (status) x.status = status; if (published !== null) x.published = published; } LS.set('feedback', l); return; }
+    const { error } = await sb.rpc('set_feedback', { p_id: id, p_status: status, p_published: published });
+    if (error) throw new Error(error.message);
+  },
+  async replyFeedback(number, reply) {
+    if (this.demo) { const l = LS.get('feedback', []); const x = l.find((y) => y.number === number); if (x) { x.reply = reply; x.status = 'answered'; x.replied_at = new Date().toISOString(); } LS.set('feedback', l); return; }
+    const { error } = await sb.rpc('feedback_reply', { p_number: number, p_reply: reply });
+    if (error) throw new Error(error.message);
+  },
+
   /* ---------------- подтверждение номера: Telegram-бот или звонок ---------------- */
   async verifyCall(body) {
     const { data, error } = await sb.functions.invoke('verify', { body });

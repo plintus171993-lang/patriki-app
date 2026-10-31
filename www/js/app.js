@@ -72,6 +72,8 @@ const icon = {
   info: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>',
   back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>',
   chev: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
+  star: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>',
+  chat: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>',
   phone: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/></svg>',
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
 };
@@ -92,6 +94,8 @@ const S = {
   history: null,                                  // история заказов из базы
   checkout: { when: 'asap', time: '', payment: 'card', noCall: false, addr: null, comment: '' },
   booking: { guests: 2, day: '', time: '', comment: '' },
+  fb: { kind: 'complaint', rating: 0, venue: '', text: '', order: '', call: false, pdTick: false },
+  reviews: null, myFb: null,
   bookings: null,
   draftAddr: { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true },
   draftContact: null,                             // { name, phone } пока заполняют форму
@@ -149,6 +153,7 @@ async function loadGuest() {
     S.profile = await store.getProfile();
     S.addresses = await store.listAddresses();
     store.myReservations().then((l) => { S.bookings = l; if (route() === '/') render(); }).catch(() => {});
+    store.myFeedback().then((l) => { S.myFb = l; if (route() === '/profile') render(); }).catch(() => {});
     // перенос имени и телефона из старой версии приложения
     const old = keep.get('customer', null);
     if (old && !S.profile.name && old.name) { S.profile.name = old.name; S.profile.phone = fmtPhone(old.phone); }
@@ -180,12 +185,18 @@ async function render() {
   else if (r === '/verify') html = Verify();
   else if (r === '/card') html = GuestCard();
   else if (r === '/info') html = Info();
+  else if (r === '/reviews') html = Reviews();
+  else if (r === '/reviews/new') html = FeedbackForm('review');
+  else if (r === '/feedback') html = FeedbackForm('boss');
+  else if (r === '/profile/feedback') html = MyFeedback();
   else html = Home();
   app.innerHTML = html + TabBar(r) + CartBar(r);
   app.classList.toggle('has-cartbar', !!CartBar(r));
   if (r.startsWith('/order/')) pollOrder(r.split('/')[2]);
   if (r === '/profile/orders' && S.history === null) loadHistory();
   if ((r === '/profile/bookings' || r === '/booking') && S.bookings === null) loadBookings();
+  if (r === '/reviews' && S.reviews === null) loadReviews();
+  if (r === '/profile/feedback' && S.myFb === null) loadMyFb();
   if (r === '/card') startCardQr();
   // карту гостя освежаем, если данные старше 20 секунд (баллы могли начислить в пабе)
   if (['/', '/profile', '/card', '/checkout'].includes(r) && (S.loy === null || (S.loy && Date.now() - (S.loyAt || 0) > 20000))) loadLoyalty();
@@ -197,7 +208,7 @@ function TabBar(r) {
   const n = cartCount();
   const inProfile = r.startsWith('/profile') || r === '/verify' || r === '/card';
   return `<nav class="tabbar" aria-label="Разделы">
-    ${tab('/', 'Главная', icon.home, r === '/' || r === '/info')}
+    ${tab('/', 'Главная', icon.home, r === '/' || r === '/info' || r.startsWith('/reviews') || r === '/feedback')}
     ${tab('/menu', 'Меню', icon.menu, r === '/menu')}
     ${tab('/cart', 'Корзина', icon.bag, r === '/cart' || r === '/checkout', n ? `<span class="badge">${n}</span>` : '')}
     ${tab('/profile', 'Профиль', icon.user, inProfile)}
@@ -574,6 +585,7 @@ function Profile() {
       ${row('#/profile/addresses', icon.pin, 'Мои адреса', S.addresses.length ? `<span class="pill">${S.addresses.length}</span>` : '')}
       ${row('#/card', icon.card, 'Карта гостя', S.loy && S.loy.settings?.enabled ? `<span class="pill">${pts(S.loy.balance)} б.</span>` : '')}
       ${row('#/profile/me', icon.id, 'Личные данные')}
+      ${S.myFb?.length ? row('#/profile/feedback', icon.chat, 'Мои обращения', S.myFb.some((x) => x.reply && !keep.get('fbSeen:' + x.id, false)) ? '<span class="pill">новый ответ</span>' : '') : ''}
     </nav>
     ${InfoRows()}
     ${me?.verified ? '<button type="button" class="btn btn-ghost btn-block" data-act="logout">Выйти из профиля</button>' : ''}
@@ -581,6 +593,8 @@ function Profile() {
 }
 const InfoRows = () => `<nav class="menu-group" aria-label="О пабе">
   ${row('#/info', icon.info, 'Адреса и контакты')}
+  ${row('#/reviews', icon.star, 'Отзывы гостей')}
+  ${row('#/feedback', icon.chat, 'Связь с руководством')}
   ${row('legal/index.html', icon.id, 'Документы')}
   <button type="button" class="menu-row" data-act="call"><span class="row">${icon.phone}<span>Позвонить в паб</span></span>${icon.chev}</button>
 </nav>`;
@@ -697,6 +711,124 @@ function MyBookings() {
         ${bookingActive(x) ? `<button type="button" class="btn btn-ghost btn-sm" style="align-self:flex-start" data-act="bk-cancel" data-id="${esc(x.id)}">Отменить бронь</button>` : ''}
       </article>`).join('')}
     <a class="btn btn-outline btn-block" href="#/booking">Новая бронь</a>
+  </main>`;
+}
+
+/* ---------- голос гостя: отзывы и связь с руководством ---------- */
+const FB_KINDS = [['complaint', 'Жалоба'], ['idea', 'Предложение'], ['thanks', 'Благодарность']];
+const FB_KIND_RU = { complaint: 'Жалоба', idea: 'Предложение', thanks: 'Благодарность', review: 'Отзыв' };
+const stars = (n, size = 16) => `<span class="stars" aria-label="Оценка ${n} из 5" style="font-size:${size}px">${'★'.repeat(n)}<span class="off">${'★'.repeat(5 - n)}</span></span>`;
+const GuestVoice = () => `<nav class="menu-group" aria-label="Отзывы и обратная связь">
+  ${row('#/reviews', icon.star, 'Отзывы гостей')}
+  ${row('#/feedback', icon.chat, 'Связь с руководством')}
+</nav>`;
+async function loadReviews() {
+  try { S.reviews = await store.publicReviews(); } catch (e) { console.warn(e); S.reviews = []; }
+  if (route() === '/reviews') render();
+}
+async function loadMyFb() {
+  try { S.myFb = await store.myFeedback(); } catch (e) { console.warn(e); S.myFb = []; }
+  if (['/profile/feedback', '/profile'].includes(route())) render();
+}
+function Reviews() {
+  const list = S.reviews;
+  const avg = list?.length ? list.reduce((a, x) => a + x.rating, 0) / list.length : 0;
+  return `<main class="screen">
+    <div class="row">${backBtn('/info')}<h1 class="h1" style="font-size:26px">Отзывы гостей</h1></div>
+    ${list?.length ? `<div class="card row" style="gap:14px"><b style="font-size:34px;font-family:Oswald,sans-serif">${avg.toFixed(1).replace('.', ',')}</b>
+      <div class="stack" style="gap:2px">${stars(Math.round(avg), 18)}<span class="muted" style="font-size:13px">${list.length} ${plural(list.length, 'отзыв', 'отзыва', 'отзывов')}</span></div></div>` : ''}
+    <a class="btn btn-accent btn-block" href="#/reviews/new">${icon.star} Оставить отзыв</a>
+    ${list === null ? bulldogLoader('Читаем отзывы…')
+      : !list.length ? `<div class="empty">${icon.star}<span>Отзывов пока нет — будьте первым.</span></div>`
+      : list.map((x) => `<article class="card stack" style="gap:6px">
+        <div class="between"><b>${esc(x.name)}</b>${stars(x.rating)}</div>
+        <span class="muted" style="font-size:12px">${new Date(x.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}${x.venue_id ? ` · ${esc((S.venues.find((v) => v.id === x.venue_id) || {}).name || '')}` : ''}</span>
+        ${x.text ? `<p style="margin:0;line-height:1.55;white-space:pre-line">${esc(x.text)}</p>` : ''}
+        ${x.reply ? `<div class="reply"><b>Ответ паба</b><span>${esc(x.reply)}</span></div>` : ''}
+      </article>`).join('')}
+    <div class="muted" style="font-size:12px;text-align:center">Отзывы публикуются после проверки. Жалобу лучше написать в «Связь с руководством» — ответим лично.</div>
+  </main>`;
+}
+function plural(n, one, few, many) { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many; }
+function FeedbackForm(mode) {
+  const f = S.fb, c = S.draftContact || {}, review = mode === 'review';
+  const vId = f.venue || S.venueId;
+  return `<main class="screen">
+    <div class="row">${backBtn(review ? '/reviews' : '/info')}<h1 class="h1" style="font-size:26px">${review ? 'Ваш отзыв' : 'Связь с руководством'}</h1></div>
+    <p style="margin:0;color:var(--text-2);line-height:1.55">${review
+      ? 'Расскажите, как всё прошло. Отзыв появится в приложении после проверки.'
+      : 'Сообщение сразу получат учредители паба — не управляющий смены. Читаем каждое обращение и отвечаем лично.'}</p>
+    <form id="fb-form" class="stack" style="gap:18px" data-mode="${review ? 'review' : 'boss'}">
+      ${review ? `<section class="stack"><span class="eyebrow">Оценка</span>
+        <div class="row star-pick" role="radiogroup" aria-label="Оценка">${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="star-btn" role="radio" aria-checked="${f.rating === n}" aria-label="${n} из 5" data-act="fb-star" data-v="${n}" ${n <= f.rating ? 'data-on' : ''}>★</button>`).join('')}</div></section>`
+      : `<section class="stack"><span class="eyebrow">Тема</span>
+        <div class="chips">${FB_KINDS.map(([k, t]) => `<button type="button" class="chip" data-act="fb-kind" data-v="${k}" aria-current="${f.kind === k}">${t}</button>`).join('')}</div></section>`}
+      ${S.venues.length > 1 ? `<section class="stack"><span class="eyebrow">Заведение</span>
+        <div class="chips">${S.venues.map((v) => `<button type="button" class="chip" data-act="fb-venue" data-v="${esc(v.id)}" aria-current="${v.id === vId}">${esc(v.name)}</button>`).join('')}</div></section>` : ''}
+      <label class="field">${review ? 'Отзыв' : 'Что случилось'}<textarea class="input" name="text" rows="5" maxlength="2000" placeholder="${review ? 'Что понравилось, что улучшить…' : 'Опишите ситуацию: когда, что произошло, кто обслуживал…'}">${esc(f.text)}</textarea></label>
+      ${review ? '' : `<label class="field">Номер заказа или брони <span class="muted">(если есть)</span><input class="input" name="order" inputmode="numeric" maxlength="10" value="${esc(f.order)}"></label>`}
+      <section class="stack"><span class="eyebrow">${review ? 'Как вас подписать' : 'Контакты'}</span>
+        <label class="field">Имя<input class="input" name="name" autocomplete="given-name" value="${esc(c.name || S.profile.name || '')}"></label>
+        ${review ? '' : `<label class="field">Телефон<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone placeholder="${PHONE_PH}" value="${esc(fmtPhone(c.phone || S.profile.phone || ''))}"></label>
+        <label class="check"><input type="checkbox" name="call" ${f.call ? 'checked' : ''}><span>Перезвоните мне</span></label>`}
+      </section>
+      ${review ? '' : ConsentBox(f.pdTick)}
+      <p class="error" id="fb-err" role="alert"></p>
+      <button type="submit" class="btn btn-accent btn-block">${review ? 'Отправить отзыв' : 'Отправить руководству'}</button>
+    </form>
+    ${!review && S.myFb?.length ? '<a class="btn btn-ghost btn-block" href="#/profile/feedback">Мои обращения</a>' : ''}
+  </main>`;
+}
+function saveFbForm() {
+  const f = document.getElementById('fb-form'); if (!f) return;
+  S.fb.text = f.text.value;
+  if (f.order) S.fb.order = f.order.value;
+  if (f.call) S.fb.call = f.call.checked;
+  S.fb.pdTick = !!f.pdConsent?.checked;
+  S.draftContact = { ...S.draftContact, name: f.name.value, ...(f.phone ? { phone: f.phone.value } : {}) };
+}
+async function submitFeedback(form) {
+  saveFbForm();
+  const review = form.dataset.mode === 'review', f = S.fb, c = S.draftContact || {}, err = document.getElementById('fb-err');
+  if (review && !f.rating) return (err.textContent = 'Поставьте оценку');
+  if (!review && f.text.trim().length < 5) return (err.textContent = 'Опишите, пожалуйста, ситуацию');
+  const p10 = review ? '' : phone10(c.phone || '');
+  if (f.call && p10.length !== 10) return (err.textContent = 'Чтобы перезвонить, нужен номер телефона');
+  if (p10 && p10.length !== 10) return (err.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX');
+  if (p10 && !hasPdConsent() && !f.pdTick) return (err.textContent = 'Отметьте согласие на обработку персональных данных');
+  const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Отправляем…';
+  try {
+    if (p10) await grantPd('feedback');
+    const res = await store.submitFeedback({
+      kind: review ? 'review' : f.kind, rating: review ? f.rating : null, venue_id: f.venue || S.venueId,
+      text: f.text.trim(), name: (c.name || '').trim(), phone: p10 ? fmtPhone(p10) : '', order_number: review ? '' : f.order,
+      wants_call: !review && f.call, pd_consent: !!p10,
+    });
+    S.fb = { kind: 'complaint', rating: 0, venue: '', text: '', order: '', call: false, pdTick: false };
+    S.myFb = null; S.reviews = null; loadMyFb();
+    if (review) { toast('Спасибо! Отзыв появится после проверки', 3500); location.hash = '#/reviews'; }
+    else { toast(`Обращение №${res.number} отправлено руководству`, 3500); location.hash = '#/profile/feedback'; }
+  } catch (ex) {
+    err.textContent = ex.message || 'Не удалось отправить';
+    btn.disabled = false; btn.textContent = review ? 'Отправить отзыв' : 'Отправить руководству';
+  }
+}
+function MyFeedback() {
+  const list = S.myFb;
+  if (list) list.forEach((x) => { if (x.reply) keep.set('fbSeen:' + x.id, true); });
+  return `<main class="screen">
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Мои обращения</h1></div>
+    ${list === null ? bulldogLoader('Ищем обращения…')
+      : !list.length ? `<div class="empty">${icon.chat}<span>Обращений пока нет.</span></div>`
+      : list.map((x) => `<article class="card stack" style="gap:6px">
+        <div class="between"><span class="h2" style="font-size:18px">${FB_KIND_RU[x.kind] || ''} №${esc(x.number)}</span>
+          <span class="status-pill ${x.reply ? 'done' : 'new'}">${x.kind === 'review' ? (x.published ? 'Опубликован' : 'На проверке') : x.reply ? 'Есть ответ' : 'Читаем'}</span></div>
+        <span class="muted" style="font-size:12px">${new Date(x.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}</span>
+        ${x.rating ? stars(x.rating) : ''}
+        ${x.text ? `<p style="margin:0;line-height:1.55;white-space:pre-line">${esc(x.text)}</p>` : ''}
+        ${x.reply ? `<div class="reply"><b>Ответ руководства</b><span>${esc(x.reply)}</span></div>` : ''}
+      </article>`).join('')}
+    <a class="btn btn-outline btn-block" href="#/feedback">Новое обращение</a>
   </main>`;
 }
 
@@ -1095,6 +1227,7 @@ function Info() {
   return `<main class="screen">
     <div class="row">${backBtn('/', 'На главную')}<h1 class="h1" style="font-size:26px">Информация</h1></div>
     <div style="display:flex;justify-content:center;color:var(--text);padding:8px 0">${logoEmblem(220)}</div>
+    ${GuestVoice()}
     ${S.venues.map((v) => `<section class="card stack">
       <div class="between"><span class="h2" style="font-size:18px">${esc(v.name)}</span>${v.accepting === false ? '<span class="status-pill">скоро</span>' : ''}</div>
       <span style="color:var(--text-2)">${esc(v.address)}</span>
@@ -1274,6 +1407,9 @@ app.addEventListener('click', async (e) => {
   if (act === 'pick-addr') { saveCheckoutForm(); S.checkout.addr = id; render(); }
   if (act === 'repeat') repeatOrder(id);
   if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
+  if (act === 'fb-kind') { saveFbForm(); S.fb.kind = v; render(); }
+  if (act === 'fb-star') { saveFbForm(); S.fb.rating = Number(v); render(); }
+  if (act === 'fb-venue') { saveFbForm(); S.fb.venue = v; render(); }
   if (act === 'verify-back') { clearTimeout(tgPoll); clearTimeout(inPoll); S.verify.step = 'phone'; S.verify.err = ''; render(); }
   if (act === 'in-call') { S.verify.called = true; const w = document.getElementById('in-wait'); if (w) w.textContent = 'Ждём ваш звонок…'; }
   if (act === 'in-retry') startIncoming(S.verify.phone, null, null);
@@ -1307,6 +1443,7 @@ app.addEventListener('submit', async (e) => {
   const f = e.target;
   if (f.id === 'checkout') { e.preventDefault(); return submitCheckout(f); }
   if (f.id === 'booking') { e.preventDefault(); return submitBooking(f); }
+  if (f.id === 'fb-form') { e.preventDefault(); return submitFeedback(f); }
   if (f.id === 'phone-form') {
     e.preventDefault();
     if (!consentOk(f)) return;
