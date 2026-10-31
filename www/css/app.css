@@ -285,3 +285,8 @@ img { display: block; max-width: 100%; }
 .slots .opt{padding:10px 0;text-align:center}
 
 .in-number{font-family:Oswald,'Arial Narrow',sans-serif;font-size:30px;letter-spacing:1px;text-align:center;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--surface,#171716)}
+
+.stars{color:#D4A84B;letter-spacing:1px;line-height:1}.stars .off{color:var(--line)}
+.star-pick{gap:6px}.star-btn{font-size:38px;line-height:1;background:none;border:0;color:var(--line);padding:2px 4px;cursor:pointer}.star-btn[data-on]{color:#D4A84B}
+.reply{display:flex;flex-direction:column;gap:4px;border-left:3px solid #D4A84B;padding:8px 12px;background:rgba(212,168,75,.08);border-radius:0 10px 10px 0;font-size:14px;line-height:1.5}
+textarea.input{resize:vertical;min-height:110px;font:inherit}
