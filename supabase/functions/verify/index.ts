@@ -166,29 +166,39 @@ async function callStart(req: Request, body: any) {
   const phone = ruPhone(body.phone);
   if (!phone) throw new Error('Введите номер полностью: +7 (XXX) XXX-XX-XX');
   await db.rpc('verify_cleanup');
-  const minuteAgo = new Date(Date.now() - 60_000).toISOString();
+  const minuteAgo = new Date(Date.now() - 30_000).toISOString();
   const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
   const { count: recentUser } = await db.from('phone_calls').select('id', { count: 'exact', head: true }).eq('user_id', u.id).gte('created_at', minuteAgo);
-  if (recentUser) throw new Error('Подождите минуту перед повторным звонком');
+  if (recentUser) throw new Error('Подождите 30 секунд перед повторной попыткой');
   const { count: perHour } = await db.from('phone_calls').select('id', { count: 'exact', head: true }).eq('phone', phone).gte('created_at', hourAgo);
-  if ((perHour || 0) >= 5) throw new Error('Слишком много попыток для этого номера. Попробуйте через час или через Telegram');
+  if ((perHour || 0) >= 5) throw new Error('Слишком много попыток для этого номера. Попробуйте через час');
 
+  // channel: 'call' — звонок-сброс (код = последние 4 цифры номера), 'sms' — код в SMS
+  const channel = body.channel === 'sms' ? 'sms' : 'call';
   let code = '';
-  if (CALL_PROVIDER === 'smsru') {
+  if (CALL_PROVIDER === 'smsru' && channel === 'call') {
     if (!SMSRU_API_ID) throw new Error('Звонок не настроен');
     const r = await fetch(`https://sms.ru/code/call?phone=${phone}&ip=-1&api_id=${encodeURIComponent(SMSRU_API_ID)}&json=1`);
     const d = await r.json().catch(() => ({}));
-    if (d.status !== 'OK' || !d.code) { console.error('sms.ru', d); throw new Error('Не удалось позвонить. Попробуйте через Telegram'); }
+    if (d.status !== 'OK' || !d.code) { console.error('sms.ru', d); throw new Error('Не удалось позвонить. Попробуйте получить код в SMS'); }
     code = String(d.code).slice(-4);
+  } else if (CALL_PROVIDER === 'smsru' && channel === 'sms') {
+    if (!SMSRU_API_ID) throw new Error('SMS не настроены');
+    code = String(Math.floor(1000 + Math.random() * 9000));
+    const msg = encodeURIComponent(`Патрики Паб: код ${code}. Никому его не сообщайте.`);
+    const r = await fetch(`https://sms.ru/sms/send?api_id=${encodeURIComponent(SMSRU_API_ID)}&to=${phone}&msg=${msg}&json=1`);
+    const d = await r.json().catch(() => ({}));
+    const st = d?.sms?.[phone]?.status;
+    if (d.status !== 'OK' || st !== 'OK') { console.error('sms.ru sms', d); throw new Error('Не удалось отправить SMS. Попробуйте позже'); }
   } else {
     // тестовый режим: звонка нет, код видит управляющий (админка и тема «Все заказы»)
     code = String(Math.floor(1000 + Math.random() * 9000));
     await db.from('sms_outbox').insert({ phone, otp: code });
     const { telegram_chat_id: c } = await secrets();
-    if (c) await tgToChat(c, `☎️ Тест звонка: код для ${pretty(phone)} — ${code}`).catch(() => {});
+    if (c) await tgToChat(c, `${channel === 'sms' ? '✉️ Тест SMS' : '☎️ Тест звонка'}: код для ${pretty(phone)} — ${code}`).catch(() => {});
   }
   await db.from('phone_calls').insert({ user_id: u.id, phone, code_hash: await sha(phone + ':' + code), expires_at: new Date(Date.now() + 5 * 60_000).toISOString() });
-  return { ok: true, provider: CALL_PROVIDER, ...(CALL_PROVIDER === 'mock' ? { test: true } : {}) };
+  return { ok: true, provider: CALL_PROVIDER, channel, ...(CALL_PROVIDER === 'mock' ? { test: true } : {}) };
 }
 
 async function callCheck(req: Request, body: any) {
@@ -202,7 +212,7 @@ async function callCheck(req: Request, body: any) {
   if (c.attempts >= 5) throw new Error('Слишком много попыток, запросите звонок ещё раз');
   if (c.code_hash !== await sha(phone + ':' + code)) {
     await db.from('phone_calls').update({ attempts: c.attempts + 1 }).eq('id', c.id);
-    throw new Error('Неверный код — это последние 4 цифры номера, с которого звонили');
+    throw new Error('Неверный код. Для звонка — это последние 4 цифры номера, с которого звонили; для SMS — код из сообщения');
   }
   await db.from('phone_calls').delete().eq('id', c.id);
   return { phone, ...(await applyPhone(u.id, phone)) };
