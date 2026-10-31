@@ -310,6 +310,46 @@ export const store = {
     return data;
   },
 
+  /* ---------------- бронирование столов ---------------- */
+  async placeReservation(r) {
+    if (this.demo) {
+      const v = LS.get('venues', []).find((x) => x.id === r.venue_id) || {};
+      const dep = (v.booking_deposit || 0) * r.guests;
+      const list = LS.get('reservations', []);
+      const row = { id: uid(), number: 501 + list.length, user_id: 'demo-user', status: 'new', deposit: dep, payment_status: dep ? 'pending' : 'none', created_at: new Date().toISOString(), comment: '', ...r };
+      list.unshift(row); LS.set('reservations', list);
+      return { id: row.id, number: row.number, deposit: dep, status: 'new', payment_status: row.payment_status };
+    }
+    await this.ensureGuest();
+    const { data, error } = await sb.rpc('place_reservation', { p: r });
+    if (error) throw new Error(error.message);
+    return data;
+  },
+  async myReservations() {
+    if (this.demo) return LS.get('reservations', []).filter((x) => x.user_id === 'demo-user');
+    const me = await this.me(); if (!me) return [];
+    const { data, error } = await sb.from('reservations').select('*').eq('user_id', me.id).order('starts_at', { ascending: false }).limit(30);
+    if (error) throw error;
+    return data;
+  },
+  async cancelReservation(id) {
+    if (this.demo) { const l = LS.get('reservations', []); const x = l.find((y) => y.id === id); if (x) x.status = 'cancelled'; LS.set('reservations', l); return; }
+    const { error } = await sb.rpc('cancel_reservation', { p_id: id });
+    if (error) throw new Error(error.message);
+  },
+  async listReservations() {
+    if (this.demo) return LS.get('reservations', []);
+    const since = new Date(Date.now() - 12 * 3600e3).toISOString();
+    const { data, error } = await sb.from('reservations').select('*').gte('starts_at', since).order('starts_at').limit(200);
+    if (error) throw error;
+    return data;
+  },
+  async setReservationStatus(id, status, note = '') {
+    if (this.demo) { const l = LS.get('reservations', []); const x = l.find((y) => y.id === id); if (x) { x.status = status; if (note) x.staff_note = note; } LS.set('reservations', l); return; }
+    const { error } = await sb.rpc('set_reservation_status', { p_id: id, p_status: status, p_note: note });
+    if (error) throw new Error(error.message);
+  },
+
   /* ---------------- подтверждение номера: Telegram-бот или звонок ---------------- */
   async verifyCall(body) {
     const { data, error } = await sb.functions.invoke('verify', { body });

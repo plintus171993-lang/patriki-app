@@ -59,6 +59,7 @@ document.addEventListener('input', (e) => {
 });
 
 const icon = {
+  cal: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
   home: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
   menu: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
   bag: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 7h14l-1.5 12h-11z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>',
@@ -89,6 +90,8 @@ const S = {
   addresses: [],
   history: null,                                  // история заказов из базы
   checkout: { when: 'asap', time: '', payment: 'card', noCall: false, addr: null, comment: '' },
+  booking: { guests: 2, day: '', time: '', comment: '' },
+  bookings: null,
   draftAddr: { street: '', flat: '', entrance: '', floor: '', intercom: '', label: '', save: true },
   draftContact: null,                             // { name, phone } пока заполняют форму
   verify: { step: 'phone', phone: '', until: 0, back: '/profile' },
@@ -144,6 +147,7 @@ async function loadGuest() {
     S.me = await store.me();
     S.profile = await store.getProfile();
     S.addresses = await store.listAddresses();
+    store.myReservations().then((l) => { S.bookings = l; if (route() === '/') render(); }).catch(() => {});
     // перенос имени и телефона из старой версии приложения
     const old = keep.get('customer', null);
     if (old && !S.profile.name && old.name) { S.profile.name = old.name; S.profile.phone = fmtPhone(old.phone); }
@@ -170,6 +174,8 @@ async function render() {
   else if (r === '/profile/orders') html = History();
   else if (r === '/profile/addresses') html = Addresses();
   else if (r === '/profile/me') html = PersonalData();
+  else if (r === '/booking') html = Booking();
+  else if (r === '/profile/bookings') html = MyBookings();
   else if (r === '/verify') html = Verify();
   else if (r === '/card') html = GuestCard();
   else if (r === '/info') html = Info();
@@ -178,6 +184,7 @@ async function render() {
   app.classList.toggle('has-cartbar', !!CartBar(r));
   if (r.startsWith('/order/')) pollOrder(r.split('/')[2]);
   if (r === '/profile/orders' && S.history === null) loadHistory();
+  if ((r === '/profile/bookings' || r === '/booking') && S.bookings === null) loadBookings();
   if (r === '/card') startCardQr();
   // карту гостя освежаем, если данные старше 20 секунд (баллы могли начислить в пабе)
   if (['/', '/profile', '/card', '/checkout'].includes(r) && (S.loy === null || (S.loy && Date.now() - (S.loyAt || 0) > 20000))) loadLoyalty();
@@ -229,8 +236,8 @@ function Home() {
         </div>
       </div>
     </section>
-    ${S.history?.length || S.orders.length ? `<a class="card card-link between" href="#/profile/orders">
-      <div class="stack" style="gap:4px"><span class="eyebrow">Мои заказы</span><span style="font-size:15px;font-weight:600">Повторить прошлый заказ</span></div>
+    ${v.booking_enabled !== false ? `<a class="card card-link between" href="#/booking">
+      <div class="row" style="gap:12px">${icon.cal}<div class="stack" style="gap:4px"><span class="eyebrow">Забронировать стол</span><span style="font-size:15px;font-weight:600">${esc(v.name || 'Паб')} · ${upcomingBooking() ? `бронь ${esc(upcomingBooking())}` : 'выберите дату и время'}</span></div></div>
       <span class="row muted">${icon.chev}</span></a>` : ''}
     ${`<a class="card card-link between loy-home" href="#/card">
       <div class="stack" style="gap:4px"><span class="eyebrow">Карта гостя${S.loy?.tier ? ` · ${esc(S.loy.tier.name)} ${esc(S.loy.tier.pct)}%` : ''}</span><span style="font-size:15px;font-weight:600">${S.loy && S.loy.settings?.enabled ? `${pts(S.loy.balance)} ${ptsWord(S.loy.balance)}` : 'Баллы за заказы и визиты'}</span></div>
@@ -366,7 +373,7 @@ function Checkout() {
       <section class="stack">
         <span class="eyebrow">Оплата</span>
         ${v.pay_online ? `<button type="button" class="opt opt-wide" data-act="pay" data-v="online" aria-pressed="${k.payment === 'online'}">
-          <span class="stack" style="gap:2px;text-align:left"><b>Онлайн сейчас</b><span class="muted" style="font-size:12px">Карта, СБП, SberPay · спишем, когда паб примет заказ</span></span></button>` : ''}
+          <span class="stack" style="gap:2px;text-align:left"><b>Картой или СБП онлайн</b><span class="muted" style="font-size:12px">Банковская карта, СБП, SberPay · спишем, когда паб примет заказ</span></span></button>` : ''}
         <div class="grid-2">
           <button type="button" class="opt" data-act="pay" data-v="card" aria-pressed="${k.payment === 'card'}">Картой курьеру</button>
           <button type="button" class="opt" data-act="pay" data-v="cash" aria-pressed="${k.payment === 'cash'}">Наличными</button>
@@ -561,7 +568,8 @@ function Profile() {
            <span class="muted" style="font-size:12px;line-height:1.5">Необязательно. Подтверждённый номер — это ваши заказы и адреса на любом телефоне и баллы лояльности.</span>`}
     </div>
     <nav class="menu-group" aria-label="Мой профиль">
-      ${row('#/profile/orders', icon.clock, 'История заказов')}
+      ${row('#/profile/orders', icon.clock, 'Мои заказы')}
+      ${row('#/profile/bookings', icon.cal, 'Мои брони', S.bookings?.filter(bookingActive).length ? `<span class="pill">${S.bookings.filter(bookingActive).length}</span>` : '')}
       ${row('#/profile/addresses', icon.pin, 'Мои адреса', S.addresses.length ? `<span class="pill">${S.addresses.length}</span>` : '')}
       ${row('#/card', icon.card, 'Карта гостя', S.loy && S.loy.settings?.enabled ? `<span class="pill">${pts(S.loy.balance)} б.</span>` : '')}
       ${row('#/profile/me', icon.id, 'Личные данные')}
@@ -575,6 +583,121 @@ const InfoRows = () => `<nav class="menu-group" aria-label="О пабе">
   ${row('legal/index.html', icon.id, 'Документы')}
   <button type="button" class="menu-row" data-act="call"><span class="row">${icon.phone}<span>Позвонить в паб</span></span>${icon.chev}</button>
 </nav>`;
+
+/* ---------- бронирование столов ---------- */
+const BOOK_STATUS = { new: 'Ждёт подтверждения', confirmed: 'Подтверждена', declined: 'Отклонена', cancelled: 'Отменена', done: 'Состоялась', noshow: 'Гость не пришёл' };
+const bookingActive = (b) => ['new', 'confirmed'].includes(b.status) && new Date(b.starts_at) > Date.now();
+const fmtBookTime = (iso) => new Date(iso).toLocaleString('ru-RU', { weekday: 'short', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' });
+function upcomingBooking() {
+  const b = (S.bookings || []).filter(bookingActive).sort((a, z) => a.starts_at.localeCompare(z.starts_at))[0];
+  return b ? new Date(b.starts_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' }) : '';
+}
+async function loadBookings() {
+  try { S.bookings = await store.myReservations(); } catch (e) { console.warn(e); S.bookings = []; }
+  if (['/profile/bookings', '/booking', '/', '/profile'].includes(route())) render();
+}
+// ближайшие 14 дней и получасовые слоты 12:00–23:30 (по Москве)
+function bookingDays() {
+  const out = [], now = new Date();
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(now.getTime() + i * 864e5);
+    const key = d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' });
+    out.push({ key, label: i === 0 ? 'Сегодня' : i === 1 ? 'Завтра' : d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/Moscow' }) });
+  }
+  return out;
+}
+function bookingSlots(day) {
+  const out = [];
+  for (let h = 12; h <= 23; h++) for (const m of [0, 30]) {
+    const t = `${String(h).padStart(2, '0')}:${m ? '30' : '00'}`;
+    const at = new Date(`${day}T${t}:00+03:00`);
+    if (at.getTime() > Date.now() + 30 * 60e3) out.push(t);
+  }
+  return out;
+}
+function Booking() {
+  const v = venue(), b = S.booking, c = S.draftContact || {};
+  const days = bookingDays();
+  if (!b.day || !days.some((d) => d.key === b.day)) b.day = days[0].key;
+  let slots = bookingSlots(b.day);
+  if (!slots.length && b.day === days[0].key) { b.day = days[1].key; slots = bookingSlots(b.day); }
+  if (b.time && !slots.includes(b.time)) b.time = '';
+  const max = v.booking_max_guests || 12, dep = (v.booking_deposit || 0) * b.guests;
+  if (v.booking_enabled === false || v.accepting === false) return `<main class="screen">
+    <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
+    <div class="card stack"><span style="color:var(--text-2);line-height:1.5">В заведении «${esc(v.name)}» бронирование пока недоступно. Позвоните нам — подскажем.</span>
+    <button type="button" class="btn btn-outline" data-act="call">Позвонить в паб</button></div></main>`;
+  return `<main class="screen">
+    <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
+    ${VenueSwitch()}
+    <form id="booking" class="stack" style="gap:18px" novalidate>
+      <section class="stack"><span class="eyebrow">Дата</span>
+        <div class="chips" style="flex-wrap:nowrap;overflow-x:auto">${days.map((d) => `<button type="button" class="chip" data-act="bk-day" data-v="${d.key}" aria-current="${d.key === b.day}">${esc(d.label)}</button>`).join('')}</div></section>
+      <section class="stack"><span class="eyebrow">Время</span>
+        <div class="slots">${slots.map((t) => `<button type="button" class="opt" data-act="bk-time" data-v="${t}" aria-pressed="${t === b.time}">${t}</button>`).join('')}</div></section>
+      <section class="stack"><span class="eyebrow">Гостей</span>
+        <div class="row" style="gap:14px"><button type="button" class="icon-btn" data-act="bk-g" data-v="-1" aria-label="Меньше">−</button>
+          <b style="font-size:22px;min-width:32px;text-align:center">${b.guests}</b>
+          <button type="button" class="icon-btn" data-act="bk-g" data-v="1" aria-label="Больше" ${b.guests >= max ? 'disabled' : ''}>+</button>
+          <span class="muted" style="font-size:12px">больше ${max} — по телефону</span></div></section>
+      <section class="stack"><span class="eyebrow">Контакты</span>
+        <label class="field">Имя<input class="input" name="name" autocomplete="given-name" required value="${esc(c.name || S.profile.name || '')}"></label>
+        <label class="field">Телефон<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone required placeholder="${PHONE_PH}" value="${esc(fmtPhone(c.phone || S.profile.phone || ''))}"></label>
+        <label class="field">Пожелания<input class="input" name="comment" maxlength="300" placeholder="У окна, день рождения, детский стул…" value="${esc(b.comment || '')}"></label></section>
+      ${dep > 0 ? `<div class="card" style="font-size:14px;line-height:1.5">Депозит ${rub(dep)} (${rub(v.booking_deposit)} с гостя) — оплачивается онлайн при бронировании и засчитывается в счёт. При отмене позже чем за 3 часа депозит не возвращается.</div>`
+        : `<div class="muted" style="font-size:12px;line-height:1.5">Бронь бесплатная. Паб подтвердит её звонком или сообщением; держим стол 15 минут после назначенного времени.</div>`}
+      ${ConsentBox(b.pdTick)}
+      <p class="error" id="bk-err" role="alert"></p>
+      <button type="submit" class="btn btn-accent btn-block">${dep > 0 ? `Забронировать и оплатить ${rub(dep)}` : 'Забронировать'}</button>
+    </form>
+    ${(S.bookings || []).filter(bookingActive).length ? `<a class="btn btn-ghost btn-block" href="#/profile/bookings">Мои брони</a>` : ''}
+  </main>`;
+}
+function saveBookingForm() {
+  const f = document.getElementById('booking'); if (!f) return;
+  S.booking.comment = f.comment.value;
+  S.booking.pdTick = !!f.pdConsent?.checked;
+  S.draftContact = { ...S.draftContact, name: f.name.value, phone: f.phone.value };
+}
+async function submitBooking(form) {
+  saveBookingForm();
+  const b = S.booking, c = S.draftContact || {}, err = document.getElementById('bk-err');
+  if (!b.time) return (err.textContent = 'Выберите время');
+  if (!c.name?.trim()) return (err.textContent = 'Укажите имя');
+  if (phone10(c.phone).length !== 10) return (err.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX');
+  if (!hasPdConsent() && !b.pdTick) return (err.textContent = 'Отметьте согласие на обработку персональных данных');
+  const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Бронируем…';
+  try {
+    await grantPd('booking');
+    const res = await store.placeReservation({
+      venue_id: S.venueId, starts_at: new Date(`${b.day}T${b.time}:00+03:00`).toISOString(), guests: b.guests,
+      name: c.name.trim(), phone: fmtPhone(c.phone), comment: (b.comment || '').trim(), pd_consent: true, pd_consent_version: CV,
+    });
+    S.booking = { guests: 2, day: '', time: '', comment: '' };
+    S.bookings = null; loadBookings();
+    toast(res.deposit > 0 ? `Бронь №${res.number} создана — осталось оплатить депозит` : `Бронь №${res.number} отправлена в паб`);
+    location.hash = '#/profile/bookings';
+  } catch (ex) {
+    err.textContent = ex.message || 'Не удалось забронировать';
+    btn.disabled = false; btn.textContent = 'Забронировать';
+  }
+}
+function MyBookings() {
+  const list = S.bookings;
+  return `<main class="screen">
+    <div class="row">${backBtn('/profile')}<h1 class="h1" style="font-size:26px">Мои брони</h1></div>
+    ${list === null ? bulldogLoader('Смотрим журнал брони…')
+      : !list.length ? `<div class="empty">${icon.cal}<span>Броней пока нет.</span><a class="btn btn-accent" href="#/booking">Забронировать стол</a></div>`
+      : list.map((x) => `<article class="card stack">
+        <div class="between"><span class="h2" style="font-size:18px">№${esc(x.number)}</span><span class="status-pill ${x.status === 'confirmed' ? 'done' : x.status === 'new' ? 'new' : 'cancelled'}">${BOOK_STATUS[x.status] || esc(x.status)}</span></div>
+        <span style="font-size:15px">${esc(fmtBookTime(x.starts_at))} · ${esc(x.guests)} чел.</span>
+        <span class="muted" style="font-size:13px">${esc((S.venues.find((v) => v.id === x.venue_id) || {}).name || x.venue_id)}${x.comment ? ` · ${esc(x.comment)}` : ''}</span>
+        ${x.deposit > 0 ? `<span class="muted" style="font-size:13px">Депозит ${rub(x.deposit)} · ${x.payment_status === 'pending' ? 'ожидает оплаты' : x.payment_status === 'held' || x.payment_status === 'paid' ? 'оплачен' : esc(x.payment_status)}</span>` : ''}
+        ${bookingActive(x) ? `<button type="button" class="btn btn-ghost btn-sm" style="align-self:flex-start" data-act="bk-cancel" data-id="${esc(x.id)}">Отменить бронь</button>` : ''}
+      </article>`).join('')}
+    <a class="btn btn-outline btn-block" href="#/booking">Новая бронь</a>
+  </main>`;
+}
 
 function History() {
   const list = S.history;
@@ -1065,7 +1188,7 @@ app.addEventListener('click', async (e) => {
   if (act === 'doc') { e.preventDefault(); return docSheet(b.dataset.h); }
   if (act === 'call') return callSheet();
   if (act === 'bonus') { saveCheckoutForm(); S.checkout.useBonus = b.checked; const y = window.scrollY; render(); window.scrollTo(0, y); return; }
-  if (act === 'venue') { if (route() === '/checkout') saveCheckoutForm(); S.venueId = id; keep.set('venue', id); render(); }
+  if (act === 'venue') { if (route() === '/checkout') saveCheckoutForm(); if (route() === '/booking') saveBookingForm(); S.venueId = id; keep.set('venue', id); render(); }
   if (act === 'inc' || act === 'dec') {
     setQty(id, (S.cart[id] || 0) + (act === 'inc' ? 1 : -1));
     const y = window.scrollY; render(); window.scrollTo(0, y);
@@ -1076,6 +1199,14 @@ app.addEventListener('click', async (e) => {
     app.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-current', String(c === b)));
   }
   if (act === 'when') { saveCheckoutForm(); S.checkout.when = v; render(); }
+  if (act === 'bk-day') { saveBookingForm(); S.booking.day = v; render(); return; }
+  if (act === 'bk-time') { saveBookingForm(); S.booking.time = v; render(); return; }
+  if (act === 'bk-g') { saveBookingForm(); const max = venue().booking_max_guests || 12; S.booking.guests = Math.max(1, Math.min(max, S.booking.guests + Number(v))); render(); return; }
+  if (act === 'bk-cancel') {
+    if (!confirm('Отменить бронь?')) return;
+    try { await store.cancelReservation(id); toast('Бронь отменена'); S.bookings = null; loadBookings(); } catch (ex) { toast(ex.message || 'Не удалось отменить'); }
+    return;
+  }
   if (act === 'pay') { saveCheckoutForm(); S.checkout.payment = v; S.checkout.payChosen = true; render(); }
   if (act === 'pay-now') payNow(id, b);
   if (act === 'mock-pay') {
@@ -1116,6 +1247,7 @@ app.addEventListener('click', async (e) => {
 app.addEventListener('submit', async (e) => {
   const f = e.target;
   if (f.id === 'checkout') { e.preventDefault(); return submitCheckout(f); }
+  if (f.id === 'booking') { e.preventDefault(); return submitBooking(f); }
   if (f.id === 'phone-form') {
     e.preventDefault();
     if (!consentOk(f)) return;

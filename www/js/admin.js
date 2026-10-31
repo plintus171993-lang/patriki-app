@@ -88,8 +88,8 @@ function draw() {
       <div class="row"><a class="btn btn-ghost btn-sm" href="#/">В приложение</a><button type="button" class="btn btn-ghost btn-sm" data-a="logout">Выйти</button></div>
     </div>
     ${store.demo ? '<div class="demo-banner">Демо-режим: сервер не подключён, изменения сохраняются только в этом браузере.</div>' : ''}
-    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}</nav>
-    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : Venues()}</div>
+    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('bookings', `Брони${A.bk ? (() => { const n = A.bk.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}</nav>
+    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : A.tab === 'bookings' ? Bookings() : Venues()}</div>
   </main>`;
 }
 
@@ -467,6 +467,39 @@ async function onCashSubmit(e) {
   return true;
 }
 
+/* ---------- брони столов ---------- */
+const BK_RU = { new: 'Новая', confirmed: 'Подтверждена', declined: 'Отклонена', cancelled: 'Отменена гостем', done: 'Состоялась', noshow: 'Не пришли' };
+async function loadBookings() {
+  try { A.bk = await store.listReservations(); } catch (e) { console.error(e); A.bk = []; }
+  if (A.tab === 'bookings') draw();
+}
+setInterval(() => { if (location.hash.startsWith('#/admin') && A.menu) loadBookings(); }, 30000);
+function Bookings() {
+  const { esc, rub } = ctx;
+  if (!A.bk) { loadBookings(); return '<div class="empty">Загружаем брони…</div>'; }
+  const vs = myVenues().map((v) => v.id);
+  const list = A.bk.filter((x) => vs.includes(x.venue_id) && (A.venue === 'all' || x.venue_id === A.venue));
+  if (!list.length) return '<div class="empty">Броней на ближайшее время нет</div>';
+  const day = (iso) => new Date(iso).toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Moscow' });
+  let last = '';
+  return `<div class="stack" style="gap:10px">${list.map((x) => {
+    const d = day(x.starts_at), head = d !== last ? `<span class="eyebrow" style="margin-top:8px">${esc(d)}</span>` : ''; last = d;
+    const vn = (A.menu.venues.find((v) => v.id === x.venue_id) || {}).name || x.venue_id;
+    return `${head}<article class="card stack" style="gap:6px">
+      <div class="between"><b style="font-size:18px">${new Date(x.starts_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow' })} · ${esc(x.guests)} чел.</b>
+        <span class="status-pill ${x.status === 'new' ? 'new' : x.status === 'confirmed' ? 'done' : 'cancelled'}">${BK_RU[x.status] || esc(x.status)}</span></div>
+      <span>${esc(x.name)} · <a href="tel:${esc(x.phone)}">${esc(ctx.fmtPhone(x.phone) || x.phone)}</a></span>
+      <span class="muted" style="font-size:13px">№${esc(x.number)} · ${esc(vn)}${x.comment ? ` · ${esc(x.comment)}` : ''}${x.deposit ? ` · депозит ${rub(x.deposit)} (${esc(x.payment_status)})` : ''}</span>
+      ${['new', 'confirmed'].includes(x.status) ? `<div class="row" style="gap:8px;flex-wrap:wrap">
+        ${x.status === 'new' ? `<button type="button" class="btn btn-accent btn-sm" data-a="bk" data-v="confirmed" data-id="${esc(x.id)}">Подтвердить</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-a="bk" data-v="declined" data-id="${esc(x.id)}">Нет мест</button>` : ''}
+        ${x.status === 'confirmed' ? `<button type="button" class="btn btn-outline btn-sm" data-a="bk" data-v="done" data-id="${esc(x.id)}">Пришли</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-a="bk" data-v="noshow" data-id="${esc(x.id)}">Не пришли</button>` : ''}
+      </div>` : ''}
+    </article>`;
+  }).join('')}</div>`;
+}
+
 /* ---------- заведения ---------- */
 function Venues() {
   const { esc } = ctx;
@@ -486,6 +519,12 @@ function Venues() {
     </div>
     <div class="between"><span class="stack" style="gap:2px"><span>Онлайн-оплата (Сбер)</span><span class="muted" style="font-size:12px">Карта, СБП, SberPay в приложении</span></span>
       <button type="button" class="switch" role="switch" data-a="pay_online" aria-checked="${!!v.pay_online}" aria-label="Онлайн-оплата: ${esc(v.name)}" ${lock}></button></div>
+    <div class="between"><span class="stack" style="gap:2px"><span>Бронирование столов</span><span class="muted" style="font-size:12px">Кнопка «Забронировать стол» в приложении</span></span>
+      <button type="button" class="switch" role="switch" data-a="booking_enabled" aria-checked="${v.booking_enabled !== false}" aria-label="Бронирование: ${esc(v.name)}"></button></div>
+    <div class="grid-2">
+      <label class="field">Депозит с гостя, ₽<input class="input" name="booking_deposit" ${lock} inputmode="numeric" value="${esc(v.booking_deposit || 0)}"><span class="muted" style="font-size:11px">0 — без депозита (тестовый режим)</span></label>
+      <label class="field">Макс. гостей в брони<input class="input" name="booking_max_guests" inputmode="numeric" value="${esc(v.booking_max_guests || 12)}"></label>
+    </div>
     <button type="submit" class="btn btn-accent">Сохранить</button>
   </form>`).join('')}</div>
   ${owner() ? `<section class="card stack" style="gap:8px;margin-top:16px">
@@ -500,7 +539,11 @@ function onClick(e) {
   const b = e.target.closest('[data-a]'); if (!b || !root.contains(b)) return;
   const { a, v, id } = b.dataset;
   const act = {
-    tab: () => { if (A.scanning) stopScan(); A.tab = v; draw(); },
+    tab: () => { if (A.scanning) stopScan(); A.tab = v; if (v === 'bookings') A.bk = null; draw(); },
+    bk: async () => {
+      try { await store.setReservationStatus(b.dataset.id, v); ctx.toast(BK_RU[v] || 'Готово'); await loadBookings(); }
+      catch (ex) { ctx.toast(ex.message || 'Не удалось'); }
+    },
     filter: () => { A.filter = v; draw(); },
     venue: () => { A.venue = v; draw(); },
     'loy-sw': () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
@@ -577,6 +620,7 @@ function onClick(e) {
     },
     accepting: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
     pay_online: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
+    booking_enabled: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')),
   }[a];
   if (act) Promise.resolve(act()).catch((ex) => { console.error(ex); ctx.toast('Ошибка: ' + (ex.message || 'не сохранилось')); });
 }
@@ -610,11 +654,14 @@ async function onVenueSubmit(e) {
     const ops = {   // оперативное — может и управляющий своей точки
       id: f.dataset.venue, phone: d.phone.trim(), hours: d.hours.trim(), eta_minutes: num(d.eta_minutes) || 45,
       accepting: f.querySelector('[data-a=accepting]').getAttribute('aria-checked') === 'true',
+      booking_enabled: f.querySelector('[data-a=booking_enabled]').getAttribute('aria-checked') === 'true',
+      booking_max_guests: Math.max(1, Math.min(100, num(d.booking_max_guests) || 12)),
     };
     await store.saveVenue(!owner() ? ops : {
       ...ops, name: d.name.trim(), address: d.address.trim(), zone: d.zone.trim(),
       delivery_fee: num(d.delivery_fee), min_order: num(d.min_order),
       pay_online: f.querySelector('[data-a=pay_online]').getAttribute('aria-checked') === 'true',
+      booking_deposit: num(d.booking_deposit),
     });
     await refreshMenu(); ctx.toast('Сохранено');
   } catch (ex) { console.error(ex); ctx.toast('Не удалось сохранить'); }
