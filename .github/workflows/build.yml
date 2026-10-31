@@ -37,6 +37,8 @@ jobs:
           mkdir -p www/vendor
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
           cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
+          # номер сборки — по нему приложение понимает, что вышло обновление
+          echo "window.PK_BUILD = ${{ github.run_number }};" > www/js/build.js
 
       - name: Android-проект, иконки и заставка
         run: |
@@ -115,6 +117,33 @@ jobs:
           mkdir -p www/vendor
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
           cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
+
+      # Обновление без переустановки: архив веб-части + update/latest.json.
+      # Приложение сравнивает build со своим и предлагает обновиться.
+      # apk_min в update.json поднимаем, только если меняется нативная часть (плагины, разрешения).
+      - name: Пакет обновления
+        run: |
+          BUILD=${{ github.run_number }}
+          echo "window.PK_BUILD = $BUILD;" > www/js/build.js
+          (cd www && zip -qr ../web-$BUILD.zip . -x 'download/*' 'update/*')
+          mkdir -p www/update
+          mv web-$BUILD.zip www/update/
+          VERSION=$(grep -o "APP_VERSION: '[^']*'" www/js/config.js | cut -d"'" -f2)
+          python3 - "$BUILD" "$VERSION" <<'PY'
+          import json, sys
+          build, version = int(sys.argv[1]), sys.argv[2]
+          cfg = json.load(open('update.json', encoding='utf-8'))
+          out = {
+              'build': build,
+              'version': version,
+              'url': f'https://patrikipab.ru/update/web-{build}.zip',
+              'apk': 'https://patrikipab.ru/download/patriki.apk',
+              'apk_min': int(cfg.get('apk_min', 0)),
+              'notes': cfg.get('notes', []),
+          }
+          json.dump(out, open('www/update/latest.json', 'w', encoding='utf-8'), ensure_ascii=False)
+          print(out)
+          PY
 
       - uses: actions/configure-pages@v5
 
