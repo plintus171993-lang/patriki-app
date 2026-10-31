@@ -4,7 +4,7 @@ import { HERO_IMG } from './seed.js';
 import { logoMark, logoEmblem, bulldogLoader } from './logo.js';
 import { renderAdmin } from './admin.js';
 import { qrSvg, qrPayload } from './loyalty.js';
-import { markReady, startUpdateChecks, BUILD } from './update.js';
+import { markReady, startUpdateChecks, checkNow, BUILD } from './update.js';
 
 /* ---------- утилиты ---------- */
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1244,6 +1244,7 @@ function Info() {
          ['privacy', icon.id, 'Политика обработки персональных данных'], ['consent', icon.id, 'Согласие на обработку данных'], ['ads', icon.info, 'Согласие на рассылку']]
         .map(([h, ic, t]) => `<a class="menu-row" href="legal/index.html#${h}"><span class="row">${ic}<span>${t}</span></span>${icon.chev}</a>`).join('')}
     </nav>
+    ${BUILD ? '<button type="button" class="btn btn-ghost btn-block" data-act="upd-check">Проверить обновления</button>' : ''}
     <footer class="info-foot">
       © 2026 «<span data-act="secret">Патрики</span> Паб» · Санкт-Петербург<br>версия ${esc(CONFIG.APP_VERSION)}${BUILD ? ` · сборка ${BUILD}` : ''}${store.demo ? ' · демо' : ''}
     </footer>
@@ -1407,6 +1408,7 @@ app.addEventListener('click', async (e) => {
   if (act === 'pick-addr') { saveCheckoutForm(); S.checkout.addr = id; render(); }
   if (act === 'repeat') repeatOrder(id);
   if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
+  if (act === 'upd-check') { b.disabled = true; b.textContent = 'Проверяем…'; checkNow().then((r) => { b.disabled = false; b.textContent = 'Проверить обновления'; if (r.text) toast(r.text, 5000); }); }
   if (act === 'fb-kind') { saveFbForm(); S.fb.kind = v; render(); }
   if (act === 'fb-star') { saveFbForm(); S.fb.rating = Number(v); render(); }
   if (act === 'fb-venue') { saveFbForm(); S.fb.venue = v; render(); }

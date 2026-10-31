@@ -7,12 +7,14 @@
 // • Если нужна новая APK (изменилась нативная часть) — предложим скачать её.
 
 const LATEST_URL = 'https://patrikipab.ru/update/latest.json';
-const CHECK_EVERY = 30 * 60 * 1000; // не чаще раза в 30 минут
+const CHECK_EVERY = 3 * 60 * 1000; // не чаще раза в 3 минуты
 
 const cap = window.Capacitor;
 const isNative = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
-const Updater = isNative ? cap.Plugins && cap.Plugins.CapacitorUpdater : null;
-const AppPlugin = isNative ? cap.Plugins && cap.Plugins.App : null;
+// плагины без сборщика: берём из Capacitor.Plugins, а если их там нет — регистрируем по имени
+const plug = (name) => { try { return (cap.Plugins && cap.Plugins[name]) || (cap.registerPlugin ? cap.registerPlugin(name) : null); } catch { return null; } };
+const Updater = isNative ? plug('CapacitorUpdater') : null;
+const AppPlugin = isNative ? plug('App') : null;
 
 export const BUILD = Number(window.PK_BUILD) || 0;
 
@@ -34,22 +36,36 @@ export function startUpdateChecks() {
 }
 
 async function check(force = false) {
-  if (busy || !navigator.onLine) return;
-  if (!force && Date.now() - lastCheck < CHECK_EVERY) return;
+  if (busy) return 'busy';
+  if (!force && (!navigator.onLine || Date.now() - lastCheck < CHECK_EVERY)) return 'skip';
   lastCheck = Date.now();
   busy = true;
   try {
     const r = await fetch(LATEST_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    if (!r.ok) return;
+    if (!r.ok) throw new Error('сервер обновлений ответил ' + r.status);
     const L = await r.json();
-    if (!L || !(L.build > BUILD)) return;
+    if (!L || !(L.build > BUILD)) return 'latest';
+    if (force) shownFor = 0;
     if (isNative) await nativeUpdate(L);
     else webPrompt(L);
+    return 'update';
   } catch (e) {
     console.warn('update check', e);
+    lastError = (e && e.message) || String(e);
+    return 'error';
   } finally {
     busy = false;
   }
+}
+let lastError = '';
+
+/** Кнопка «Проверить обновления» на экране «Информация». */
+export async function checkNow() {
+  const r = await check(true);
+  if (r === 'latest') return { ok: true, text: `У вас последняя версия (сборка ${BUILD})` };
+  if (r === 'update') return { ok: true, text: '' };
+  if (r === 'busy') return { ok: true, text: 'Уже проверяем…' };
+  return { ok: false, text: 'Не удалось проверить: ' + lastError + (isNative && !Updater ? ' · нет модуля обновлений' : '') };
 }
 
 async function nativeUpdate(L) {
