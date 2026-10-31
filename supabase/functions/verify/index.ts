@@ -7,8 +7,11 @@
 // Запросы приложения проверяются по JWT гостя, вебхук — по секрету в заголовке.
 //
 // Токен бота и секрет вебхука берутся из таблицы app_secrets (telegram_bot_token, telegram_webhook_secret).
-// Звонок: CALL_PROVIDER = mock (по умолчанию: звонка нет, код виден в админке и в Telegram) | smsru
-//         SMSRU_API_ID — ключ API SMS.ru (вводит владелец в Edge Functions → Secrets).
+// Звонок: CALL_PROVIDER = mock (по умолчанию: тестовый режим) | newtel | smsru
+//   newtel — гость САМ звонит на выданный номер (New-Tel CallPassword ID), звонок бесплатный и сбрасывается.
+//            NEWTEL_KEY (ключ авторизации) и NEWTEL_WRITE_KEY (ключ подписи) — из кабинета my.new-tel.net,
+//            владелец вводит их в Edge Functions → Secrets.
+//   smsru  — старый вариант: звонок-сброс гостю / SMS (SMSRU_API_ID).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -16,6 +19,9 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const db = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
 const CALL_PROVIDER = (Deno.env.get('CALL_PROVIDER') || 'mock').toLowerCase();
 const SMSRU_API_ID = Deno.env.get('SMSRU_API_ID') || '';
+const NEWTEL_KEY = Deno.env.get('NEWTEL_KEY') || '';
+const NEWTEL_WRITE_KEY = Deno.env.get('NEWTEL_WRITE_KEY') || '';
+const INCOMING_TIMEOUT = 120; // секунд на звонок
 const LOGIN_DOMAIN = 'phone.patrikipab.ru';     // служебная почта для входа в профиль с другого устройства
 
 const CORS = {
@@ -218,6 +224,109 @@ async function callCheck(req: Request, body: any) {
   return { phone, ...(await applyPhone(u.id, phone)) };
 }
 
+/* ---------------- 3. Гость звонит сам (New-Tel CallPassword ID) ---------------- */
+// Подпись запроса New-Tel: token = ключ + время + sha256(метод\nвремя\nключ\nтело\nключ_подписи)
+async function newtel(method: string, params: Record<string, unknown>) {
+  if (!NEWTEL_KEY || !NEWTEL_WRITE_KEY) throw new Error('Подтверждение звонком не настроено');
+  const body = JSON.stringify(params);
+  const time = Math.floor(Date.now() / 1000);
+  const sign = await sha(`${method}\n${time}\n${NEWTEL_KEY}\n${body}\n${NEWTEL_WRITE_KEY}`);
+  const r = await fetch(`https://api.new-tel.net/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NEWTEL_KEY}${time}${sign}` },
+    body,
+  });
+  const text = await r.text();
+  let d: any = {};
+  try { d = JSON.parse(text); } catch { /* не JSON */ }
+  if (!r.ok || (d.status && d.status !== 'success')) {
+    console.error('new-tel', r.status, text.slice(0, 500));
+    throw new Error('Не удалось получить номер для звонка. Попробуйте через минуту или через Telegram');
+  }
+  return d.data ?? d;
+}
+const hookKey = async () => (await sha('newtel-hook:' + NEWTEL_WRITE_KEY)).slice(0, 32);
+
+async function incomingStart(req: Request, body: any) {
+  const u = await guest(req);
+  const phone = ruPhone(body.phone);
+  if (!phone) throw new Error('Введите номер полностью: +7 (XXX) XXX-XX-XX');
+  await db.from('phone_incoming').delete().lt('created_at', new Date(Date.now() - 86_400_000).toISOString());
+  const { count: recentUser } = await db.from('phone_incoming').select('id', { count: 'exact', head: true })
+    .eq('user_id', u.id).gte('created_at', new Date(Date.now() - 15_000).toISOString());
+  if (recentUser) throw new Error('Подождите несколько секунд и попробуйте снова');
+  const { count: perHour } = await db.from('phone_incoming').select('id', { count: 'exact', head: true })
+    .eq('phone', phone).gte('created_at', new Date(Date.now() - 3_600_000).toISOString());
+  if ((perHour || 0) >= 6) throw new Error('Слишком много попыток для этого номера. Попробуйте через час');
+
+  const { data: row, error } = await db.from('phone_incoming')
+    .insert({ user_id: u.id, phone, expires_at: new Date(Date.now() + INCOMING_TIMEOUT * 1000).toISOString() })
+    .select('id').single();
+  if (error) throw error;
+
+  if (CALL_PROVIDER === 'newtel') {
+    const callbackLink = `${SUPABASE_URL}/functions/v1/verify?hook=newtel&k=${await hookKey()}`;
+    const res = await newtel('call-password-id/start-waiting-mode-busy', { callbackLink, clientNumber: phone, timeout: INCOMING_TIMEOUT, userData: row.id });
+    const cd = res.callDetails || res;
+    const number = digits(cd.confirmationNumber);
+    if (!number) { console.error('new-tel no number', res); throw new Error('Не удалось получить номер для звонка'); }
+    await db.from('phone_incoming').update({ call_id: String(cd.callId || ''), confirm_number: number }).eq('id', row.id);
+    return { id: row.id, number, timeout: INCOMING_TIMEOUT };
+  }
+  // тестовый режим: номер условный, подтверждение приходит само через несколько секунд после нажатия «Позвонить»
+  const number = '78000000000';
+  await db.from('phone_incoming').update({ confirm_number: number }).eq('id', row.id);
+  const { telegram_chat_id: c } = await secrets();
+  if (c) await tgToChat(c, `☎️ Тест входа звонком: ${pretty(phone)} — подтвердится автоматически`).catch(() => {});
+  return { id: row.id, number, timeout: INCOMING_TIMEOUT, test: true };
+}
+
+async function incomingConfirm(row: any) {
+  try {
+    const r = await applyPhone(row.user_id, row.phone);
+    await db.from('phone_incoming').update({ status: r.status, login_hash: r.login_hash || null }).eq('id', row.id);
+    return { status: r.status, login_hash: r.login_hash };
+  } catch (e) {
+    console.error(e);
+    await db.from('phone_incoming').update({ status: 'failed', message: 'Не удалось подтвердить, попробуйте позже' }).eq('id', row.id);
+    return { status: 'failed', message: 'Не удалось подтвердить, попробуйте позже' };
+  }
+}
+
+async function incomingCheck(req: Request, body: any) {
+  const u = await guest(req);
+  const { data: row } = await db.from('phone_incoming').select('*').eq('id', body.id).eq('user_id', u.id).maybeSingle();
+  if (!row) return { status: 'failed', message: 'Заявка не найдена, начните заново' };
+  if (row.status !== 'pending') return { status: row.status, phone: row.phone, login_hash: row.login_hash, message: row.message };
+  if (CALL_PROVIDER !== 'newtel' && body.called && Date.now() - new Date(row.created_at).getTime() > 6000) {
+    return { phone: row.phone, ...(await incomingConfirm(row)) };
+  }
+  if (new Date(row.expires_at).getTime() + 15_000 < Date.now()) {
+    await db.from('phone_incoming').update({ status: 'failed', message: 'Звонок не поступил' }).eq('id', row.id);
+    return { status: 'failed', message: 'Звонок не поступил. Попробуйте ещё раз — номер для звонка будет новый' };
+  }
+  return { status: 'pending' };
+}
+
+async function newtelHook(req: Request) {
+  const text = await req.text();
+  let b: any = {};
+  try { b = JSON.parse(text); } catch { b = Object.fromEntries(new URLSearchParams(text)); }
+  const d = b.data?.callDetails || b.callDetails || b.data || b;
+  const callId = String(d.callId || '');
+  const rowId = String(d.userData || '');
+  let q = db.from('phone_incoming').select('*').eq('status', 'pending');
+  q = callId ? q.eq('call_id', callId) : q.eq('id', rowId);
+  const { data: row } = await q.maybeSingle();
+  if (!row) { console.warn('new-tel hook: no row', text.slice(0, 300)); return; }
+  const caller = ruPhone(d.clientNumber || d.callerNumber || '');
+  if (caller && caller !== row.phone) {
+    await db.from('phone_incoming').update({ status: 'failed', message: 'Позвонили с другого номера' }).eq('id', row.id);
+    return;
+  }
+  await incomingConfirm(row);
+}
+
 /* ---------------- маршрутизация ---------------- */
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -229,8 +338,16 @@ Deno.serve(async (req) => {
       await tgWebhook(await req.json());
       return new Response('ok');
     }
+    const url = new URL(req.url);
+    if (url.searchParams.get('hook') === 'newtel') {
+      if (!NEWTEL_WRITE_KEY || url.searchParams.get('k') !== await hookKey()) return new Response('forbidden', { status: 403 });
+      await newtelHook(req);
+      return new Response('ok');
+    }
     const body = await req.json();
     switch (body.action) {
+      case 'in-start': return json(await incomingStart(req, body));
+      case 'in-check': return json(await incomingCheck(req, body));
       case 'tg-start': return json(await tgStart(req));
       case 'tg-status': return json(await tgStatus(req, body));
       case 'call-start': return json(await callStart(req, body));
