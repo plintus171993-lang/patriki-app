@@ -4,6 +4,7 @@ import { HERO_IMG } from './seed.js';
 import { logoMark, logoEmblem, bulldogLoader } from './logo.js';
 import { renderAdmin } from './admin.js';
 import { qrSvg, qrPayload } from './loyalty.js';
+import { markReady, startUpdateChecks, BUILD } from './update.js';
 
 /* ---------- утилиты ---------- */
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1060,7 +1061,7 @@ function Info() {
         .map(([h, ic, t]) => `<a class="menu-row" href="legal/index.html#${h}"><span class="row">${ic}<span>${t}</span></span>${icon.chev}</a>`).join('')}
     </nav>
     <footer class="info-foot">
-      © 2026 «<span data-act="secret">Патрики</span> Паб» · Санкт-Петербург<br>версия ${esc(CONFIG.APP_VERSION)}${store.demo ? ' · демо' : ''}
+      © 2026 «<span data-act="secret">Патрики</span> Паб» · Санкт-Петербург<br>версия ${esc(CONFIG.APP_VERSION)}${BUILD ? ` · сборка ${BUILD}` : ''}${store.demo ? ' · демо' : ''}
     </footer>
   </main>`;
 }
@@ -1313,6 +1314,8 @@ window.addEventListener('hashchange', () => {
   render();
 });
 
+markReady(); // APK: «эта версия запустилась» — иначе плагин обновлений откатит её
+
 (async () => {
   const started = Date.now();
   try {
@@ -1330,6 +1333,7 @@ window.addEventListener('hashchange', () => {
   clearInterval(window.__pkLoaderTimer);
   render();
   maybeShowInstallHint();
+  startUpdateChecks();
 })();
 
 // В Android-приложении (Capacitor) файлы уже лежат внутри APK — service worker не нужен
