@@ -377,14 +377,14 @@ export const store = {
     return this.verifyCall({ action: 'tg-status', token });
   },
   // 2) Звонок-сброс: код — последние 4 цифры входящего номера
-  async callStart(phone10) {
+  async callStart(phone10, channel = 'call') {
     if (this.demo) {
       const code = String(Math.floor(1000 + Math.random() * 9000));
       LS.set('demo_code', { phone: '7' + phone10, code });
       const out = LS.get('sms_outbox', []); out.unshift({ phone: '7' + phone10, otp: code, created_at: new Date().toISOString() }); LS.set('sms_outbox', out.slice(0, 20));
       return { ok: true, test: true, demoCode: code };
     }
-    return this.verifyCall({ action: 'call-start', phone: '7' + phone10 });
+    return this.verifyCall({ action: 'call-start', phone: '7' + phone10, channel });
   },
   async callCheck(phone10, code) {
     if (this.demo) {

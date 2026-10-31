@@ -835,18 +835,22 @@ function Verify() {
   if (v.step === 'code') {
     const left = Math.max(0, Math.ceil((v.until - Date.now()) / 1000));
     return `<main class="screen">
-      ${head('Звонок', 'verify-back')}
+      ${head(v.channel === 'sms' ? 'Код из SMS' : 'Звонок', 'verify-back')}
       <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
-      <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.6">Сейчас на <b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b> поступит звонок.<br><b style="color:var(--text)">Трубку брать не нужно</b> — введите последние 4 цифры номера, с которого звонят.</p>
+      ${v.channel === 'sms'
+        ? `<p style="text-align:center;color:var(--text-2);margin:0;line-height:1.6">Отправили SMS с кодом на <b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b>. Введите 4 цифры из сообщения.</p>`
+        : `<p style="text-align:center;color:var(--text-2);margin:0;line-height:1.6">Сейчас на <b style="color:var(--text)">${esc(fmtPhone(v.phone))}</b> поступит звонок.<br><b style="color:var(--text)">Трубку брать не нужно</b> — введите последние 4 цифры номера, с которого звонят.</p>`}
       <form id="code-form" class="stack" style="gap:14px">
-        <label class="sr-only" for="otp">Последние 4 цифры номера</label>
+        <label class="sr-only" for="otp">Код подтверждения</label>
         <input id="otp" class="input otp" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="4" placeholder="••••" required>
         <p class="error" role="alert" style="margin:0"></p>
         <button type="submit" class="btn btn-accent btn-block">Подтвердить</button>
       </form>
-      ${left > 0 ? `<p class="muted" style="text-align:center;margin:0" id="resend">Позвонить ещё раз через ${left} с</p>`
-        : '<button type="button" class="btn btn-ghost btn-block" data-act="resend">Позвонить ещё раз</button>'}
-      ${v.test ? '<p class="demo-banner" style="margin:0">Тестовый режим: звонок пока не совершается. Код виден управляющему в админке и в Telegram-группе.</p>' : ''}
+      ${left > 0 ? `<p class="muted" style="text-align:center;margin:0" id="resend">${v.channel === 'sms' ? 'Отправить ещё раз' : 'Не пришёл звонок? Код в SMS'} — через ${left} с</p>`
+        : `<div class="stack" style="gap:8px">
+            ${v.channel !== 'sms' ? '<button type="button" class="btn btn-outline btn-block" data-act="resend" data-v="sms">Получить код в SMS</button>' : ''}
+            <button type="button" class="btn btn-ghost btn-block" data-act="resend" data-v="${v.channel === 'sms' ? 'sms' : 'call'}">${v.channel === 'sms' ? 'Отправить SMS ещё раз' : 'Позвонить ещё раз'}</button></div>`}
+      ${v.test ? `<p class="demo-banner" style="margin:0">Тестовый режим: ${v.channel === 'sms' ? 'SMS' : 'звонок'} пока не отправляется. Код виден управляющему в админке и в Telegram-группе.</p>` : ''}
     </main>`;
   }
   return `<main class="screen">
@@ -854,13 +858,13 @@ function Verify() {
     <div class="verify-dog" aria-hidden="true">${logoMark(88)}</div>
     <p style="text-align:center;color:var(--text-2);margin:0;line-height:1.5">Подтвердите номер — и заказы, адреса и баллы будут с вами на любом телефоне</p>
     <form id="phone-form" class="stack" style="gap:14px">
-      ${ConsentBox()}
-      <button type="button" class="btn btn-accent btn-block" data-act="tg-start">${tgIcon} Через Telegram</button>
-      <span class="muted" style="font-size:12px;text-align:center;margin-top:-6px">быстро и бесплатно — номер возьмём из Telegram</span>
-      <div class="or-line"><span>или звонком</span></div>
       <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
+      ${ConsentBox()}
       <p class="error" role="alert" style="margin:0"></p>
-      <button type="submit" class="btn btn-outline btn-block">Позвонить мне</button>
+      <button type="submit" class="btn btn-accent btn-block">Получить код</button>
+      <span class="muted" style="font-size:12px;text-align:center;margin-top:-6px">Позвоним и сразу сбросим — код это последние 4 цифры номера. Если звонок не придёт, отправим SMS.</span>
+      <div class="or-line"><span>или</span></div>
+      <button type="button" class="btn btn-ghost btn-block" data-act="tg-start">${tgIcon} Через Telegram</button>
     </form>
   </main>`;
 }
@@ -873,7 +877,7 @@ function tickVerify() {
     const el = document.getElementById('resend');
     if (!el || route() !== '/verify') return clearInterval(verifyTimer);
     const left = Math.ceil((S.verify.until - Date.now()) / 1000);
-    if (left <= 0) { clearInterval(verifyTimer); render(); } else el.textContent = `Позвонить ещё раз через ${left} с`;
+    if (left <= 0) { clearInterval(verifyTimer); render(); } else el.textContent = `${S.verify.channel === 'sms' ? 'Отправить ещё раз' : 'Не пришёл звонок? Код в SMS'} — через ${left} с`;
   }, 1000);
   document.getElementById('otp')?.focus();
 }
@@ -911,18 +915,19 @@ function pollTg() {
   };
   tgPoll = setTimeout(tick, 1500);
 }
-async function startCall(p10, errEl, btn) {
+async function startCall(p10, errEl, btn, channel = 'call') {
   if (p10.length !== 10) { if (errEl) errEl.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX'; return; }
-  if (btn) { btn.disabled = true; btn.textContent = 'Звоним…'; }
+  if (btn) { btn.disabled = true; btn.textContent = channel === 'sms' ? 'Отправляем…' : 'Звоним…'; }
   try {
-    const r = await store.callStart(p10);
-    S.verify = { ...S.verify, step: 'code', phone: p10, test: !!r.test, until: Date.now() + 60000 };
+    const r = await store.callStart(p10, channel);
+    S.verify = { ...S.verify, step: 'code', phone: p10, channel, test: !!r.test, until: Date.now() + 30000 };
     render();
     if (r.demoCode) toast(`Демо-режим: код ${r.demoCode}`, 6000);
   } catch (ex) {
     console.error(ex);
-    if (errEl) errEl.textContent = ex.message || 'Не удалось позвонить. Попробуйте через Telegram';
-    if (btn) { btn.disabled = false; btn.textContent = 'Позвонить мне'; }
+    if (errEl) errEl.textContent = ex.message || 'Не удалось отправить код';
+    else toast(ex.message || 'Не удалось отправить код', 4000);
+    if (btn) { btn.disabled = false; btn.textContent = 'Получить код'; }
   }
 }
 async function finishVerify(r) {
@@ -1218,7 +1223,7 @@ app.addEventListener('click', async (e) => {
   if (act === 'repeat') repeatOrder(id);
   if (act === 'edit-addr') addrSheet(S.addresses.find((a) => a.id === id));
   if (act === 'verify-back') { clearTimeout(tgPoll); S.verify.step = 'phone'; S.verify.err = ''; render(); }
-  if (act === 'resend') startCall(S.verify.phone, null, null);
+  if (act === 'resend') startCall(S.verify.phone, null, null, v === 'sms' ? 'sms' : 'call');
   if (act === 'tg-start') { if (consentOk(b.closest('form'))) startTg(b); }
   if (act === 'tg-open') { S.verify.tgOpened = true; const w = document.getElementById('tg-wait'); if (w) w.textContent = 'Ждём подтверждения из Telegram…'; }
   if (act === 'logout') {
