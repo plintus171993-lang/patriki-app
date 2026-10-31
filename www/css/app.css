@@ -279,3 +279,7 @@ img { display: block; max-width: 100%; }
 .tier-row > .input[name=t_name] { grid-column: 1 / -1; }
 .tier-f { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .tier-f .input { min-width: 0; padding-left: 10px; padding-right: 8px; }
+
+/* бронь стола */
+.slots{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:8px}
+.slots .opt{padding:10px 0;text-align:center}
