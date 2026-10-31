@@ -1,19 +1,15 @@
 // Обновление приложения без переустановки.
-// Каждая сборка (GitHub Actions) кладёт на сайт update/latest.json и архив веб-части.
-// • Android (APK): архив скачивается в фоне, гость видит «Обновление готово → Перезапустить».
-//   Если отложил — новая версия включится при следующем запуске сама.
-//   Если сломалась — плагин сам откатится на прошлую рабочую (notifyAppReady не прозвучит).
-// • Сайт / iPhone: подсказка «Есть новая версия → Обновить» (перезагрузка страницы).
-// • Если нужна новая APK (изменилась нативная часть) — предложим скачать её.
+// Android-приложение (APK) открывает сайт patrikipab.ru внутри себя (capacitor.config: server.url),
+// поэтому при каждом запуске гость получает свежую версию — как на сайте.
+// Если приложение долго было открыто, а за это время вышла новая сборка, — подсказка «Обновить» (перезагрузка).
+// Если изменилась нативная часть (разрешения, плагины) — update.json: apk_min, и мы предложим скачать новый APK.
 
 const LATEST_URL = 'https://patrikipab.ru/update/latest.json';
 const CHECK_EVERY = 3 * 60 * 1000; // не чаще раза в 3 минуты
 
 const cap = window.Capacitor;
 const isNative = !!(cap && cap.isNativePlatform && cap.isNativePlatform());
-// плагины без сборщика: берём из Capacitor.Plugins, а если их там нет — регистрируем по имени
 const plug = (name) => { try { return (cap.Plugins && cap.Plugins[name]) || (cap.registerPlugin ? cap.registerPlugin(name) : null); } catch { return null; } };
-const Updater = isNative ? plug('CapacitorUpdater') : null;
 const AppPlugin = isNative ? plug('App') : null;
 
 export const BUILD = Number(window.PK_BUILD) || 0;
@@ -22,11 +18,8 @@ let lastCheck = 0;
 let shownFor = 0;      // для какой сборки уже показали окно в этом запуске
 let busy = false;
 
-/** Вызвать как можно раньше при каждом запуске: «эта версия работает», иначе плагин откатит её. */
-export function markReady() {
-  if (!Updater) return;
-  try { Updater.notifyAppReady().catch(() => {}); } catch { /* старый APK без плагина */ }
-}
+/** Оставлено для совместимости (раньше подтверждало рабочую версию плагину обновлений). */
+export function markReady() {}
 
 export function startUpdateChecks() {
   if (!BUILD) return; // локальная разработка — проверять нечего
@@ -65,36 +58,18 @@ export async function checkNow() {
   if (r === 'latest') return { ok: true, text: `У вас последняя версия (сборка ${BUILD})` };
   if (r === 'update') return { ok: true, text: '' };
   if (r === 'busy') return { ok: true, text: 'Уже проверяем…' };
-  return { ok: false, text: 'Не удалось проверить: ' + lastError + (isNative && !Updater ? ' · нет модуля обновлений' : '') };
+  return { ok: false, text: 'Не удалось проверить: ' + lastError + '' };
 }
 
 async function nativeUpdate(L) {
-  // нативная часть устарела — веб-архив не поможет, нужна новая APK
+  // нативная часть устарела — нужна новая APK; иначе достаточно перезагрузить страницу
   let nativeBuild = 0;
   try { nativeBuild = Number((await AppPlugin.getInfo()).build) || 0; } catch { /* ignore */ }
-  if (!Updater || (L.apk_min && nativeBuild && nativeBuild < L.apk_min)) {
+  if (L.apk_min && nativeBuild && nativeBuild < L.apk_min) {
     if (shownFor !== L.build) { shownFor = L.build; apkSheet(L); }
     return;
   }
-  // уже скачано раньше?
-  let bundle = null;
-  try {
-    const { bundles } = await Updater.list();
-    bundle = (bundles || []).find((b) => b.version === String(L.build) && b.status !== 'error') || null;
-  } catch { /* ignore */ }
-  if (!bundle) bundle = await Updater.download({ url: L.url, version: String(L.build) });
-  // включится при следующем запуске, даже если гость нажмёт «Позже»
-  await Updater.next({ id: bundle.id });
-  if (shownFor === L.build) return;
-  shownFor = L.build;
-  sheet({
-    title: 'Обновление готово',
-    text: `Версия ${esc(L.version || '')} уже скачана. Приложение перезапустится за пару секунд — корзина и вход сохранятся.`,
-    notes: L.notes,
-    ok: 'Перезапустить',
-    later: 'Позже',
-    onOk: () => Updater.set({ id: bundle.id }),
-  });
+  webPrompt(L);
 }
 
 function webPrompt(L) {

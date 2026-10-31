@@ -1528,8 +1528,8 @@ markReady(); // APK: «эта версия запустилась» — инач
   startUpdateChecks();
 })();
 
-// В Android-приложении (Capacitor) файлы уже лежат внутри APK — service worker не нужен
-if ('serviceWorker' in navigator && location.protocol === 'https:' && !window.Capacitor) {
+// Service worker — офлайн-оболочка; в APK приложение открывает сайт patrikipab.ru, там он тоже работает
+if ('serviceWorker' in navigator && location.protocol === 'https:' && location.hostname !== 'localhost') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
