@@ -11,7 +11,8 @@
 //
 // Функция разворачивается с выключенной проверкой JWT; права проверяются внутри:
 //   checks / accrue / menu — управляющий (таблица admins), menu-save — владелец;
-//   probe — по ключу кассы app_secrets.pos_api_key (диагностика из SQL-редактора).
+//   probe — по ключу кассы app_secrets.pos_api_key (диагностика из SQL-редактора);
+//   front-lookup / front-close — для плагина кассы iikoFront, по ключу кассы (заголовок x-pos-key).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -20,7 +21,7 @@ const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SE
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-pos-key',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 const json = (body: unknown, status = 200) =>
@@ -177,6 +178,39 @@ Deno.serve(async (req) => {
         tables: tl.length, sections: [...new Set(tl.map((t: any) => t.section))],
         orders: orders.slice(0, 15).map((o) => ({ ...o, lines: o.lines.length })), ordersTotal: orders.length, ordErr, tgRaw,
       });
+    }
+
+    /* ---------- плагин кассы iikoFront (ключ кассы в заголовке x-pos-key) ---------- */
+    if (act === 'front-lookup' || act === 'front-close') {
+      const key = req.headers.get('x-pos-key') || b.key || '';
+      if (!key || key !== await secret('pos_api_key')) return json({ error: 'Неверный ключ кассы' }, 403);
+      const code = String(b.code || '').trim();
+      if (!code) throw new Error('Нет QR-кода гостя');
+      if (act === 'front-lookup') {
+        const { data, error } = await db.rpc('pos_lookup', { p_key: key, p_code: code });
+        if (error) throw new Error(error.message);
+        return json(data);
+      }
+      const o = b.order || {};
+      if (!o.id) throw new Error('Нет id заказа iiko');
+      const ex = await excluded();
+      let total = 0, eligible = 0;
+      const lines = (o.items || []).map((it: any) => {
+        const sum = Number(it.sum ?? it.resultSum ?? 0);
+        const off = ex.has(String(it.productId || '')) || ex.has(String(it.productGroupId || ''));
+        total += sum; if (!off) eligible += sum;
+        return { name: it.name || '', sum: Math.round(sum), off };
+      });
+      const orderSum = Number(o.sum ?? total);
+      if (total > 0 && Math.abs(orderSum - total) > 0.5) eligible = eligible * orderSum / total; // скидки на весь чек
+      eligible = Math.floor(eligible);
+      if (eligible <= 0) return json({ points: 0, eligible: 0, note: 'В чеке нет позиций, за которые начисляются баллы', lines });
+      const { data, error } = await db.rpc('iiko_apply', {
+        p_code: code, p_check_id: 'iiko:' + o.id, p_number: String(o.number ?? ''), p_sum: Math.round(orderSum),
+        p_amount: eligible, p_redeem: Number(b.redeem || 0), p_venue: String(b.venue || 'petrogradka'), p_staff: null,
+      });
+      if (error) throw new Error(error.message);
+      return json({ ...data, eligible, lines });
     }
 
     if (act === 'checks') {
