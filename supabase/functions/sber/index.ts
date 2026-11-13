@@ -71,6 +71,8 @@ async function setPayment(id: string, patch: Record<string, unknown>) {
 async function requireAdmin(req: Request, venueId: string) {
   const token = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
   if (!token) throw new Error('Нет входа');
+  // служебный вызов из функции iiko (официант принял / отклонил заказ на кассе)
+  if (token === Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')) return;
   const { data: u } = await db.auth.getUser(token);
   if (!u?.user) throw new Error('Нет входа');
   const { data } = await db.from('admins').select('*').eq('user_id', u.user.id).maybeSingle();

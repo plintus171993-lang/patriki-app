@@ -12,7 +12,9 @@
 // Функция разворачивается с выключенной проверкой JWT; права проверяются внутри:
 //   checks / accrue / menu — управляющий (таблица admins), menu-save — владелец;
 //   probe — по ключу кассы app_secrets.pos_api_key (диагностика из SQL-редактора);
-//   front-lookup / front-close — для плагина кассы iikoFront, по ключу кассы (заголовок x-pos-key).
+//   front-lookup / front-close — для плагина кассы iikoFront, по ключу кассы (заголовок x-pos-key);
+//   front-inbox / front-reserve / front-order — заявки из приложения на главной кассе (тоже по ключу кассы):
+//     новые брони и заказы точки, решение официанта «подтвердить / отклонить».
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -140,6 +142,95 @@ async function requireAdmin(req: Request, venue = '') {
   return { user: u.user.id, venue: data.venue_id as string | null };
 }
 
+
+/* ---------------- заявки из приложения на кассе ---------------- */
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
+const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+// Онлайн-оплата: списать заблокированные деньги / снять блокировку — через функцию sber (служебный вызов)
+async function sberAction(action: 'capture' | 'cancel', orderId: string) {
+  const r = await fetch(`${SUPABASE_URL}/functions/v1/sber`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SERVICE_KEY, apikey: SERVICE_KEY },
+    body: JSON.stringify({ action, order_id: orderId }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(d.error || `оплата: ошибка ${r.status}`);
+  return d as { payment_status: string };
+}
+
+async function venueChatNotify(venue: string, text: string) {
+  try {
+    const chat = (await secret('telegram_chat_id:' + venue)) || (await secret('telegram_chat_id'));
+    if (chat) await db.rpc('tg_send', { p_chat: chat, p_text: text });
+  } catch { /* уведомление не обязательно */ }
+}
+
+const PAY_TEXT: Record<string, string> = { cash: 'наличными курьеру', card: 'картой курьеру', online: 'онлайн' };
+
+async function frontInbox(venue: string) {
+  const since = new Date(Date.now() - 2 * 86400e3).toISOString();
+  const { data: rs, error: e1 } = await db.from('reservations')
+    .select('id, number, starts_at, guests, name, phone, comment, deposit, payment_status, created_at')
+    .eq('venue_id', venue).eq('status', 'new').gte('created_at', since).order('created_at');
+  if (e1) throw new Error(e1.message);
+  const { data: os, error: e2 } = await db.from('orders')
+    .select('id, number, customer_name, phone, address, comment, when_text, payment, payment_status, items, subtotal, delivery_fee, total, points_redeemed, created_at')
+    .eq('venue_id', venue).eq('status', 'new').gte('created_at', since).order('created_at');
+  if (e2) throw new Error(e2.message);
+  return {
+    reservations: (rs || []).filter((r: any) => !r.deposit || ['held', 'paid'].includes(r.payment_status)),
+    // онлайн-заказ показываем, только когда деньги уже заблокированы
+    orders: (os || []).filter((o: any) => o.payment !== 'online' || ['held', 'paid'].includes(o.payment_status))
+      .map((o: any) => ({ ...o, payment_text: o.payment === 'online' ? (o.payment_status === 'paid' ? 'ОПЛАЧЕН онлайн' : 'ОПЛАЧЕН онлайн (деньги заблокированы, спишутся при принятии)') : (PAY_TEXT[o.payment] || o.payment) })),
+  };
+}
+
+async function frontReserve(venue: string, b: any) {
+  const confirm = b.decision === 'confirm';
+  const staff = String(b.staff || '').slice(0, 80);
+  const patch: Record<string, unknown> = {
+    status: confirm ? 'confirmed' : 'declined', updated_at: new Date().toISOString(),
+    handled_at: new Date().toISOString(), handled_by: staff,
+    staff_note: confirm ? `Касса iiko: ${b.table ? 'стол ' + String(b.table).slice(0, 60) : 'подтверждена'}` : 'Касса iiko: отклонена',
+  };
+  if (b.iiko_id) patch.iiko_reserve_id = String(b.iiko_id).slice(0, 64);
+  const { data, error } = await db.from('reservations').update(patch)
+    .eq('id', b.id).eq('venue_id', venue).eq('status', 'new').select('number').maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error('Эту бронь уже обработали или гость её отменил');
+  await venueChatNotify(venue, confirm
+    ? `✅ Бронь №${data.number} подтверждена на кассе${b.table ? ` — стол ${b.table}` : ''}${staff ? ` (${staff})` : ''}`
+    : `❌ Бронь №${data.number} отклонена на кассе${staff ? ` (${staff})` : ''}`);
+  return { ok: true, number: data.number };
+}
+
+async function frontOrder(venue: string, b: any) {
+  const accept = b.decision === 'accept';
+  const staff = String(b.staff || '').slice(0, 80);
+  const { data: o, error } = await db.from('orders').select('id, number, status, payment, payment_status')
+    .eq('id', b.id).eq('venue_id', venue).maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!o || o.status !== 'new') throw new Error('Этот заказ уже обработали или гость его отменил');
+
+  // сначала деньги: если списать не удалось — заказ не принимаем
+  let pay = o.payment_status;
+  if (o.payment === 'online' && ['held', 'paid'].includes(o.payment_status)) {
+    pay = (await sberAction(accept ? 'capture' : 'cancel', o.id)).payment_status;
+  }
+  const patch: Record<string, unknown> = {
+    status: accept ? 'cooking' : 'cancelled', handled_at: new Date().toISOString(), handled_by: staff,
+  };
+  if (b.iiko_id) patch.iiko_order_id = String(b.iiko_id).slice(0, 64);
+  const { data: upd, error: e2 } = await db.from('orders').update(patch).eq('id', o.id).eq('status', 'new').select('number').maybeSingle();
+  if (e2) throw new Error(e2.message);
+  if (!upd) throw new Error('Этот заказ уже обработали');
+  await venueChatNotify(venue, accept
+    ? `✅ Заказ №${o.number} принят на кассе и отправлен на кухню${b.iiko_number ? ` (iiko №${b.iiko_number})` : ''}${staff ? ` — ${staff}` : ''}`
+    : `❌ Заказ №${o.number} отклонён на кассе${staff ? ` — ${staff}` : ''}${o.payment === 'online' ? `. Оплата: ${pay}` : ''}`);
+  return { ok: true, number: o.number, payment_status: pay };
+}
+
 /* ---------------- обработчик ---------------- */
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
@@ -211,6 +302,19 @@ Deno.serve(async (req) => {
       });
       if (error) throw new Error(error.message);
       return json({ ...data, eligible, lines });
+    }
+
+    /* ---------- заявки из приложения на главной кассе ---------- */
+    if (act === 'front-inbox' || act === 'front-reserve' || act === 'front-order') {
+      const key = req.headers.get('x-pos-key') || b.key || '';
+      if (!key || key !== await secret('pos_api_key')) return json({ error: 'Неверный ключ кассы' }, 403);
+      const venue = String(b.venue || '');
+      const { data: v } = await db.from('venues').select('id').eq('id', venue).maybeSingle();
+      if (!v) throw new Error('Неизвестное заведение: ' + venue);
+      if (act === 'front-inbox') return json(await frontInbox(venue));
+      if (!b.id) throw new Error('Нет id заявки');
+      if (act === 'front-reserve') return json(await frontReserve(venue, b));
+      return json(await frontOrder(venue, b));
     }
 
     if (act === 'checks') {
