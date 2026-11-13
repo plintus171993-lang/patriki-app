@@ -959,8 +959,9 @@ function Verify() {
         <li>Нажмите в боте <b>«Start»</b>, затем <b>«📱 Поделиться номером»</b></li>
         <li>Вернитесь сюда — экран обновится сам</li>
       </ol>
-      <a class="btn btn-accent btn-block" href="${esc(v.tgUrl || '#')}" target="_blank" rel="noopener" data-act="tg-open">${tgIcon} Открыть Telegram</a>
+      <a class="btn btn-accent btn-block" href="${esc(tgAppLink(v) || '#')}" data-act="tg-open">${tgIcon} Открыть Telegram</a>
       <p class="muted" id="tg-wait" style="text-align:center;margin:0">${v.tgOpened ? 'Ждём подтверждения из Telegram…' : ''}</p>
+      ${v.tgUrl ? `<p class="muted" style="text-align:center;margin:0;font-size:13px">${v.tgWebTried ? 'Приложение Telegram не открылось — открыли веб-версию.' : 'Telegram не открылся?'} <a href="${esc(v.tgUrl)}" target="_blank" rel="noopener">Открыть через браузер</a></p>` : ''}
       <p class="error" role="alert" style="margin:0;text-align:center">${esc(v.err || '')}</p>
       <button type="button" class="btn btn-ghost btn-block" data-act="verify-back">Подтвердить звонком</button>
     </main>`;
@@ -1041,14 +1042,40 @@ function consentOk(form) {
   const e = form?.querySelector('.error'); if (e) e.textContent = 'Отметьте согласие на обработку персональных данных';
   return false;
 }
+// Открыть бота именно в приложении Telegram (tg://), а не в браузере.
+// Если Telegram не установлен — через 1,8 с откроется веб-версия t.me.
+function tgAppLink(v) {
+  const bot = v.tgBot || (String(v.tgUrl || '').match(/t\.me\/([^?/]+)/) || [])[1] || '';
+  return bot ? `tg://resolve?domain=${encodeURIComponent(bot)}&start=${encodeURIComponent(v.tgToken || '')}` : v.tgUrl;
+}
+function openTelegram(v) {
+  const appUrl = tgAppLink(v);
+  let left = false;
+  const away = () => { if (document.hidden) left = true; };
+  document.addEventListener('visibilitychange', away);
+  window.addEventListener('pagehide', away);
+  S.verify.tgOpened = true;
+  location.href = appUrl;
+  setTimeout(() => {
+    document.removeEventListener('visibilitychange', away);
+    window.removeEventListener('pagehide', away);
+    // остались на месте — значит, приложения Telegram нет: открываем веб-версию
+    if (!left && !document.hidden && route() === '/verify' && S.verify.step === 'tg' && v.tgUrl) {
+      S.verify.tgWebTried = true;
+      window.open(v.tgUrl, '_blank');
+      render();
+    }
+  }, 1800);
+}
+
 async function startTg(btn) {
   btn.disabled = true;
   try {
     const r = await store.tgStart();
-    S.verify = { ...S.verify, step: 'tg', tgToken: r.token, tgUrl: r.url, tgOpened: false, err: '' };
+    S.verify = { ...S.verify, step: 'tg', tgToken: r.token, tgUrl: r.url, tgBot: r.bot || '', tgOpened: false, tgWebTried: false, err: '' };
     render();
-    // сразу открываем бота (в приложении на телефоне откроется Telegram)
-    if (!r.demo) { S.verify.tgOpened = true; window.open(r.url, '_blank'); }
+    // сразу открываем бота в приложении Telegram
+    if (!r.demo) openTelegram(S.verify);
   } catch (ex) {
     console.error(ex); btn.disabled = false;
     const e = document.querySelector('#phone-form .error'); if (e) e.textContent = ex.message || 'Не получилось. Попробуйте звонком';
@@ -1417,7 +1444,7 @@ app.addEventListener('click', async (e) => {
   if (act === 'in-retry') startIncoming(S.verify.phone, null, null);
   if (act === 'resend') startCall(S.verify.phone, null, null, v === 'sms' ? 'sms' : 'call');
   if (act === 'tg-start') { if (consentOk(b.closest('form'))) startTg(b); }
-  if (act === 'tg-open') { S.verify.tgOpened = true; const w = document.getElementById('tg-wait'); if (w) w.textContent = 'Ждём подтверждения из Telegram…'; }
+  if (act === 'tg-open') { e.preventDefault(); openTelegram(S.verify); const w = document.getElementById('tg-wait'); if (w) w.textContent = 'Ждём подтверждения из Telegram…'; }
   if (act === 'logout') {
     await store.guestSignOut();
     S.history = null; S.loy = null; S.verify = { step: 'phone', phone: '', until: 0, back: '/profile' };
