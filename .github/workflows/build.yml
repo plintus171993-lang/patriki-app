@@ -12,9 +12,10 @@ permissions:
   pages: write
   id-token: write
 
+# Новая сборка ждёт окончания предыдущей, а не обрывает её на середине публикации сайта
 concurrency:
   group: build
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   android:
@@ -113,7 +114,8 @@ jobs:
 
       - name: Библиотека Supabase внутрь сайта
         run: |
-          npm install --no-audit --no-fund --no-save @supabase/supabase-js@2 qrcode-generator@1
+          # те же версии, что и в Android-сборке (из package.json), чтобы сайт и APK не расходились
+          npm install --no-audit --no-fund
           mkdir -p www/vendor
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
           cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js

@@ -22,6 +22,10 @@ const SMSRU_API_ID = Deno.env.get('SMSRU_API_ID') || '';
 const NEWTEL_KEY = Deno.env.get('NEWTEL_KEY') || '';
 const NEWTEL_WRITE_KEY = Deno.env.get('NEWTEL_WRITE_KEY') || '';
 const INCOMING_TIMEOUT = 120; // секунд на звонок
+// Тестовый режим входящего звонка подтверждает ЛЮБОЙ номер без звонка — это открывает вход в чужой профиль.
+// Поэтому он выключен, пока владелец явно не включит его для проверки: Edge Functions → Secrets →
+// VERIFY_TEST_AUTOCONFIRM = true. На рабочем сервере не включать — подключите New-Tel (CALL_PROVIDER = newtel).
+const TEST_AUTOCONFIRM = (Deno.env.get('VERIFY_TEST_AUTOCONFIRM') || '').toLowerCase() === 'true';
 const LOGIN_DOMAIN = 'phone.patrikipab.ru';     // служебная почта для входа в профиль с другого устройства
 
 const CORS = {
@@ -279,6 +283,9 @@ async function incomingStart(req: Request, body: any) {
   const u = await guest(req);
   const phone = ruPhone(body.phone);
   if (!phone) throw new Error('Введите номер полностью: +7 (XXX) XXX-XX-XX');
+  if (CALL_PROVIDER !== 'newtel' && !TEST_AUTOCONFIRM) {
+    throw new Error('Подтверждение звонком пока недоступно. Подтвердите номер через Telegram — это бесплатно и быстро');
+  }
   await db.from('phone_incoming').delete().lt('created_at', new Date(Date.now() - 86_400_000).toISOString());
   const { count: recentUser } = await db.from('phone_incoming').select('id', { count: 'exact', head: true })
     .eq('user_id', u.id).gte('created_at', new Date(Date.now() - 15_000).toISOString());
@@ -326,7 +333,7 @@ async function incomingCheck(req: Request, body: any) {
   const { data: row } = await db.from('phone_incoming').select('*').eq('id', body.id).eq('user_id', u.id).maybeSingle();
   if (!row) return { status: 'failed', message: 'Заявка не найдена, начните заново' };
   if (row.status !== 'pending') return { status: row.status, phone: row.phone, login_hash: row.login_hash, message: row.message };
-  if (CALL_PROVIDER !== 'newtel' && body.called && Date.now() - new Date(row.created_at).getTime() > 6000) {
+  if (CALL_PROVIDER !== 'newtel' && TEST_AUTOCONFIRM && body.called && Date.now() - new Date(row.created_at).getTime() > 6000) {
     return { phone: row.phone, ...(await incomingConfirm(row)) };
   }
   if (new Date(row.expires_at).getTime() + 15_000 < Date.now()) {

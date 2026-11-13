@@ -394,7 +394,10 @@ function Cashier() {
   const vs = myVenues();
   if (!A.cashVenue || !vs.find((v) => v.id === A.cashVenue)) A.cashVenue = vs[0]?.id;
   const g = A.cashGuest;
-  const max = g ? Math.min(g.balance, Math.floor((A.cashAmount || 0) * (g.max_redeem_pct || 0) / 100)) : 0;
+  // гостю приложения списать баллы можно только по QR (сервер проверяет то же самое)
+  const byQr = String(A.cashCode || '').trim().startsWith('PK1:');
+  const canRedeem = !!g && (g.legacy || byQr);
+  const max = canRedeem ? Math.min(g.balance, Math.floor((A.cashAmount || 0) * (g.max_redeem_pct || 0) / 100)) : 0;
   const canScan = 'BarcodeDetector' in window && navigator.mediaDevices?.getUserMedia;
   return `<div class="stack" style="gap:16px;max-width:560px">
     ${vs.length > 1 ? `<label class="field">Заведение<select class="select" data-a="cash-venue">${vs.map((v) => `<option value="${esc(v.id)}" ${v.id === A.cashVenue ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>` : `<span class="venue-tag v-${esc(A.cashVenue)}">📍 ${esc(vName(A.cashVenue))}</span>`}
@@ -417,8 +420,11 @@ function Cashier() {
       ${g.active ? '' : '<span class="error">У гостя не подтверждён номер — баллы не копятся. Попросите подтвердить номер в приложении.</span>'}
       <div class="grid-2">
         <label class="field">Сумма чека, ₽<input class="input" name="amount" inputmode="numeric" required value="${esc(A.cashAmount || '')}" data-a="cash-amount"></label>
-        <label class="field">Списать баллов <span class="muted" style="font-size:12px">до ${esc(max)}</span><input class="input" name="redeem" inputmode="numeric" value="0"></label>
+        ${canRedeem
+          ? `<label class="field">Списать баллов <span class="muted" style="font-size:12px">до ${esc(max)}</span><input class="input" name="redeem" inputmode="numeric" value="0"></label>`
+          : `<label class="field">Списать баллов <span class="muted" style="font-size:12px">только по QR</span><input class="input" name="redeem" value="0" disabled></label>`}
       </div>
+      ${canRedeem ? '' : '<span class="muted" style="font-size:12px">Гость найден по номеру — баллы можно только начислить. Чтобы списать, отсканируйте QR из его приложения.</span>'}
       <label class="field">Комментарий (номер стола, чека)<input class="input" name="note"></label>
       <p class="error" role="alert" style="margin:0"></p>
       <button type="submit" class="btn btn-accent">Провести: начислить${g.tier?.pct ? ` ${esc(g.tier.pct)}%` : ''}</button>
@@ -731,7 +737,7 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   if (e.target.dataset?.a === 'cash-amount') {
     A.cashAmount = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
-    const g = A.cashGuest, lab = e.target.closest('form')?.querySelector('[name=redeem]')?.previousElementSibling;
+    const g = A.cashGuest, lab = e.target.closest('form')?.querySelector('[name=redeem]:not([disabled])')?.previousElementSibling;
     if (g && lab) lab.textContent = `до ${Math.min(g.balance, Math.floor(A.cashAmount * (g.max_redeem_pct || 0) / 100))}`;
   }
 });
