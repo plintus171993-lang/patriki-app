@@ -4,11 +4,11 @@
     <LangVersion>10.0</LangVersion>
     <AssemblyName>Resto.Front.Api.Patriki</AssemblyName>
     <RootNamespace>Resto.Front.Api.Patriki</RootNamespace>
-    <AssemblyTitle>Карта Патрики — баллы по QR</AssemblyTitle>
+    <AssemblyTitle>Карта Патрики — баллы по QR и заявки из приложения</AssemblyTitle>
     <Company>ООО «ПАТРИККИ ПАБ»</Company>
     <Product>Resto.Front.Api.Patriki</Product>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     <OutputPath>bin\$(Configuration)\</OutputPath>
   </PropertyGroup>
   <ItemGroup>

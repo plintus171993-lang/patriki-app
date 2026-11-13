@@ -5,6 +5,12 @@ name: Build
 on:
   push:
     branches: [main]
+    # плагин iiko, серверные функции и база не меняют приложение у гостей — их изменения сборку не запускают
+    paths-ignore:
+      - 'iiko-plugin/**'
+      - '.github/workflows/iiko-plugin.yml'
+      - 'supabase/**'
+      - '*.md'
   workflow_dispatch:
 
 permissions:

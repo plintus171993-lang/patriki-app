@@ -135,7 +135,32 @@ namespace Resto.Front.Api.Patriki
             return new CloseResult { Points = Int(d, "points"), DelayDays = Int(d, "delay_days"), Name = Str(d, "name"), Note = Str(d, "note") };
         }
 
-        private static Dictionary<string, object> Post(Dictionary<string, object> body)
+        /// <summary>Новые брони и заказы из приложения для своей точки.</summary>
+        public static List<Request> Inbox(string venue)
+        {
+            var d = Post(new Dictionary<string, object> { ["action"] = "front-inbox", ["venue"] = venue });
+            var list = new List<Request>();
+            if (d.TryGetValue("reservations", out var rs) && rs is System.Collections.IEnumerable r1)
+                foreach (var x in r1) if (x is Dictionary<string, object> r) list.Add(Request.FromReservation(r));
+            if (d.TryGetValue("orders", out var os) && os is System.Collections.IEnumerable o1)
+                foreach (var x in o1) if (x is Dictionary<string, object> o) list.Add(Request.FromOrder(o));
+            return list.Where(r => !string.IsNullOrEmpty(r.Id)).ToList();
+        }
+
+        /// <summary>Решение официанта: action = front-reserve | front-order, decision = confirm/decline | accept/decline.</summary>
+        public static Dictionary<string, object> Decide(string action, string id, string decision, string staff, string table, string iikoId, string iikoNumber)
+        {
+            var body = new Dictionary<string, object>
+            {
+                ["action"] = action, ["venue"] = Config.Current.Venue, ["id"] = id, ["decision"] = decision, ["staff"] = staff ?? "",
+            };
+            if (!string.IsNullOrEmpty(table)) body["table"] = table;
+            if (!string.IsNullOrEmpty(iikoId)) body["iiko_id"] = iikoId;
+            if (!string.IsNullOrEmpty(iikoNumber)) body["iiko_number"] = iikoNumber;
+            return Post(body);
+        }
+
+        internal static Dictionary<string, object> Post(Dictionary<string, object> body)
         {
             var cfg = Config.Current;
             var req = new HttpRequestMessage(HttpMethod.Post, cfg.ApiUrl)
@@ -170,6 +195,13 @@ namespace Resto.Front.Api.Patriki
         public string PosKey { get; set; } = "";
         public string Venue { get; set; } = "petrogradka";
 
+        // Заявки из приложения (брони и доставка) — включать ТОЛЬКО на главной кассе точки
+        public bool Inbox { get; set; } = false;
+        // Стол, на который ставятся заказы доставки из приложения (название или номер стола в iiko)
+        public string DeliveryTable { get; set; } = "Доставка";
+        // Как часто спрашивать сервер о новых заявках, секунд
+        public int PollSeconds { get; set; } = 15;
+
         public bool IsReady => !string.IsNullOrWhiteSpace(PosKey) && !string.IsNullOrWhiteSpace(ApiUrl);
 
         private static Config current;
@@ -188,7 +220,7 @@ namespace Resto.Front.Api.Patriki
                 if (File.Exists(Path))
                 {
                     var c = json.Deserialize<Config>(File.ReadAllText(Path, Encoding.UTF8)) ?? new Config();
-                    PluginContext.Log.Info($"Карта Патрики: настройки из {Path}, заведение {c.Venue}, ключ {(c.IsReady ? "указан" : "НЕ указан")}");
+                    PluginContext.Log.Info($"Карта Патрики: настройки из {Path}, заведение {c.Venue}, ключ {(c.IsReady ? "указан" : "НЕ указан")}, заявки из приложения: {(c.Inbox ? "ВКЛ (главная касса)" : "выкл")}");
                     return c;
                 }
                 var def = new Config();

@@ -14,6 +14,7 @@ namespace Resto.Front.Api.Patriki
     /// <summary>
     /// «Карта Патрики»: бармен сканирует QR гостя из приложения «Патрики», при закрытии заказа
     /// плагин отправляет чек на сервер лояльности, сервер начисляет баллы.
+    /// На главной кассе ("Inbox": true) ещё и показывает заявки из приложения — брони и доставку (Inbox.cs).
     /// Установка: папка Plugins\Resto.Front.Api.Patriki рядом с iikoFront.exe.
     /// Лицензия — та же, что у внешних платёжных систем через API (iikoAPIPayment).
     /// </summary>
@@ -44,6 +45,15 @@ namespace Resto.Front.Api.Patriki
                 .Select(e => e.Entity)
                 .Where(o => o.Status == OrderStatus.Closed)
                 .Subscribe(OnOrderClosed));
+
+            // Заявки из приложения (брони и доставка) — только на главной кассе ("Inbox": true в patriki.json)
+            if (Config.Current.Inbox && Config.Current.IsReady)
+            {
+                try { subscriptions.Add(new Inbox()); }
+                catch (Exception ex) { PluginContext.Log.Error("Заявки Патрики: не удалось включить", ex); }
+            }
+            else if (Config.Current.Inbox)
+                PluginContext.Log.Warn("Заявки Патрики: включены, но в patriki.json не указан ключ кассы");
 
             // Очередь неотправленных чеков: повтор каждые 5 минут
             subscriptions.Add(Observable.Interval(TimeSpan.FromMinutes(5)).Subscribe(_ => Task.Run(() => Queue.Flush())));
