@@ -1,0 +1,109 @@
+# Сборка для RuStore: подписанный APK «Патрики Паб» (ru.patriki.pub) с меткой магазина.
+# Запуск вручную: Actions → «RuStore» → Run workflow. Готовый файл — в разделе Artifacts запуска
+# (patriki-rustore) и в ветке rustore-dist.
+#
+# Отличия от APK с сайта:
+#  • метка «PatrikiApp/rustore» — приложение не предлагает скачивать APK, а отправляет обновляться в RuStore;
+#  • versionCode = 10000 + номер запуска — всегда больше, чем у APK с сайта, поэтому версия из RuStore
+#    ставится поверх установленной с сайта (тот же ключ подписи);
+#  • versionName — как в приложении (APP_VERSION из www/js/config.js).
+name: RuStore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Зависимости и веб-часть
+        run: |
+          npm install --no-audit --no-fund
+          mkdir -p www/vendor/fonts
+          cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
+          cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
+          cp node_modules/@fontsource/oswald/files/oswald-{cyrillic,latin}-{500,700}-normal.woff2 www/vendor/fonts/
+          cp node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-{cyrillic,latin}-{400,500,600}-normal.woff2 www/vendor/fonts/
+
+      - name: Android-проект для RuStore
+        run: |
+          python3 - <<'PY'
+          import json
+          p = 'capacitor.config.json'
+          c = json.load(open(p, encoding='utf-8'))
+          c.setdefault('android', {})['appendUserAgent'] = ' PatrikiApp/rustore'
+          json.dump(c, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+          PY
+          npx cap add android
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#&\n    <uses-permission android:name="android.permission.CAMERA" />#' android/app/src/main/AndroidManifest.xml
+          npx @capacitor/assets generate --android \
+            --iconBackgroundColor '#0E0E0D' --iconBackgroundColorDark '#0E0E0D' \
+            --splashBackgroundColor '#0E0E0D' --splashBackgroundColorDark '#0E0E0D'
+          npx cap sync android
+          VERSION=$(grep -o "APP_VERSION: '[^']*'" www/js/config.js | cut -d"'" -f2)
+          CODE=$((10000 + ${{ github.run_number }}))
+          sed -i "s/versionCode [0-9]*/versionCode $CODE/" android/app/build.gradle
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION\"/" android/app/build.gradle
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "CODE=$CODE" >> $GITHUB_ENV
+          grep -n "versionCode\|versionName\|targetSdk" android/app/build.gradle android/variables.gradle || true
+
+      - name: Сборка APK
+        working-directory: android
+        run: |
+          if [ -z "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then echo "::error::Нет ключа подписи (ANDROID_KEYSTORE_*)"; exit 1; fi
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Подпись APK тем же ключом, что и APK с сайта
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p out
+          RAW="$KS_PASS"
+          LINE="$(printf '%s\n' "$RAW" | grep -m1 'Пароль:' || true)"
+          if [ -n "$LINE" ]; then RAW="${LINE#*:}";
+          else LINE="$(printf '%s\n' "$RAW" | grep -m1 'ANDROID_KEYSTORE_PASSWORD' || true)"; [ -n "$LINE" ] && RAW="${LINE#*=}"; fi
+          export KS_PASS="$(printf '%s' "$RAW" | tr -d '[:space:]')"
+          KS_B64="$(printf '%s' "$KS_B64" | tr -d '[:space:]')"
+          BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+          echo "$KS_B64" | base64 -d > release.jks
+          $BT/zipalign -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          NAME="patriki-rustore-${VERSION}-${CODE}.apk"
+          $BT/apksigner sign --ks release.jks --ks-pass env:KS_PASS --out "out/$NAME" aligned.apk
+          $BT/apksigner verify --print-certs "out/$NAME" | head -5
+          rm -f release.jks
+          $BT/aapt2 dump badging "out/$NAME" | grep -E "package:|sdkVersion|targetSdkVersion|application-label:|uses-permission" || true
+          echo "## RuStore: $NAME" >> $GITHUB_STEP_SUMMARY
+          echo "Версия $VERSION, versionCode $CODE" >> $GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patriki-rustore
+          path: out/*.apk
+
+      - name: Ветка rustore-dist (готовый файл для скачивания)
+        run: |
+          cd out
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git checkout -q -b rustore-dist
+          git add -A
+          git commit -q -m "RuStore $VERSION ($CODE)"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" rustore-dist

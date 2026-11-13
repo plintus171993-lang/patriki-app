@@ -54,6 +54,8 @@ jobs:
 
       - name: Android-проект, иконки и заставка
         run: |
+          # метка «установлено с сайта» — приложение по ней понимает, как предлагать обновление
+          python3 -c "import json;p='capacitor.config.json';c=json.load(open(p,encoding='utf-8'));c.setdefault('android',{})['appendUserAgent']=' PatrikiApp/site';json.dump(c,open(p,'w',encoding='utf-8'),ensure_ascii=False,indent=2)"
           npx cap add android
           # камера — для «Кассы · QR» в админке (сканирование карты гостя)
           sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#&\n    <uses-permission android:name="android.permission.CAMERA" />#' android/app/src/main/AndroidManifest.xml
@@ -157,6 +159,7 @@ jobs:
               'url': f'https://patrikipab.ru/update/web-{build}.zip',
               'apk': 'https://patrikipab.ru/download/patriki.apk',
               'apk_min': int(cfg.get('apk_min', 0)),
+              'store_min': cfg.get('store_min', {}),
               'notes': cfg.get('notes', []),
           }
           json.dump(out, open('www/update/latest.json', 'w', encoding='utf-8'), ensure_ascii=False)

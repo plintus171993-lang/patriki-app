@@ -13,6 +13,10 @@ const plug = (name) => { try { return (cap.Plugins && cap.Plugins[name]) || (cap
 const AppPlugin = isNative ? plug('App') : null;
 
 export const BUILD = Number(window.PK_BUILD) || 0;
+// Откуда установлено приложение: сборка добавляет метку в User-Agent («PatrikiApp/rustore» или «PatrikiApp/site»).
+// Из магазина основу приложения обновляет сам магазин — скачивать APK мы не предлагаем (правило RuStore).
+export const STORE = ((navigator.userAgent || '').match(/PatrikiApp\/(\w+)/) || [])[1] || '';
+const STORE_PAGE = { rustore: 'https://www.rustore.ru/catalog/app/ru.patriki.pub' };
 
 let lastCheck = 0;
 let shownFor = 0;      // для какой сборки уже показали окно в этом запуске
@@ -65,6 +69,16 @@ async function nativeUpdate(L) {
   // нативная часть устарела — нужна новая APK; иначе достаточно перезагрузить страницу
   let nativeBuild = 0;
   try { nativeBuild = Number((await AppPlugin.getInfo()).build) || 0; } catch { /* ignore */ }
+  if (STORE && STORE !== 'site') {
+    // версия из магазина: нужна новая основа — отправляем обновляться в магазин
+    const min = Number((L.store_min || {})[STORE] || 0);
+    if (min && nativeBuild && nativeBuild < min) {
+      if (shownFor !== L.build) { shownFor = L.build; storeSheet(L); }
+      return;
+    }
+    webPrompt(L);
+    return;
+  }
   if (L.apk_min && nativeBuild && nativeBuild < L.apk_min) {
     if (shownFor !== L.build) { shownFor = L.build; apkSheet(L); }
     return;
@@ -95,6 +109,17 @@ function webPrompt(L) {
       } catch { /* ignore */ }
       location.reload();
     },
+  });
+}
+
+function storeSheet(L) {
+  sheet({
+    title: 'Обновите приложение',
+    text: 'Вышла новая версия приложения. Обновите его в RuStore — вход, корзина и баллы сохранятся.',
+    notes: L.notes,
+    ok: 'Обновить в RuStore',
+    later: 'Позже',
+    onOk: () => { location.href = STORE_PAGE[STORE] || STORE_PAGE.rustore; },
   });
 }
 
