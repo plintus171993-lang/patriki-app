@@ -53,4 +53,5 @@ export const DEFAULT_SETTINGS = {
   tiers: [{ name: 'Гость', from: 0, pct: 5 }, { name: 'Завсегдатай', from: 5000, pct: 10 }, { name: 'Свой человек', from: 15000, pct: 15 }],
   period_days: 0, app_min_order: 0, accrue_delivery: false, max_redeem_pct: 30, burn_after_days: 0, welcome_bonus: 0, birthday_bonus: 0, rules_text: '',
   fixed_levels: [], accrue_if_redeem: true, accrue_delay_days: 0,
+  max_check_amount: 100000, max_accruals_per_day: 5, manual_alert_amount: 10000, alert_points: 1000,
 };

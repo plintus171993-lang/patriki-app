@@ -397,6 +397,16 @@ function LoyaltyEditor() {
       </div>
       <label class="field">Дополнительные условия (видны гостю)<textarea class="textarea" name="rules_text" placeholder="Например: баллы не начисляются на алкоголь и по акциям">${esc(L.rules_text || '')}</textarea></label>
     </section>
+    <section class="card stack" style="gap:12px">
+      <span class="eyebrow">Защита от злоупотреблений</span>
+      <span class="muted" style="font-size:12px;line-height:1.4">Лимиты действуют на кассе iiko и во вкладке «Касса · QR». О крупных операциях владельцу сразу приходит сообщение в Telegram.</span>
+      <div class="grid-2">
+        ${num('max_check_amount', 'Максимальная сумма чека, ₽', 'больше — отказ')}
+        ${num('max_accruals_per_day', 'Начислений одному гостю за сутки', 'больше — отказ')}
+        ${num('manual_alert_amount', 'Сообщить, если чек введён вручную от, ₽')}
+        ${num('alert_points', 'Сообщить, если за раз баллов от')}
+      </div>
+    </section>
     <p class="error" role="alert" style="margin:0"></p>
     <button type="submit" class="btn btn-accent">Сохранить правила</button>
     <p class="muted" style="font-size:12px;margin:0;line-height:1.6">Пример: «Гость 0 ₽ — 5%», «Завсегдатай от 5 000 ₽ — 10%», «Свой человек от 15 000 ₽ — 15%». Процент берётся по уровню на момент покупки. Изменения сразу действуют для всех гостей.</p>
@@ -411,7 +421,9 @@ function readLoyForm(f) {
   const fixed_levels = [...f.querySelectorAll('.fixed-row')].map((r) => ({ name: r.querySelector('[name=f_name]').value.trim() || 'Особый', pct: Math.min(100, n(r.querySelector('[name=f_pct]').value)) }));
   return { ...A.loy, tiers, period_days: n(d.period_days), max_redeem_pct: Math.min(90, n(d.max_redeem_pct)), app_min_order: n(d.app_min_order),
     fixed_levels, accrue_delay_days: n(d.accrue_delay_days), accrue_if_redeem: sw('accrue_if_redeem'),
-    burn_after_days: n(d.burn_after_days), welcome_bonus: n(d.welcome_bonus), birthday_bonus: n(d.birthday_bonus), rules_text: (d.rules_text || '').trim(),
+    burn_after_days: n(d.burn_after_days), welcome_bonus: n(d.welcome_bonus),
+    max_check_amount: Math.max(1000, n(d.max_check_amount)), max_accruals_per_day: Math.max(1, n(d.max_accruals_per_day)),
+    manual_alert_amount: n(d.manual_alert_amount), alert_points: n(d.alert_points), birthday_bonus: n(d.birthday_bonus), rules_text: (d.rules_text || '').trim(),
     enabled: sw('enabled'), app_enabled: sw('app_enabled'), venue_enabled: sw('venue_enabled'), verified_only: sw('verified_only'), accrue_delivery: sw('accrue_delivery') };
 }
 async function onLoyaltySubmit(e) {
