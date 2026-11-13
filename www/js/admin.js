@@ -49,6 +49,7 @@ async function loadAll() {
   A.catId = A.catId || A.menu.categories[0]?.id;
   await loadOrders();
   try { A.codes = await store.listSmsCodes(); } catch { A.codes = []; }
+  if (A.me.owner) { try { A.health = await store.verifyHealth(); } catch { A.health = null; } }
   if (!A.unsub) A.unsub = store.onOrdersChange(async () => { await loadOrders(); if (location.hash.startsWith('#/admin')) draw(); });
 }
 async function loadOrders() {
@@ -112,6 +113,7 @@ function Orders() {
   const visits = (o) => (o.user_id ? A.orders.filter((x) => x.user_id === o.user_id && x.status !== 'cancelled').length : 0);
   return `<div class="stack" style="gap:14px">
     <div id="sms-box">${SmsCodes()}</div>
+    ${owner() ? `<div id="health-box">${VerifyHealth()}</div>` : ''}
     ${owner() && A.menu.venues.length > 1 ? `<div class="tabs" aria-label="Заведение">${vchip('all', 'Все заведения')}${A.menu.venues.map((v) => vchip(v.id, v.name)).join('')}</div>` : ''}
     <div class="tabs">${f('active', 'Активные')}${f('all', 'Все за последнее время')}</div>
     ${list.length ? `<div class="admin-grid">${list.map((o) => `<article class="card order ${o.status === 'new' ? 'new' : ''} ${VCLASS(o.venue_id)}">
@@ -139,6 +141,41 @@ function Orders() {
     </article>`).join('')}</div>` : '<div class="empty">Заказов пока нет. Новые появятся здесь сами, со звуковым сигналом.</div>'}
   </div>`;
 }
+
+// Подтверждение номера гостей: работает ли звонок New-Tel и Telegram-бот (только владелец)
+function VerifyHealth() {
+  const h = A.health;
+  if (!h) return '';
+  const { esc } = ctx;
+  const t = (iso) => (iso ? new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+  const row = (key, title, stats) => {
+    const s = (h.services || {})[key];
+    const ok = !s || s.ok !== false;
+    const state = !s ? '<span class="muted">ещё не было попыток</span>'
+      : ok ? '<b style="color:#4CAF6A">● работает</b>'
+      : `<b style="color:#E0533D">● НЕ работает с ${esc(t(s.down_since || s.last_error_at))}</b>`;
+    return `<div class="stack" style="gap:2px;padding:8px 0;border-top:1px solid var(--line)">
+      <div class="between"><span>${title}</span>${state}</div>
+      ${!ok ? `<span style="font-size:13px;color:#E0533D">${esc(s.last_error || '')}</span>` : ''}
+      <span class="muted" style="font-size:12px">За сутки: попыток ${esc(stats.total)}, успешно ${esc(stats.success)}${stats.no_call ? `, без звонка ${esc(stats.no_call)}` : ''} · последний успешный: ${esc(t(stats.last_success))}</span>
+    </div>`;
+  };
+  const anyDown = Object.values(h.services || {}).some((s) => s.ok === false);
+  return `<section class="card stack" style="gap:4px;${anyDown ? 'border-color:#E0533D' : ''}">
+    <div class="between"><span class="eyebrow ${anyDown ? '' : 'accent'}">Подтверждение номера гостей</span>
+      <button type="button" class="btn btn-ghost btn-sm" data-a="health-refresh">Обновить</button></div>
+    ${row('call', '☎️ Вход по звонку (New-Tel)', h.call || {})}
+    ${row('telegram', '✈️ Через Telegram-бота', h.telegram || {})}
+    <span class="muted" style="font-size:12px;line-height:1.4;padding-top:6px">При сбое в Telegram владельца сразу приходит тревога. Баланс и тариф звонков — в <a href="https://my.new-tel.net" target="_blank" rel="noopener">кабинете New-Tel</a>.</span>
+  </section>`;
+}
+async function refreshHealth() {
+  if (!owner()) return;
+  try { A.health = await store.verifyHealth(); } catch { A.health = null; }
+  const box = document.getElementById('health-box');
+  if (box) box.innerHTML = VerifyHealth();
+}
+setInterval(() => { if (location.hash.startsWith('#/admin') && A.tab === 'orders' && A.menu) refreshHealth(); }, 60000);
 
 // Тестовый режим подтверждения номера: коды, которые гости запросили за последние 30 минут
 function SmsCodes() {
@@ -584,6 +621,7 @@ function onClick(e) {
   const b = e.target.closest('[data-a]'); if (!b || !root.contains(b)) return;
   const { a, v, id } = b.dataset;
   const act = {
+    'health-refresh': () => refreshHealth(),
     tab: () => { if (A.scanning) stopScan(); A.tab = v; if (v === 'bookings') A.bk = null; if (v === 'feedback') A.fb = null; draw(); },
     'fb-pub': async () => {
       try { await store.setFeedback(id, null, v === '1'); ctx.toast(v === '1' ? 'Отзыв опубликован' : 'Отзыв скрыт'); await loadFb(); }

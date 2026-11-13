@@ -468,6 +468,14 @@ export const store = {
     await this.ensureGuest();
   },
 
+  // Состояние сервисов подтверждения номера (только владелец)
+  async verifyHealth() {
+    if (this.demo) return null;
+    const { data, error } = await sb.rpc('verify_health');
+    if (error) throw error;
+    return data;
+  },
+
   async listSmsCodes() {
     if (this.demo) return LS.get('sms_outbox', []);
     const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();

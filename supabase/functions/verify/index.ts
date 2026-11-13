@@ -77,6 +77,42 @@ async function guest(req: Request) {
   return data.user;
 }
 
+/* ---------------- контроль сервисов подтверждения (таблица service_health) ---------------- */
+const SERVICE_NAME: Record<string, string> = { call: 'Вход по звонку (New-Tel)', telegram: 'Подтверждение через Telegram-бота' };
+const ALERT_EVERY = 30 * 60_000; // тревога не чаще раза в 30 минут
+async function health(service: 'call' | 'telegram', ok: boolean, err = '') {
+  try {
+    const now = new Date();
+    const { data: prev } = await db.from('service_health').select('*').eq('service', service).maybeSingle();
+    if (ok) {
+      await db.from('service_health').upsert({ service, ok: true, last_ok_at: now.toISOString(), down_since: null, fail_streak: 0, alerted_at: null, updated_at: now.toISOString() });
+      if (prev && prev.ok === false && prev.alerted_at) await ownerAlert(`✅ ${SERVICE_NAME[service]} снова работает.`);
+      return;
+    }
+    const msg = String(err || 'неизвестная ошибка').slice(0, 300);
+    const alert = !prev?.alerted_at || now.getTime() - new Date(prev.alerted_at).getTime() > ALERT_EVERY;
+    await db.from('service_health').upsert({
+      service, ok: false, last_error: msg, last_error_at: now.toISOString(),
+      down_since: prev?.ok === false && prev.down_since ? prev.down_since : now.toISOString(),
+      fail_streak: (prev?.ok === false ? prev.fail_streak || 0 : 0) + 1,
+      last_ok_at: prev?.last_ok_at ?? null,
+      alerted_at: alert ? now.toISOString() : prev?.alerted_at ?? null, updated_at: now.toISOString(),
+    });
+    if (alert) {
+      await ownerAlert(`⚠️ ${SERVICE_NAME[service]} НЕ работает.\n${msg}\n\n` +
+        (service === 'call'
+          ? 'Гости пока могут подтвердить номер через Telegram-бота. Проверьте баланс и тариф в кабинете New-Tel: https://my.new-tel.net'
+          : 'Проверьте бота @PatrikiPubBot и токен в настройках.'));
+    }
+  } catch (e) { console.error('health', e); }
+}
+async function ownerAlert(text: string) {
+  try {
+    const { data } = await db.from('app_secrets').select('value').eq('key', 'telegram_chat_id').maybeSingle();
+    if (data?.value) await tgToChat(data.value, text);
+  } catch (e) { console.error('ownerAlert', e); }
+}
+
 // Привязать подтверждённый номер к гостю.
 // Если номер уже есть у другого профиля — переносим накопленное туда и выдаём одноразовый ключ входа в него.
 async function applyPhone(userId: string, phone: string): Promise<{ status: 'done' | 'login'; login_hash?: string }> {
@@ -101,9 +137,13 @@ async function tgStart(req: Request) {
   await db.rpc('verify_cleanup');
   const { data, error } = await db.from('phone_links').insert({ user_id: u.id }).select('token').single();
   if (error) throw error;
-  const me = await tg('getMe', {});
+  const me = await tg('getMe', {}).catch((e) => ({ ok: false, description: (e as Error).message }));
   const bot = me?.result?.username;
-  if (!bot) throw new Error('Бот не настроен');
+  if (!bot) {
+    await health('telegram', false, 'бот не отвечает: ' + (me?.description || 'проверьте telegram_bot_token'));
+    throw new Error('Бот не настроен');
+  }
+  await health('telegram', true);
   return { token: data.token, url: `https://t.me/${bot}?start=${data.token}`, bot };
 }
 
@@ -259,20 +299,31 @@ async function callCheck(req: Request, body: any) {
 /* ---------------- 3. Гость звонит сам (New-Tel CallPassword ID) ---------------- */
 // Подпись запроса New-Tel: token = ключ + время + sha256(метод\nвремя\nключ\nтело\nключ_подписи)
 async function newtel(method: string, params: Record<string, unknown>) {
-  if (!NEWTEL_KEY || !NEWTEL_WRITE_KEY) throw new Error('Подтверждение звонком не настроено');
+  if (!NEWTEL_KEY || !NEWTEL_WRITE_KEY) {
+    await health('call', false, 'не заданы ключи NEWTEL_KEY / NEWTEL_WRITE_KEY в секретах функций');
+    throw new Error('Подтверждение звонком не настроено');
+  }
   const body = JSON.stringify(params);
   const time = Math.floor(Date.now() / 1000);
   const sign = await sha(`${method}\n${time}\n${NEWTEL_KEY}\n${body}\n${NEWTEL_WRITE_KEY}`);
-  const r = await fetch(`https://api.new-tel.net/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NEWTEL_KEY}${time}${sign}` },
-    body,
-  });
+  let r: Response;
+  try {
+    r = await fetch(`https://api.new-tel.net/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${NEWTEL_KEY}${time}${sign}` },
+      body,
+    });
+  } catch (e) {
+    await health('call', false, 'нет связи с New-Tel: ' + (e as Error).message);
+    throw new Error('Не удалось получить номер для звонка. Попробуйте через минуту или через Telegram');
+  }
   const text = await r.text();
   let d: any = {};
   try { d = JSON.parse(text); } catch { /* не JSON */ }
   if (!r.ok || (d.status && d.status !== 'success')) {
     console.error('new-tel', r.status, text.slice(0, 500));
+    const why = d?.data?.result || d?.message || d?.error || d?.data?.message || text.slice(0, 200);
+    await health('call', false, `New-Tel ответил ${r.status}: ${typeof why === 'string' ? why : JSON.stringify(why)}`);
     throw new Error('Не удалось получить номер для звонка. Попробуйте через минуту или через Telegram');
   }
   return d.data ?? d;
@@ -304,7 +355,12 @@ async function incomingStart(req: Request, body: any) {
     const res = await newtel('call-password-id/start-waiting-mode-busy', { callbackLink, clientNumber: phone, timeout: INCOMING_TIMEOUT, userData: row.id });
     const cd = res.callDetails || res;
     const number = digits(cd.confirmationNumber);
-    if (!number) { console.error('new-tel no number', res); throw new Error('Не удалось получить номер для звонка'); }
+    if (!number) {
+      console.error('new-tel no number', res);
+      await health('call', false, 'New-Tel не выдал номер для звонка: ' + JSON.stringify(res).slice(0, 200));
+      throw new Error('Не удалось получить номер для звонка');
+    }
+    await health('call', true);
     await db.from('phone_incoming').update({ call_id: String(cd.callId || ''), confirm_number: number }).eq('id', row.id);
     return { id: row.id, number, timeout: INCOMING_TIMEOUT };
   }
