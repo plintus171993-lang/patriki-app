@@ -44,8 +44,13 @@ jobs:
           mkdir -p www/vendor
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
           cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
-          # номер сборки — по нему приложение понимает, что вышло обновление
+          # шрифты внутри приложения (без Google Fonts — быстрее при плохом интернете и VPN)
+          mkdir -p www/vendor/fonts
+          cp node_modules/@fontsource/oswald/files/oswald-{cyrillic,latin}-{500,700}-normal.woff2 www/vendor/fonts/
+          cp node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-{cyrillic,latin}-{400,500,600}-normal.woff2 www/vendor/fonts/
+          # номер сборки — по нему приложение понимает, что вышло обновление; он же — версия кэша service worker
           echo "window.PK_BUILD = ${{ github.run_number }};" > www/js/build.js
+          sed -i "s/^const BUILD = 'dev';/const BUILD = '${{ github.run_number }}';/" www/sw.js
 
       - name: Android-проект, иконки и заставка
         run: |
@@ -122,9 +127,14 @@ jobs:
         run: |
           # те же версии, что и в Android-сборке (из package.json), чтобы сайт и APK не расходились
           npm install --no-audit --no-fund
-          mkdir -p www/vendor
+          mkdir -p www/vendor/fonts
           cp node_modules/@supabase/supabase-js/dist/umd/supabase.js www/vendor/supabase.js
           cp node_modules/qrcode-generator/qrcode.js www/vendor/qrcode.js
+          cp node_modules/@fontsource/oswald/files/oswald-{cyrillic,latin}-{500,700}-normal.woff2 www/vendor/fonts/
+          cp node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-{cyrillic,latin}-{400,500,600}-normal.woff2 www/vendor/fonts/
+          ls www/vendor/fonts
+          sed -i "s/^const BUILD = 'dev';/const BUILD = '${{ github.run_number }}';/" www/sw.js
+          grep -n "^const BUILD" www/sw.js
 
       # Обновление без переустановки: архив веб-части + update/latest.json.
       # Приложение сравнивает build со своим и предлагает обновиться.

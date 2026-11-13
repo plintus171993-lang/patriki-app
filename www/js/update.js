@@ -82,9 +82,16 @@ function webPrompt(L) {
     ok: 'Обновить',
     later: 'Позже',
     onOk: async () => {
+      // Новая версия скачивается в память телефона (service worker) — ждём, пока она встанет,
+      // иначе после перезагрузки откроется старая копия. Не дольше 15 секунд.
       try {
-        const reg = await navigator.serviceWorker?.getRegistration();
-        await reg?.update();
+        const sw = navigator.serviceWorker;
+        const reg = await sw?.getRegistration();
+        if (reg) {
+          const switched = new Promise((res) => sw.addEventListener('controllerchange', res, { once: true }));
+          await reg.update();
+          if (reg.installing || reg.waiting) await Promise.race([switched, new Promise((r) => setTimeout(r, 15000))]);
+        }
       } catch { /* ignore */ }
       location.reload();
     },

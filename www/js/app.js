@@ -1494,10 +1494,12 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 /* ---------- запуск ---------- */
-export async function reloadMenu() {
-  const m = await store.getMenu();
-  S.categories = m.categories; S.items = m.items; S.venues = m.venues;
+function applyMenu(m) {
+  S.categories = m.categories || []; S.items = m.items || []; S.venues = m.venues || [];
   if (!S.venues.find((v) => v.id === S.venueId) && S.venues[0]) S.venueId = S.venues[0].id;
+}
+export async function reloadMenu() {
+  applyMenu(await store.getMenu());
 }
 
 window.addEventListener('hashchange', () => {
@@ -1508,22 +1510,92 @@ window.addEventListener('hashchange', () => {
 
 markReady(); // APK: «эта версия запустилась» — иначе плагин обновлений откатит её
 
+/* --- плохой интернет / VPN --- */
+// Перерисовать, только если человек сейчас ничего не вводит и не на экране оформления
+function softRender() {
+  const r = route();
+  const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (typing || document.querySelector('.sheet-wrap') || ['/checkout', '/verify', '/booking'].some((x) => r.startsWith(x)) || r.startsWith('/admin')) return;
+  render();
+}
+// Плашка «Нет связи — показываем сохранённое меню»
+function netBanner(on, text = 'Нет связи с сервером — показываем сохранённое меню. Заказ оформится, когда интернет появится.') {
+  let b = document.getElementById('net-banner');
+  if (!on) { b?.remove(); return; }
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'net-banner'; b.setAttribute('role', 'status');
+    b.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));z-index:60;background:#3A2E14;color:#F4E3B5;border:1px solid #6B5524;border-radius:14px;padding:10px 14px;font-size:13px;line-height:1.35;display:flex;gap:10px;align-items:center';
+    b.innerHTML = '<span style="flex:1"></span><button type="button" class="btn btn-ghost btn-sm" style="flex:none">Повторить</button>';
+    b.querySelector('button').addEventListener('click', () => { netBanner(false); refreshInBackground(true); });
+    document.body.appendChild(b);
+  }
+  b.querySelector('span').textContent = text;
+}
+let refreshing = false;
+async function refreshInBackground(manual = false) {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    await reloadMenu();
+    netBanner(false);
+    softRender();
+  } catch (e) {
+    console.warn('Меню не обновилось', e);
+    netBanner(true);
+    if (manual) toast('Связи пока нет. Попробуем ещё раз автоматически.', 3000);
+  } finally { refreshing = false; }
+}
+async function guestInBackground() {
+  await store.whenGuest().catch(() => false);
+  await loadGuest();
+  softRender();
+}
+// вернулся интернет — сразу подтягиваем свежее меню
+window.addEventListener('online', () => refreshInBackground());
+
 (async () => {
   const started = Date.now();
+  const loaderText = (t) => { const e = document.querySelector('.pk-load-text'); if (e) { clearInterval(window.__pkLoaderTimer); e.textContent = t; } };
   try {
-    await store.init();
-    await Promise.all([reloadMenu(), loadGuest()]);
+    await store.init();   // без сети: библиотека внутри приложения
   } catch (e) {
     console.error(e);
     clearInterval(window.__pkLoaderTimer);
-    app.innerHTML = `<main class="screen"><div class="empty">${logoMark(72)}Не удалось загрузить меню. Проверьте интернет и откройте приложение снова.<button class="btn btn-accent" onclick="location.reload()">Обновить</button></div></main>`;
+    app.innerHTML = `<main class="screen"><div class="empty">${logoMark(72)}Не удалось запустить приложение. Проверьте интернет и откройте его снова.<button class="btn btn-accent" onclick="location.reload()">Обновить</button></div></main>`;
     return;
   }
-  // даём бульдогу хотя бы секунду покрутить головой — иначе экран просто мигнёт
-  const wait = 1100 - (Date.now() - started);
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  clearInterval(window.__pkLoaderTimer);
-  render();
+
+  const cached = store.cachedMenu();
+  if (cached) {
+    // повторный запуск: показываем сохранённое меню сразу, свежее — в фоне
+    applyMenu(cached);
+    const wait = 600 - (Date.now() - started);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    clearInterval(window.__pkLoaderTimer);
+    render();
+    refreshInBackground();
+    guestInBackground();
+  } else {
+    // первый запуск: без меню показать нечего — ждём сеть, но подсказываем, что происходит
+    const slow = setTimeout(() => loaderText('Медленный интернет — ещё немного…'), 6000);
+    const slower = setTimeout(() => loaderText('Связь очень слабая. Если включён VPN, попробуйте без него'), 16000);
+    try {
+      await reloadMenu();   // профиль гостя — в фоне, меню он не нужен
+    } catch (e) {
+      console.error(e);
+      clearTimeout(slow); clearTimeout(slower);
+      clearInterval(window.__pkLoaderTimer);
+      app.innerHTML = `<main class="screen"><div class="empty">${logoMark(72)}Не удалось загрузить меню — связь слишком слабая или сайт недоступен через ваш VPN.<br><br>Попробуйте: отключить VPN или включить Wi-Fi, затем нажмите «Обновить».<button class="btn btn-accent" onclick="location.reload()">Обновить</button></div></main>`;
+      return;
+    }
+    clearTimeout(slow); clearTimeout(slower);
+    const wait = 1100 - (Date.now() - started);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    clearInterval(window.__pkLoaderTimer);
+    render();
+    guestInBackground();
+  }
   maybeShowInstallHint();
   startUpdateChecks();
 })();

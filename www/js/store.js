@@ -6,6 +6,21 @@ import { tierFor, otp, DEFAULT_SETTINGS } from './loyalty.js';
 const SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 let sb = null;
 
+// Плохой интернет / VPN: запрос, который висит дольше 15 секунд, обрываем — приложение
+// покажет сохранённое меню или понятную ошибку, а не вечную загрузку.
+const NET_TIMEOUT = 15000;
+function fetchWithTimeout(input, init = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), NET_TIMEOUT);
+  if (init.signal) init.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  return fetch(input, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
+// Меню и заведения сохраняются на телефоне: при следующем запуске приложение открывается сразу,
+// даже без интернета, а свежие данные подгружаются в фоне.
+const MENU_CACHE = 'patriki.cache.menu.v1';
+function saveMenuCache(m) { try { localStorage.setItem(MENU_CACHE, JSON.stringify({ at: Date.now(), ...m })); } catch { /* память переполнена */ } }
+
 function loadSupabase() {
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
@@ -106,12 +121,34 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() 
 export const store = {
   demo: isDemo(),
 
+  // Запуск без ожидания сети: библиотека лежит внутри приложения, клиент создаётся сразу,
+  // вход гостя идёт в фоне (guestReady). Методы, которым нужен профиль, сами его дожидаются.
+  guestReady: Promise.resolve(true),
   async init() {
     if (this.demo) { demoInit(); return; }
     // Библиотеку кладёт внутрь приложения сборка в GitHub (www/vendor), CDN — запасной вариант
     const createClient = await loadSupabase();
-    sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, { auth: { persistSession: true, storageKey: 'patriki-auth' } });
-    await this.ensureGuest();
+    sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, storageKey: 'patriki-auth' },
+      global: { fetch: fetchWithTimeout },
+    });
+    this.guestReady = this.ensureGuest().catch((e) => { console.warn('Вход гостя отложен:', e?.message || e); return false; });
+  },
+
+  /** Дождаться входа гостя; если в прошлый раз не вышло (не было сети) — попробовать снова. */
+  async whenGuest() {
+    if (await this.guestReady) return true;
+    this.guestReady = this.ensureGuest().catch(() => false);
+    return this.guestReady;
+  },
+
+  /** Меню, сохранённое при прошлом запуске (или null). */
+  cachedMenu() {
+    if (this.demo) return null;
+    try {
+      const c = JSON.parse(localStorage.getItem(MENU_CACHE) || 'null');
+      return c && Array.isArray(c.items) && c.items.length ? c : null;
+    } catch { return null; }
   },
 
   // Каждый гость сразу получает профиль (анонимный, без регистрации).
@@ -140,11 +177,14 @@ export const store = {
       sb.from('venues').select('*').order('sort'),
     ]);
     for (const r of [c, i, v]) if (r.error) throw r.error;
-    return { categories: c.data, items: i.data, venues: v.data };
+    const m = { categories: c.data, items: i.data, venues: v.data };
+    saveMenuCache(m);
+    return m;
   },
 
   // Заказ: сервер сам пересчитывает цены по меню, чтобы их нельзя было подменить.
   async placeOrder(order) {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) {
       const items = LS.get('items', []);
       const venue = LS.get('venues', []).find((v) => v.id === order.venue_id) || {};
@@ -205,6 +245,7 @@ export const store = {
   /* ---------------- профиль гостя ---------------- */
   // Кто сейчас в приложении: { id, phone ('79…' если подтверждён), verified }
   async me() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) {
       const d = LS.get('me', { id: 'demo-user', phone: '', verified: false });
       return d;
@@ -217,6 +258,7 @@ export const store = {
   },
 
   async getProfile() {
+    if (!this.demo) await this.whenGuest();
     const empty = { name: '', phone: '', birthday: null, pd_consent_version: null, marketing_consent: false };
     if (this.demo) return { ...empty, ...LS.get('profile', {}) };
     const me = await this.me(); if (!me) return empty;
@@ -227,6 +269,7 @@ export const store = {
   // Согласия: kind = 'pd' (обработка персональных данных) или 'marketing' (рекламные рассылки).
   // Сервер пишет журнал согласий: кто, когда, какая редакция.
   async recordConsent(kind, granted, version, source) {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) {
       const p = LS.get('profile', {});
       if (kind === 'pd') { p.pd_consent_version = granted ? version : null; p.pd_consent_at = granted ? new Date().toISOString() : null; }
@@ -242,6 +285,7 @@ export const store = {
 
   // Удалить профиль: профиль, адреса и коды входа стираются, в заказах — имя, телефон и адрес.
   async deleteAccount() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) {
       const os = LS.get('orders', []);
       if (os.some((o) => o.user_id === 'demo-user' && ['new', 'cooking', 'delivering'].includes(o.status) && !(o.payment === 'online' && ['pending', 'failed'].includes(o.payment_status)))) throw new Error('ACTIVE_ORDER');
@@ -257,6 +301,7 @@ export const store = {
   },
 
   async saveProfile(p) {
+    if (!this.demo) await this.whenGuest();
     const row = { name: (p.name || '').trim(), phone: p.phone || '', birthday: p.birthday || null };
     if (this.demo) { const all = { ...LS.get('profile', {}), ...row }; LS.set('profile', all); return { ...p, ...all }; }
     const me = await this.me(); if (!me) return { ...p, ...row };
@@ -266,6 +311,7 @@ export const store = {
   },
 
   async listAddresses() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) return LS.get('addresses', []).sort((a, b) => (b.last_used_at || '').localeCompare(a.last_used_at || ''));
     if (!(await this.me())) return [];
     const { data, error } = await sb.from('addresses').select('*').order('last_used_at', { ascending: false });
@@ -274,6 +320,7 @@ export const store = {
   },
 
   async saveAddress(a) {
+    if (!this.demo) await this.whenGuest();
     const row = {
       label: a.label || '', street: (a.street || '').trim(), flat: a.flat || '', entrance: a.entrance || '',
       floor: a.floor || '', intercom: a.intercom || '', comment: a.comment || '', last_used_at: new Date().toISOString(),
@@ -303,6 +350,7 @@ export const store = {
   },
 
   async myOrders() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) return LS.get('orders', []).filter((o) => o.user_id === 'demo-user').slice(0, 50);
     const me = await this.me(); if (!me) return [];
     const { data, error } = await sb.from('orders').select('*').eq('user_id', me.id).order('created_at', { ascending: false }).limit(50);
@@ -312,6 +360,7 @@ export const store = {
 
   /* ---------------- бронирование столов ---------------- */
   async placeReservation(r) {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) {
       const v = LS.get('venues', []).find((x) => x.id === r.venue_id) || {};
       const dep = (v.booking_deposit || 0) * r.guests;
@@ -326,6 +375,7 @@ export const store = {
     return data;
   },
   async myReservations() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) return LS.get('reservations', []).filter((x) => x.user_id === 'demo-user');
     const me = await this.me(); if (!me) return [];
     const { data, error } = await sb.from('reservations').select('*').eq('user_id', me.id).order('starts_at', { ascending: false }).limit(30);
@@ -333,6 +383,7 @@ export const store = {
     return data;
   },
   async cancelReservation(id) {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) { const l = LS.get('reservations', []); const x = l.find((y) => y.id === id); if (x) x.status = 'cancelled'; LS.set('reservations', l); return; }
     const { error } = await sb.rpc('cancel_reservation', { p_id: id });
     if (error) throw new Error(error.message);
@@ -352,6 +403,7 @@ export const store = {
 
   /* ---------------- связь с руководством и отзывы ---------------- */
   async submitFeedback(p) {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) {
       const l = LS.get('feedback', []);
       const row = { id: uid(), number: 1001 + l.length, user_id: 'demo-user', status: 'new', published: false, created_at: new Date().toISOString(), reply: null, ...p };
@@ -364,6 +416,7 @@ export const store = {
     return data;
   },
   async myFeedback() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) return LS.get('feedback', []).filter((x) => x.user_id === 'demo-user');
     const me = await this.me(); if (!me) return [];
     const { data, error } = await sb.from('feedback').select('*').eq('user_id', me.id).order('created_at', { ascending: false }).limit(30);
@@ -395,6 +448,7 @@ export const store = {
 
   /* ---------------- подтверждение номера: Telegram-бот или звонок ---------------- */
   async verifyCall(body) {
+    if (!this.demo) await this.whenGuest();
     const { data, error } = await sb.functions.invoke('verify', { body });
     if (error) {
       let msg = error.message;
@@ -485,6 +539,7 @@ export const store = {
 
   /* ---------------- карта гостя (лояльность) ---------------- */
   async myLoyalty() {
+    if (!this.demo) await this.whenGuest();
     if (this.demo) return demoLoy.my();
     const { data, error } = await sb.rpc('my_loyalty');
     if (error) throw error;

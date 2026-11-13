@@ -49,7 +49,7 @@ async function loadAll() {
   A.catId = A.catId || A.menu.categories[0]?.id;
   await loadOrders();
   try { A.codes = await store.listSmsCodes(); } catch { A.codes = []; }
-  if (A.me.owner) { try { A.health = await store.verifyHealth(); } catch { A.health = null; } }
+  try { A.health = await store.verifyHealth(); } catch { A.health = null; }
   if (!A.unsub) A.unsub = store.onOrdersChange(async () => { await loadOrders(); if (location.hash.startsWith('#/admin')) draw(); });
 }
 async function loadOrders() {
@@ -113,7 +113,7 @@ function Orders() {
   const visits = (o) => (o.user_id ? A.orders.filter((x) => x.user_id === o.user_id && x.status !== 'cancelled').length : 0);
   return `<div class="stack" style="gap:14px">
     <div id="sms-box">${SmsCodes()}</div>
-    ${owner() ? `<div id="health-box">${VerifyHealth()}</div>` : ''}
+    <div id="health-box">${VerifyHealth()}</div>
     ${owner() && A.menu.venues.length > 1 ? `<div class="tabs" aria-label="Заведение">${vchip('all', 'Все заведения')}${A.menu.venues.map((v) => vchip(v.id, v.name)).join('')}</div>` : ''}
     <div class="tabs">${f('active', 'Активные')}${f('all', 'Все за последнее время')}</div>
     ${list.length ? `<div class="admin-grid">${list.map((o) => `<article class="card order ${o.status === 'new' ? 'new' : ''} ${VCLASS(o.venue_id)}">
@@ -142,7 +142,7 @@ function Orders() {
   </div>`;
 }
 
-// Подтверждение номера гостей: работает ли звонок New-Tel и Telegram-бот (только владелец)
+// Подтверждение номера гостей: работает ли звонок New-Tel и Telegram-бот (владелец и управляющие)
 function VerifyHealth() {
   const h = A.health;
   if (!h) return '';
@@ -166,11 +166,10 @@ function VerifyHealth() {
       <button type="button" class="btn btn-ghost btn-sm" data-a="health-refresh">Обновить</button></div>
     ${row('call', '☎️ Вход по звонку (New-Tel)', h.call || {})}
     ${row('telegram', '✈️ Через Telegram-бота', h.telegram || {})}
-    <span class="muted" style="font-size:12px;line-height:1.4;padding-top:6px">При сбое в Telegram владельца сразу приходит тревога. Баланс и тариф звонков — в <a href="https://my.new-tel.net" target="_blank" rel="noopener">кабинете New-Tel</a>.</span>
+    <span class="muted" style="font-size:12px;line-height:1.4;padding-top:6px">Если звонок не работает — гости могут подтвердить номер через Telegram. Сообщите владельцу: баланс и тариф звонков — в <a href="https://my.new-tel.net" target="_blank" rel="noopener">кабинете New-Tel</a>.</span>
   </section>`;
 }
 async function refreshHealth() {
-  if (!owner()) return;
   try { A.health = await store.verifyHealth(); } catch { A.health = null; }
   const box = document.getElementById('health-box');
   if (box) box.innerHTML = VerifyHealth();
