@@ -82,8 +82,10 @@ async function ctx(): Promise<Ctx> {
     const o = await iiko('1/organizations', { returnAdditionalInfo: false, includeDisabled: false });
     const org = o.organizations?.[0]?.id;
     if (!org) throw new Error('В iiko нет организации для ключа официантов');
-    const t = await iiko('1/terminal_groups', { organizationIds: [org], includeDisabled: false });
-    const tg = t.terminalGroups?.[0]?.items?.[0]?.id;
+    // касса может числиться в iiko «неактивной» (выключена, нет связи) — берём и такие
+    const t = await iiko('1/terminal_groups', { organizationIds: [org], includeDisabled: true });
+    const all = [...(t.terminalGroups || []), ...(t.terminalGroupsInSleep || [])].flatMap((g: any) => g.items || []);
+    const tg = all[0]?.id;
     if (!tg) throw new Error('В iiko нет терминальной группы');
     return { org, tg };
   });
