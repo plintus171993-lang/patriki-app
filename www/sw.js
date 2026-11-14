@@ -45,6 +45,8 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   // файлы обновления и APK — всегда из сети
   if (url.pathname.includes('/update/') || url.pathname.includes('/download/')) return;
+  // приложение официантов (/waiter/) — у него свой service worker
+  if (url.pathname.includes('/waiter/')) return;
 
   // страница: сеть не дольше 3 секунд, иначе — сохранённая
   if (req.mode === 'navigate') {
