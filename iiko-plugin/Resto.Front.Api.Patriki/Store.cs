@@ -14,6 +14,9 @@ namespace Resto.Front.Api.Patriki
         public int Balance { get; set; }
         public string Tier { get; set; }
         public DateTime At { get; set; } = DateTime.Now;
+        // Оплата баллами на кассе: id списаний на сервере и сколько баллов уже применено скидкой
+        public List<string> RedeemIds { get; set; } = new List<string>();
+        public int Redeemed { get; set; }
     }
 
     /// <summary>Какой гость привязан к какому открытому заказу (переживает перезапуск кассы).</summary>
@@ -83,7 +86,7 @@ namespace Resto.Front.Api.Patriki
             lock (Sync)
             {
                 var list = Load();
-                if (list.All(e => e.Request.OrderId != r.OrderId)) list.Add(new Entry { Request = r, Added = DateTime.Now });
+                if (list.All(e => e.Request.OrderId != r.OrderId || e.Request.Kind != r.Kind)) list.Add(new Entry { Request = r, Added = DateTime.Now });
                 Save(list);
             }
         }
@@ -104,6 +107,12 @@ namespace Resto.Front.Api.Patriki
                 }
                 try
                 {
+                    if (e.Request.Kind == "done")
+                    {
+                        Api.DeliveryDone(Guid.Parse(e.Request.OrderId));
+                        PluginContext.Log.Info($"Карта Патрики: из очереди отмечена доставка, заказ {e.Request.Number}");
+                        continue;
+                    }
                     var r = Api.Close(e.Request);
                     PluginContext.Log.Info($"Карта Патрики: из очереди отправлен заказ {e.Request.Number}, +{r.Points}");
                 }

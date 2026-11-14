@@ -24,6 +24,14 @@ namespace Resto.Front.Api.Patriki
         public int Balance;
         public string TierText;
         public bool Legacy;
+        public int MaxRedeemPct;
+    }
+
+    internal sealed class RedeemResult
+    {
+        public string Id;
+        public int Points;
+        public int Balance;
     }
 
     internal sealed class CloseResult
@@ -43,6 +51,8 @@ namespace Resto.Front.Api.Patriki
         public int Number { get; set; }
         public decimal Sum { get; set; }
         public List<CloseItem> Items { get; set; } = new List<CloseItem>();
+        // "done" — заказ доставки из приложения закрыт (в очередь, если нет связи)
+        public string Kind { get; set; }
 
         public static CloseRequest FromOrder(IOrder order, string code, string venue)
         {
@@ -105,7 +115,46 @@ namespace Resto.Front.Api.Patriki
                 Balance = Int(d, "balance"),
                 TierText = string.IsNullOrEmpty(tierName) ? "" : $"{tierName} {tierPct}%",
                 Legacy = d.TryGetValue("legacy", out var l) && l is bool b && b,
+                MaxRedeemPct = Int(d, "max_redeem_pct"),
             };
+        }
+
+        /// <summary>Оплата баллами: сервер сразу списывает баллы по свежему QR и держит их за заказом iiko.</summary>
+        public static RedeemResult Redeem(string qr, Guid orderId, int points, decimal sumBefore)
+        {
+            var d = Post(new Dictionary<string, object>
+            {
+                ["action"] = "front-redeem", ["code"] = qr, ["venue"] = Config.Current.Venue,
+                ["order_id"] = orderId.ToString(), ["points"] = points, ["sum"] = (int)Math.Floor(sumBefore),
+            });
+            return new RedeemResult { Id = Str(d, "id"), Points = Int(d, "points"), Balance = Int(d, "balance") };
+        }
+
+        /// <summary>
+        /// Заказ со скидкой «Баллы Патрики» закрыт на другой кассе (гость привязан не здесь):
+        /// фиксируем списание без начисления — пустой чек, сервер только закрывает удержания.
+        /// </summary>
+        public static void RedeemFinalize(Guid orderId, int number)
+        {
+            Post(new Dictionary<string, object>
+            {
+                ["action"] = "front-close", ["code"] = "-", ["venue"] = Config.Current.Venue,
+                ["order"] = new Dictionary<string, object> { ["id"] = orderId.ToString(), ["number"] = number, ["sum"] = 0, ["items"] = new List<object>() },
+            });
+        }
+
+        /// <summary>Вернуть гостю баллы (скидку убрали или заказ удалён).</summary>
+        public static int RedeemCancel(string id)
+        {
+            var d = Post(new Dictionary<string, object> { ["action"] = "front-redeem-cancel", ["id"] = id });
+            return Int(d, "returned");
+        }
+
+        /// <summary>Заказ доставки из приложения закрыт на кассе — отметить выполненным (гостю начислятся баллы).</summary>
+        public static bool DeliveryDone(Guid iikoOrderId)
+        {
+            var d = Post(new Dictionary<string, object> { ["action"] = "front-done", ["venue"] = Config.Current.Venue, ["iiko_id"] = iikoOrderId.ToString() });
+            return d.TryGetValue("found", out var f) && f is bool b && b;
         }
 
         public static CloseResult Close(CloseRequest r)
@@ -115,7 +164,6 @@ namespace Resto.Front.Api.Patriki
                 ["action"] = "front-close",
                 ["code"] = r.Code,
                 ["venue"] = r.Venue,
-                ["redeem"] = 0,
                 ["order"] = new Dictionary<string, object>
                 {
                     ["id"] = r.OrderId,
@@ -201,6 +249,8 @@ namespace Resto.Front.Api.Patriki
         public string DeliveryTable { get; set; } = "Доставка";
         // Как часто спрашивать сервер о новых заявках, секунд
         public int PollSeconds { get; set; } = 15;
+        // Скидка iiko для оплаты баллами: тип скидки «на произвольную сумму» с таким названием (пусто — оплата баллами выключена)
+        public string RedeemDiscount { get; set; } = "Баллы Патрики";
 
         public bool IsReady => !string.IsNullOrWhiteSpace(PosKey) && !string.IsNullOrWhiteSpace(ApiUrl);
 
@@ -220,7 +270,7 @@ namespace Resto.Front.Api.Patriki
                 if (File.Exists(Path))
                 {
                     var c = json.Deserialize<Config>(File.ReadAllText(Path, Encoding.UTF8)) ?? new Config();
-                    PluginContext.Log.Info($"Карта Патрики: настройки из {Path}, заведение {c.Venue}, ключ {(c.IsReady ? "указан" : "НЕ указан")}, заявки из приложения: {(c.Inbox ? "ВКЛ (главная касса)" : "выкл")}");
+                    PluginContext.Log.Info($"Карта Патрики: настройки из {Path}, заведение {c.Venue}, ключ {(c.IsReady ? "указан" : "НЕ указан")}, заявки из приложения: {(c.Inbox ? "ВКЛ (главная касса)" : "выкл")}, оплата баллами: {(string.IsNullOrWhiteSpace(c.RedeemDiscount) ? "выкл" : "скидка «" + c.RedeemDiscount + "»")}");
                     return c;
                 }
                 var def = new Config();

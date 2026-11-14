@@ -13,6 +13,8 @@
 //   checks / accrue / menu — управляющий (таблица admins), menu-save — владелец;
 //   probe — по ключу кассы app_secrets.pos_api_key (диагностика из SQL-редактора);
 //   front-lookup / front-close — для плагина кассы iikoFront, по ключу кассы (заголовок x-pos-key);
+//   front-redeem / front-redeem-cancel — оплата баллами на кассе (скидка «Баллы Патрики»);
+//   front-done — заказ доставки из приложения закрыт на кассе → выполнен (начисляются баллы);
 //   front-inbox / front-reserve / front-order — заявки из приложения на главной кассе (тоже по ключу кассы):
 //     новые брони и заказы точки, решение официанта «подтвердить / отклонить».
 
@@ -272,18 +274,44 @@ Deno.serve(async (req) => {
     }
 
     /* ---------- плагин кассы iikoFront (ключ кассы в заголовке x-pos-key) ---------- */
-    if (act === 'front-lookup' || act === 'front-close') {
+    if (['front-lookup', 'front-close', 'front-redeem', 'front-redeem-cancel', 'front-done'].includes(act)) {
       const key = req.headers.get('x-pos-key') || b.key || '';
       if (!key || key !== await secret('pos_api_key')) return json({ error: 'Неверный ключ кассы' }, 403);
+      const rpc = async (fn: string, args: Record<string, unknown>) => {
+        const { data, error } = await db.rpc(fn, { p_key: key, ...args });
+        if (error) throw new Error(error.message);
+        return data;
+      };
+      // заказ доставки из приложения закрыт на кассе → выполнен, баллы начислит база
+      if (act === 'front-done') {
+        if (!b.iiko_id) throw new Error('Нет id заказа iiko');
+        return json(await rpc('pos_delivery_done', { p_venue: String(b.venue || ''), p_iiko_order: String(b.iiko_id) }));
+      }
+      // отмена оплаты баллами (скидку убрали, заказ удалён)
+      if (act === 'front-redeem-cancel') {
+        if (!b.id) throw new Error('Нет id списания');
+        return json(await rpc('pos_redeem_cancel', { p_id: String(b.id) }));
+      }
       const code = String(b.code || '').trim();
       if (!code) throw new Error('Нет QR-кода гостя');
       if (act === 'front-lookup') {
-        const { data, error } = await db.rpc('pos_lookup', { p_key: key, p_code: code });
-        if (error) throw new Error(error.message);
-        return json(data);
+        const data = await rpc('pos_lookup', { p_code: code });
+        const { data: cfg } = await db.from('loyalty_settings').select('max_redeem_pct').limit(1).maybeSingle();
+        return json({ ...data, max_redeem_pct: Number(cfg?.max_redeem_pct ?? 0) });
+      }
+      // оплата баллами на кассе: баллы списываются сразу и держатся за заказом
+      if (act === 'front-redeem') {
+        if (!b.order_id) throw new Error('Нет id заказа iiko');
+        return json(await rpc('pos_redeem', {
+          p_code: code, p_points: Math.floor(Number(b.points || 0)), p_sum: Math.floor(Number(b.sum || 0)),
+          p_venue: String(b.venue || 'petrogradka'), p_order: String(b.order_id),
+        }));
       }
       const o = b.order || {};
       if (!o.id) throw new Error('Нет id заказа iiko');
+      // списания баллами по этому заказу фиксируем; по правилам за чек, оплаченный баллами, баллы могут не начисляться
+      const red = await rpc('pos_redeem_close', { p_order: String(o.id), p_check: 'iiko:' + o.id });
+      if (!red.accrue) return json({ points: 0, redeemed: red.redeemed, note: `Чек оплачен баллами (${red.redeemed}) — по правилам за него баллы не начисляются` });
       const ex = await excluded();
       let total = 0, eligible = 0;
       const lines = (o.items || []).map((it: any) => {
@@ -298,7 +326,7 @@ Deno.serve(async (req) => {
       if (eligible <= 0) return json({ points: 0, eligible: 0, note: 'В чеке нет позиций, за которые начисляются баллы', lines });
       const { data, error } = await db.rpc('iiko_apply', {
         p_code: code, p_check_id: 'iiko:' + o.id, p_number: String(o.number ?? ''), p_sum: Math.round(orderSum),
-        p_amount: eligible, p_redeem: Number(b.redeem || 0), p_venue: String(b.venue || 'petrogradka'), p_staff: null,
+        p_amount: eligible, p_redeem: 0, p_venue: String(b.venue || 'petrogradka'), p_staff: null,
       });
       if (error) throw new Error(error.message);
       return json({ ...data, eligible, lines });

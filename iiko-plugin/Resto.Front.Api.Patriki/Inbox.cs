@@ -341,7 +341,7 @@ namespace Resto.Front.Api.Patriki
             }
         }
 
-        private static ITable FindDeliveryTable()
+        internal static ITable FindDeliveryTable()
         {
             var want = (Config.Current.DeliveryTable ?? "").Trim();
             if (want.Length == 0) return null;
@@ -383,7 +383,7 @@ namespace Resto.Front.Api.Patriki
         /* ================= общее ================= */
 
         /// <summary>Права кассы: учётная запись плагина, а если её нет — PIN сотрудника.</summary>
-        private static Resto.Front.Api.Data.Security.ICredentials Credentials(IViewManager vm)
+        internal static Resto.Front.Api.Data.Security.ICredentials Credentials(IViewManager vm)
         {
             try { return PluginContext.Operations.GetDefaultCredentials(); }
             catch (Exception ex)
