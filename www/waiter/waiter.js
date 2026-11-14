@@ -3,6 +3,7 @@
 // Без связи заказ остаётся в очереди на телефоне и уходит сам, когда связь вернётся.
 const API = 'https://ozbdmczmpejyctezxrdk.supabase.co/functions/v1/waiter';
 const APIKEY = 'sb_publishable_PhI0d9qM0Hp7KrERGKHQfg_668fWJMv';
+const APK_URL = 'https://github.com/plintus171993-lang/patriki-app/releases/download/waiter-latest/patriki-waiter.apk';
 
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet');
@@ -136,6 +137,7 @@ function renderLogin(msg = '') {
       ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button data-k="${n}">${n}</button>`).join('')}
       <button data-k="del" aria-label="Стереть">⌫</button><button data-k="0">0</button><button data-k="ok" aria-label="Войти">→</button>
     </div>
+    ${/Android/i.test(navigator.userAgent) && !/PatrikiWaiter/.test(navigator.userAgent) ? `<a class="link" href="${APK_URL}">Скачать приложение для Android</a>` : ''}
   </div>`;
   $app.querySelector('.pad').onclick = async (e) => {
     const k = e.target.closest('button')?.dataset.k; if (!k) return;

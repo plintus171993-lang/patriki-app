@@ -1,7 +1,7 @@
 // Service worker приложения официантов: оболочка открывается без интернета.
 // Данные (меню, столы, заказы) идут на сервер напрямую и здесь не кэшируются.
-const CACHE = 'waiter-v1';
-const SHELL = ['./', 'index.html', 'waiter.css', 'waiter.js', 'manifest.webmanifest', '../css/fonts.css', '../icons/icon.svg', '../icons/icon-192.png'];
+const CACHE = 'waiter-v2';
+const SHELL = ['./', 'index.html', 'waiter.css', 'waiter.js', 'manifest.webmanifest', 'offline.html', '../css/fonts.css', '../icons/icon.svg', '../icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {

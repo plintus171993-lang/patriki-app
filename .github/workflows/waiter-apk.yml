@@ -1,0 +1,122 @@
+# Android-приложение для официантов «Патрики · Официант» (ru.patriki.waiter).
+# Приложение открывает https://patrikipab.ru/waiter/ внутри себя, поэтому изменения
+# в www/waiter/ доходят до телефонов сразу, без переустановки. Пересобирать APK нужно,
+# только если меняется сама оболочка (этот файл, иконка, разрешения).
+#
+# Запуск: автоматически при изменении этого файла, либо вручную: Actions → «Waiter APK» → Run workflow.
+# Готовый файл: https://github.com/<репозиторий>/releases/download/waiter-latest/patriki-waiter.apk
+# (и в разделе Artifacts запуска).
+name: Waiter APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/waiter-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: waiter-apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: Android-проект «Официант»
+        run: |
+          # своя конфигурация вместо приложения доставки: другой appId, имя и адрес
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "ru.patriki.waiter",
+            "appName": "Официант Патрики",
+            "webDir": "www/waiter",
+            "backgroundColor": "#0E0E0D",
+            "server": {
+              "url": "https://patrikipab.ru/waiter/",
+              "errorPath": "offline.html",
+              "allowNavigation": ["patrikipab.ru"]
+            },
+            "android": {
+              "allowMixedContent": false,
+              "appendUserAgent": " PatrikiWaiter/apk"
+            }
+          }
+          JSON
+          npx cap add android
+          npx @capacitor/assets generate --android \
+            --iconBackgroundColor '#0E0E0D' --iconBackgroundColorDark '#0E0E0D' \
+            --splashBackgroundColor '#0E0E0D' --splashBackgroundColorDark '#0E0E0D'
+          npx cap sync android
+          # официант держит телефон вертикально
+          sed -i 's#<activity#<activity android:screenOrientation="portrait"#' android/app/src/main/AndroidManifest.xml
+          sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/" android/app/build.gradle
+          sed -i "s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
+
+      - name: Сборка APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            ./gradlew assembleRelease --no-daemon
+          else
+            echo "::warning::Ключ подписи не задан — собираю отладочную версию."
+            ./gradlew assembleDebug --no-daemon
+          fi
+
+      - name: Подпись APK
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p out
+          RAW="$KS_PASS"
+          LINE="$(printf '%s\n' "$RAW" | grep -m1 'Пароль:' || true)"
+          if [ -n "$LINE" ]; then RAW="${LINE#*:}";
+          else LINE="$(printf '%s\n' "$RAW" | grep -m1 'ANDROID_KEYSTORE_PASSWORD' || true)"; [ -n "$LINE" ] && RAW="${LINE#*=}"; fi
+          export KS_PASS="$(printf '%s' "$RAW" | tr -d '[:space:]')"
+          KS_B64="$(printf '%s' "$KS_B64" | tr -d '[:space:]')"
+          if [ -n "$KS_B64" ]; then
+            BT=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1)
+            echo "$KS_B64" | base64 -d > release.jks
+            $BT/zipalign -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+            $BT/apksigner sign --ks release.jks --ks-pass env:KS_PASS --out out/patriki-waiter.apk aligned.apk
+            $BT/apksigner verify out/patriki-waiter.apk
+            rm -f release.jks
+            $BT/aapt2 dump badging out/patriki-waiter.apk | grep -E "package:|application-label:" || true
+          else
+            cp android/app/build/outputs/apk/debug/app-debug.apk out/patriki-waiter.apk
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patriki-waiter
+          path: out/patriki-waiter.apk
+
+      - name: Публикация (постоянная ссылка для скачивания)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete waiter-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create waiter-latest out/patriki-waiter.apk \
+            --title "Официант Патрики — Android" \
+            --notes "Приложение для официантов паба «Патрики». Сборка ${{ github.run_number }}. Установить: скачать APK на телефон и открыть (разрешить установку из этого источника)." \
+            --latest=false
+          echo "## APK: https://github.com/${GITHUB_REPOSITORY}/releases/download/waiter-latest/patriki-waiter.apk" >> $GITHUB_STEP_SUMMARY

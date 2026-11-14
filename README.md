@@ -101,6 +101,7 @@ POST .../rest/v1/rpc/pos_accrue
 - **Ключи iiko** — свои, отдельно от доставки: `app_secrets` → `waiter_iiko_api_key` (интеграция «Официант-приложение» в iikoWeb → Cloud API), `waiter_iiko_app_id` и `waiter_iiko_client_secret` (приложение «Официант-приложение» на портале api.iiko.help).
 - **Меню** — внешнее меню iiko «Официант» (iikoWeb → Внешние заказы → Внешние меню), подключено к ключу официантов. Группы «Доставка – …» в приложении скрыты. Поменяли меню в iikoWeb — в приложении ☰ → «Обновить меню и столы» (само обновляется раз в 10 минут).
 - **Официанты и ПИН** — управляющий в приложении: ☰ → «Официанты и ПИН-коды». Или в SQL: `select public.waiter_upsert('Имя', '1234');`
+- **Android-приложение** «Официант Патрики» (`ru.patriki.waiter`) — `.github/workflows/waiter-apk.yml`, ссылка: https://github.com/plintus171993-lang/patriki-app/releases/download/waiter-latest/patriki-waiter.apk (на Android эта ссылка есть и на экране входа). Внутри — тот же /waiter/, поэтому обновления приходят сами; пересобирать APK нужно только при изменении оболочки (Actions → «Waiter APK» → Run workflow).
 - **Касса должна быть на связи с облаком iiko** (iikoFront запущен, плагин iikoTransport работает): иначе iiko держит заказ 60 секунд и отменяет. Статус кассы виден в шапке приложения.
 
 ### 4. GitHub
