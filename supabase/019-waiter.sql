@@ -108,3 +108,9 @@ revoke all on function public.waiter_check_pin(text) from public, anon, authenti
 revoke all on function public.waiter_upsert(text, text, text, uuid) from public, anon, authenticated;
 grant execute on function public.waiter_check_pin(text) to service_role;
 grant execute on function public.waiter_upsert(text, text, text, uuid) to service_role;
+
+-- ---------- 020: связь официанта с сотрудником iiko ----------
+-- Управляющий выбирает сотрудника из списка iiko и задаёт ему ПИН. Уволенный в iiko
+-- сотрудник автоматически отключается в приложении (проверка при открытии списка и при входе).
+alter table public.waiter_staff add column if not exists iiko_employee_id uuid unique;
+alter table public.waiter_staff add column if not exists iiko_name text;

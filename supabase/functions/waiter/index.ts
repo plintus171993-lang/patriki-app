@@ -16,7 +16,8 @@
 //   send {clientId, tableId, tableLabel, orderId?, guests?, items[]} → {correlationId, orderId, logId}
 //   status {correlationId}              → {state, error?}
 //   history                             → {orders}
-//   staff_list / staff_save {id?, name, pin, role} / staff_disable {id}   — только управляющий
+//   staff_list / staff_iiko / staff_save {id?, name, pin, role, iikoEmployeeId?} / staff_disable {id} — только управляющий
+//   (staff_iiko — сотрудники из iiko; уволенный в iiko сотрудник отключается в приложении сам)
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const IIKO = 'https://api-ru.iiko.services/api/';
@@ -146,6 +147,40 @@ async function alive(c: Ctx) {
   } catch { return null; }
 }
 
+/* ---------- сотрудники iiko (для привязки официантов) ---------- */
+const TECH = /^(пользователь|сотрудник техподдержки|iikoteh|it$|контроль приложение)/i;
+async function loadEmployees() {
+  const [e, p] = await Promise.all([
+    iiko('employees/v1/employee/list', { limit: 1000 }, 30),
+    iiko('employees/v1/positions/list', { limit: 500 }, 30).catch(() => ({ items: [] })),
+  ]);
+  const pos = new Map<string, string>((p.items || []).map((x: any) => [x.id, x.name]));
+  return (e.items || [])
+    .filter((x: any) => !x.isSystem && !TECH.test(String(x.name || '').trim()))
+    .map((x: any) => ({
+      id: x.id, name: String(x.name || [x.lastName, x.firstName].filter(Boolean).join(' ')).trim(), fired: !!x.isFired,
+      roles: [x.mainRoleId, ...(x.roleIds || [])].filter(Boolean).map((r: string) => pos.get(r)).filter(Boolean)
+        .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i),
+    }));
+}
+// уволенный (или удалённый) в iiko сотрудник отключается и в приложении
+async function syncStaff(force = false) {
+  const emps = await cached('employees', 600, loadEmployees, force);
+  if (!emps.length) return emps; // пустой ответ iiko — никого не отключаем
+  const byId = new Map(emps.map((x: any) => [x.id, x]));
+  const { data } = await db.from('waiter_staff').select('id, iiko_employee_id, iiko_name').eq('active', true).not('iiko_employee_id', 'is', null);
+  for (const s of data || []) {
+    const e: any = byId.get(s.iiko_employee_id);
+    if (!e || e.fired) {
+      await db.from('waiter_staff').update({ active: false }).eq('id', s.id);
+      await db.from('waiter_sessions').delete().eq('staff_id', s.id);
+    } else if (e.name !== s.iiko_name) {
+      await db.from('waiter_staff').update({ iiko_name: e.name }).eq('id', s.id);
+    }
+  }
+  return emps;
+}
+
 async function waitCommand(org: string, correlationId: string, maxMs = 8000) {
   const until = Date.now() + maxMs;
   while (Date.now() < until) {
@@ -173,6 +208,7 @@ async function login(req: Request, pin: string) {
   const { count } = await db.from('waiter_login_attempts').select('id', { count: 'exact', head: true }).eq('ip', ip).eq('ok', false).gte('created_at', since);
   if ((count || 0) >= 10) throw new HttpError(429, 'Слишком много попыток. Подождите 10 минут');
   if (!/^[0-9]{4,6}$/.test(pin || '')) throw new HttpError(400, 'ПИН — от 4 до 6 цифр');
+  try { await syncStaff(); } catch (_) { /* iiko недоступен — входим по сохранённому списку */ }
   const { data, error } = await db.rpc('waiter_check_pin', { p_pin: pin });
   if (error) throw error;
   const s = (data as Staff[])?.[0];
@@ -304,14 +340,29 @@ Deno.serve(async (req) => {
       }
       case 'staff_list': {
         manager(staff);
-        const { data } = await db.from('waiter_staff').select('id, name, role, active, created_at').order('active', { ascending: false }).order('name');
-        return json({ staff: data || [] });
+        let iikoError = null;
+        try { await syncStaff(!!b.force); } catch (e) { iikoError = (e as Error).message; }
+        const { data } = await db.from('waiter_staff').select('id, name, role, active, created_at, iiko_employee_id, iiko_name').order('active', { ascending: false }).order('name');
+        return json({ staff: data || [], iikoError });
+      }
+      case 'staff_iiko': {
+        manager(staff);
+        const emps = await syncStaff(!!b.force);
+        const { data } = await db.from('waiter_staff').select('id, iiko_employee_id, active').not('iiko_employee_id', 'is', null);
+        const linked = new Map((data || []).filter((x: any) => x.active).map((x: any) => [x.iiko_employee_id, x.id]));
+        return json({ employees: emps.filter((x: any) => !x.fired).map((x: any) => ({ ...x, staffId: linked.get(x.id) || null })).sort((a: any, b2: any) => a.name.localeCompare(b2.name, 'ru')) });
       }
       case 'staff_save': {
         manager(staff);
         const role = b.role === 'manager' ? 'manager' : 'waiter';
         const { data, error } = await db.rpc('waiter_upsert', { p_name: String(b.name || '').slice(0, 60), p_pin: String(b.pin || ''), p_role: role, p_id: b.id || null });
         if (error) throw new HttpError(400, error.message);
+        if (b.iikoEmployeeId !== undefined) {
+          // отключённый раньше сотрудник с той же привязкой освобождает её
+          if (b.iikoEmployeeId) await db.from('waiter_staff').update({ iiko_employee_id: null }).eq('iiko_employee_id', b.iikoEmployeeId).eq('active', false).neq('id', data);
+          const { error: e2 } = await db.from('waiter_staff').update({ iiko_employee_id: b.iikoEmployeeId || null, iiko_name: b.iikoEmployeeId ? String(b.iikoName || b.name || '').slice(0, 100) : null }).eq('id', data);
+          if (e2) throw new HttpError(400, /unique|duplicate/i.test(e2.message) ? 'Этот сотрудник iiko уже привязан к другому ПИН' : e2.message);
+        }
         return json({ id: data });
       }
       case 'staff_disable': {

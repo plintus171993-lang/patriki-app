@@ -137,6 +137,11 @@ jobs:
           ls www/vendor/fonts
           sed -i "s/^const BUILD = 'dev';/const BUILD = '${{ github.run_number }}';/" www/sw.js
           grep -n "^const BUILD" www/sw.js
+          # приложение официантов: номер сборки — для автообновления на телефонах
+          sed -i "s/^const BUILD = 'dev';/const BUILD = '${{ github.run_number }}';/" www/waiter/waiter.js
+          sed -i "s/^const CACHE = 'waiter-v[0-9]*';/const CACHE = 'waiter-${{ github.run_number }}';/" www/waiter/sw.js
+          python3 -c "import json;c=json.load(open('www/waiter/update.json'));json.dump({'build':${{ github.run_number }},'apk_min':int(c.get('apk_min',0))},open('www/waiter/version.json','w'))"
+          cat www/waiter/version.json; grep -n "^const BUILD" www/waiter/waiter.js
 
       # Обновление без переустановки: архив веб-части + update/latest.json.
       # Приложение сравнивает build со своим и предлагает обновиться.

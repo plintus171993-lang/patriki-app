@@ -56,7 +56,7 @@ jobs:
             },
             "android": {
               "allowMixedContent": false,
-              "appendUserAgent": " PatrikiWaiter/apk"
+              "appendUserAgent": " PatrikiWaiter/apk-${{ github.run_number }}"
             }
           }
           JSON

@@ -4,6 +4,9 @@
 const API = 'https://ozbdmczmpejyctezxrdk.supabase.co/functions/v1/waiter';
 const APIKEY = 'sb_publishable_PhI0d9qM0Hp7KrERGKHQfg_668fWJMv';
 const APK_URL = 'https://github.com/plintus171993-lang/patriki-app/releases/download/waiter-latest/patriki-waiter.apk';
+const BUILD = 'dev'; // сборка в GitHub подставляет номер — по нему приложение понимает, что вышло обновление
+// номер сборки Android-оболочки (из User-Agent приложения): «PatrikiWaiter/apk-5»; первая версия — без номера
+const APK_BUILD = (() => { const m = (navigator.userAgent || '').match(/PatrikiWaiter\/apk(?:-(\d+))?/); return m ? Number(m[1] || 1) : 0; })();
 
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet');
@@ -121,7 +124,30 @@ async function flush() {
 setInterval(() => { if (S.queue.some((q) => ['queued', 'offline', 'sent'].includes(q.state))) flush(); }, 2500);
 setInterval(refreshStop, 60000);
 addEventListener('online', () => flush());
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { flush(); refreshStop(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { flush(); refreshStop(); checkUpdate(); } });
+
+/* ---------------- автообновление ---------------- */
+// Новая версия выходит на сайт → приложение тихо перезагружается, когда официант на экране столов
+// и ничего не отправляется. Корзины столов и очередь хранятся в телефоне и не теряются.
+S.update = null; S.apkOld = false;
+let lastUpd = 0;
+async function checkUpdate() {
+  if (BUILD === 'dev' || Date.now() - lastUpd < 60000 || !navigator.onLine) return;
+  lastUpd = Date.now();
+  try {
+    const v = await (await fetch('version.json?t=' + Date.now(), { cache: 'no-store' })).json();
+    if (APK_BUILD && v.apk_min && APK_BUILD < v.apk_min) S.apkOld = true;
+    if (Number(v.build) > Number(BUILD)) { S.update = v.build; applyUpdate(); }
+    render();
+  } catch { /* нет связи — проверим позже */ }
+}
+function applyUpdate() {
+  if (!S.update) return;
+  const busy = flushing || !$sheet.hidden || S.queue.some((q) => ['queued', 'sent'].includes(q.state));
+  if (!busy && (S.view === 'tables' || !S.token)) location.reload();
+}
+setInterval(checkUpdate, 3 * 60 * 1000);
+setInterval(applyUpdate, 15000);
 
 /* ---------------- вход ---------------- */
 let pin = '';
@@ -194,6 +220,7 @@ function renderTables() {
     <button class="ib" data-a="reload" aria-label="Обновить">↻</button>
     <button class="ib" data-a="menu" aria-label="Меню">☰</button>
   </div>
+  ${S.apkOld ? `<div class="banner warn">Вышла новая версия приложения для Android. <a href="${APK_URL}" style="color:inherit;font-weight:600">Скачать и установить</a> — заказы и вход сохранятся.</div>` : ''}
   ${offline ? '<div class="banner">Нет интернета. Заказы сохранятся на телефоне и уйдут сами, когда связь вернётся.</div>' : ''}
   ${S.data.alive === false ? '<div class="banner warn">Касса iiko сейчас не на связи с облаком. Заказы будут ждать в очереди iiko до 60 секунд — проверьте, что касса включена и iikoFront запущен.</div>' : ''}
   <div class="tabs">${secs.map((s) => `<button class="chip ${s.id === sec?.id ? 'on' : ''}" data-sec="${s.id}">${esc(s.name)}</button>`).join('')}</div>
@@ -225,7 +252,7 @@ function openMainMenu() {
     <div class="sub">${S.staff?.role === 'manager' ? 'Управляющий' : 'Официант'}</div>
     <div class="menu-list">
       <button data-a="history">Мои заказы за смену</button>
-      ${S.staff?.role === 'manager' ? '<button data-a="staff">Официанты и ПИН-коды</button>' : ''}
+      ${S.staff?.role === 'manager' ? '<button data-a="staff">Сотрудники и ПИН-коды</button>' : ''}
       <button data-a="reload">Обновить меню и столы</button>
       <button data-a="logout" style="color:var(--danger)">Выйти</button>
     </div>`, (a) => {
@@ -460,23 +487,34 @@ function renderHistory() {
 }
 
 /* ---------- официанты (управляющий) ---------- */
-let staffList = null;
-async function loadStaff() {
+// Сотрудники берутся из iiko: управляющий выбирает человека из списка iiko и задаёт ему ПИН.
+// Уволенный в iiko сотрудник отключается в приложении сам. Можно добавить и вручную (стажёр, подработка).
+let staffList = null, staffNote = '';
+async function loadStaff(force = false) {
   staffList = null; render();
-  try { staffList = (await api('staff_list')).staff || []; } catch (e) { staffList = { error: e.message }; }
+  try { const r = await api('staff_list', { force }); staffList = r.staff || []; staffNote = r.iikoError ? 'iiko не ответил: ' + r.iikoError : ''; }
+  catch (e) { staffList = { error: e.message }; }
   render();
 }
 function renderStaff() {
+  const act = Array.isArray(staffList) ? staffList.filter((s) => s.active) : [];
+  const off = Array.isArray(staffList) ? staffList.filter((s) => !s.active) : [];
+  const row = (s) => `<div class="hi" style="${s.active ? '' : 'opacity:.45'}"><span class="n">${esc(s.name)}<small>${s.role === 'manager' ? 'управляющий' : 'официант'}${s.iiko_employee_id ? ' · из iiko' : ''}${s.active ? '' : ' · отключён'}</small></span>
+      <button class="badge" data-edit="${s.id}">${s.active ? 'ПИН' : 'Вернуть'}</button>${s.active ? `<button class="badge err" data-off="${s.id}">Откл.</button>` : ''}</div>`;
   $app.innerHTML = `
-  <div class="top"><button class="ib" data-a="back">←</button><h1>Официанты</h1><button class="ib" data-a="add" aria-label="Добавить">＋</button></div>
-  <div class="hist">${staffList === null ? '<div class="empty"><span class="spin"></span></div>' : staffList.error ? `<div class="empty">${esc(staffList.error)}</div>` :
-    staffList.map((s) => `<div class="hi" style="${s.active ? '' : 'opacity:.45'}"><span class="n">${esc(s.name)}<small>${s.role === 'manager' ? 'управляющий' : 'официант'}${s.active ? '' : ' · отключён'}</small></span>
-      <button class="badge" data-edit="${s.id}">ПИН</button>${s.active ? `<button class="badge err" data-off="${s.id}">Откл.</button>` : ''}</div>`).join('')}</div>
-  <div class="empty mini" style="padding:16px">ПИН — 4–6 цифр, у каждого свой. Отключённый сотрудник сразу выходит из приложения.</div>`;
+  <div class="top"><button class="ib" data-a="back">←</button><h1>Сотрудники</h1><button class="ib" data-a="sync" aria-label="Обновить из iiko">↻</button></div>
+  <div style="padding:12px 16px 0" class="row"><button class="btn" data-a="fromIiko">＋ Из сотрудников iiko</button></div>
+  <div style="padding:10px 16px 0" class="row"><button class="btn ghost" data-a="add">＋ Вручную</button></div>
+  ${staffNote ? `<div class="banner warn">${esc(staffNote)}</div>` : ''}
+  <div class="hist" style="margin-top:8px">${staffList === null ? '<div class="empty"><span class="spin"></span></div>' : staffList.error ? `<div class="empty">${esc(staffList.error)}</div>` :
+    act.map(row).join('') + (off.length ? `<div class="gh">Отключены</div>${off.map(row).join('')}` : '')}</div>
+  <div class="empty mini" style="padding:16px">ПИН — 4–6 цифр, у каждого свой. Уволенный в iiko сотрудник отключается здесь автоматически, отключённый сразу выходит из приложения.</div>`;
   $app.onclick = async (e) => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.a === 'back') { S.view = 'tables'; return render(); }
+    if (b.dataset.a === 'sync') return loadStaff(true);
     if (b.dataset.a === 'add') return editStaff(null);
+    if (b.dataset.a === 'fromIiko') return pickIiko();
     if (b.dataset.edit) return editStaff(staffList.find((s) => s.id === b.dataset.edit));
     if (b.dataset.off) {
       const s = staffList.find((x) => x.id === b.dataset.off);
@@ -485,23 +523,49 @@ function renderStaff() {
     }
   };
 }
-function editStaff(s) {
+async function pickIiko() {
+  openSheet('<h2>Сотрудники iiko</h2><div class="sub">Загружаю список…</div><div class="empty"><span class="spin"></span></div>');
+  let list;
+  try { list = (await api('staff_iiko')).employees || []; } catch (e) { return openSheet(`<h2>Сотрудники iiko</h2><div class="banner">${esc(e.message)}</div>`); }
+  const draw = (q = '') => {
+    const f = list.filter((x) => x.name.toLowerCase().includes(q.toLowerCase()));
+    openSheet(`<h2>Сотрудники iiko</h2><div class="sub">Выберите, кому выдать ПИН</div>
+      <input class="field" id="iq" placeholder="Поиск" value="${esc(q)}" autocomplete="off">
+      <div class="menu-list">${f.map((x) => `<button data-emp="${x.id}" ${x.staffId ? 'style="opacity:.5"' : ''}>${esc(x.name)}<br><span class="mini">${esc(x.roles.join(', ') || 'без должности')}${x.staffId ? ' · уже есть ПИН' : ''}</span></button>`).join('') || '<div class="empty">Никого не нашлось</div>'}</div>`, (a, b) => {
+      if (!b.dataset.emp) return;
+      const x = list.find((y) => y.id === b.dataset.emp);
+      if (x.staffId) { const s = Array.isArray(staffList) && staffList.find((y) => y.id === x.staffId); return editStaff(s || { id: x.staffId, name: x.name, role: 'waiter', iiko_employee_id: x.id }); }
+      const mgr = x.roles.some((r) => /управляющ|менеджер|администратор/i.test(r));
+      editStaff(null, { name: x.name, role: mgr ? 'manager' : 'waiter', iikoEmployeeId: x.id });
+    });
+    const inp = $sheet.querySelector('#iq');
+    inp.oninput = () => { const v = inp.value; draw(v); const i2 = $sheet.querySelector('#iq'); i2.focus(); i2.setSelectionRange(v.length, v.length); };
+  };
+  draw();
+}
+function editStaff(s, pre = null) {
+  const name = s?.name || pre?.name || '';
+  const role = s?.role || pre?.role || 'waiter';
+  const iikoId = s?.iiko_employee_id || pre?.iikoEmployeeId || null;
   openSheet(`
-    <h2>${s ? esc(s.name) : 'Новый сотрудник'}</h2><div class="sub">${s ? 'Задайте новый ПИН' : 'Имя и ПИН для входа'}</div>
-    <input class="field" id="sn" placeholder="Имя" value="${esc(s?.name || '')}" maxlength="60">
+    <h2>${s ? esc(s.name) : pre ? esc(pre.name) : 'Новый сотрудник'}</h2>
+    <div class="sub">${iikoId ? 'Сотрудник из iiko · ' : ''}${s ? 'задайте новый ПИН' : 'задайте ПИН для входа'}</div>
+    <input class="field" id="sn" placeholder="Имя в приложении" value="${esc(name)}" maxlength="60">
     <input class="field" id="sp" placeholder="ПИН (4–6 цифр)" inputmode="numeric" maxlength="6" autocomplete="off">
     <div class="mg">Роль</div>
-    <button class="opt ${s?.role !== 'manager' ? 'on' : ''}" data-role="waiter"><span class="n">Официант</span></button>
-    <button class="opt ${s?.role === 'manager' ? 'on' : ''}" data-role="manager"><span class="n">Управляющий</span><span class="mini">видит всех, управляет ПИН</span></button>
+    <button class="opt ${role !== 'manager' ? 'on' : ''}" data-role="waiter"><span class="n">Официант</span></button>
+    <button class="opt ${role === 'manager' ? 'on' : ''}" data-role="manager"><span class="n">Управляющий</span><span class="mini">видит все заказы, выдаёт ПИН</span></button>
     <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>`, async (a, b) => {
     if (b.dataset.role) { $sheet.querySelectorAll('[data-role]').forEach((x) => x.classList.toggle('on', x === b)); return; }
     if (a !== 'save') return;
-    const name = $sheet.querySelector('#sn').value.trim(); const pinv = $sheet.querySelector('#sp').value.trim();
-    const role = $sheet.querySelector('[data-role].on')?.dataset.role || 'waiter';
-    if (!name) return toast('Введите имя', 'err');
+    const nm = $sheet.querySelector('#sn').value.trim(); const pinv = $sheet.querySelector('#sp').value.trim();
+    const rl = $sheet.querySelector('[data-role].on')?.dataset.role || 'waiter';
+    if (!nm) return toast('Введите имя', 'err');
     if (!/^[0-9]{4,6}$/.test(pinv)) return toast('ПИН — от 4 до 6 цифр', 'err');
-    try { await api('staff_save', { id: s?.id || null, name, pin: pinv, role }); closeSheet(); toast('Сохранено', 'ok'); loadStaff(); }
-    catch (er) { toast(er.message, 'err'); }
+    try {
+      await api('staff_save', { id: s?.id || null, name: nm, pin: pinv, role: rl, ...(iikoId ? { iikoEmployeeId: iikoId, iikoName: pre?.name || s?.iiko_name || nm } : {}) });
+      closeSheet(); toast(`Сохранено. ПИН ${nm}: ${pinv}`, 'ok'); loadStaff();
+    } catch (er) { toast(er.message, 'err'); }
   });
 }
 
@@ -525,7 +589,7 @@ async function start() {
     if (!S.data) { $app.innerHTML = `<div class="login"><h1>Нет данных</h1><p>${esc(e.message)}</p><button class="btn" style="max-width:260px" onclick="location.reload()">Повторить</button><button class="link" id="lo">Выйти</button></div>`; document.getElementById('lo').onclick = () => logout(); return; }
     toast('Нет связи — показываю сохранённое меню', 'err');
   }
-  render(); flush();
+  render(); flush(); checkUpdate();
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
