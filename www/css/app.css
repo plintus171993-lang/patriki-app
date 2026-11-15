@@ -35,8 +35,11 @@ img { display: block; max-width: 100%; }
 #app.has-cartbar { padding-bottom: calc(168px + var(--safe-b)); }
 #app.wide { max-width: 1100px; padding-bottom: 40px; }
 
-.screen { padding: calc(16px + var(--safe-t)) 20px 24px; display: flex; flex-direction: column; gap: 18px; animation: fade .18s ease-out; }
+.screen { padding: calc(16px + var(--safe-t)) 20px 24px; display: flex; flex-direction: column; gap: 18px; }
+.screen.enter { animation: screen-in .2s ease-out; }
+@keyframes screen-in { from { opacity: .35; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .screen.enter { animation: none; } }
 
 .h1 { font-family: var(--display); font-weight: 700; font-size: 30px; letter-spacing: 1.5px; text-transform: uppercase; margin: 0; line-height: 1.05; }
 .h2 { font-family: var(--display); font-weight: 700; font-size: 20px; letter-spacing: 1px; text-transform: uppercase; margin: 0; }

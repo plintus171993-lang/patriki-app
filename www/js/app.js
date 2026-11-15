@@ -165,8 +165,56 @@ const app = document.getElementById('app');
 const route = () => (location.hash.replace(/^#/, '').split('?')[0] || '/');
 const hashParams = () => new URLSearchParams(location.hash.split('?')[1] || '');
 
+/* ---------- точечное обновление экрана ----------
+   Раньше каждый render() заменял весь экран (app.innerHTML = …): заново проигрывалась
+   анимация появления, фото блюд создавались с нуля и на миг пропадали — экран «мигал»
+   при каждом нажатии. Теперь новая разметка сравнивается с текущей и меняется только то,
+   что действительно изменилось; фото, прокрутка ленты категорий и фокус остаются на месте. */
+const nodeKey = (n) => (n.nodeType === 1 ? (n.id || n.getAttribute('data-id') || '') : '');
+function patchNode(o, n) {
+  if (o.nodeType !== 1) { if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue; return; }
+  for (const { name } of [...o.attributes]) if (!n.hasAttribute(name)) o.removeAttribute(name);
+  for (const { name, value } of [...n.attributes]) if (o.getAttribute(name) !== value) o.setAttribute(name, value);
+  morphChildren(o, n);
+  // значения полей — как в новой разметке (её строят из сохранённого состояния), но не трогаем поле, в котором человек печатает
+  const tag = o.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    if (o.type === 'checkbox' || o.type === 'radio') { if (o.checked !== n.checked) o.checked = n.checked; }
+    else if (o !== document.activeElement && o.value !== n.value) o.value = n.value;
+  }
+}
+function morphChildren(from, to) {
+  const keyed = new Map();
+  for (const c of from.childNodes) { const k = nodeKey(c); if (k && !keyed.has(c.nodeName + '#' + k)) keyed.set(c.nodeName + '#' + k, c); }
+  let cur = from.firstChild;
+  for (const n of [...to.childNodes]) {
+    const k = nodeKey(n);
+    let m = null;
+    if (k) { m = keyed.get(n.nodeName + '#' + k) || null; if (m) keyed.delete(n.nodeName + '#' + k); }
+    else if (cur && !nodeKey(cur) && cur.nodeType === n.nodeType && cur.nodeName === n.nodeName) m = cur;
+    if (!m) { from.insertBefore(n, cur); continue; }
+    if (m === cur) cur = cur.nextSibling; else from.insertBefore(m, cur);
+    patchNode(m, n);
+  }
+  while (cur) { const nx = cur.nextSibling; from.removeChild(cur); cur = nx; }
+}
+let shownRoute = null;
+function paint(html, r) {
+  const t = document.createElement('template');   // в <template> картинки не начинают грузиться раньше времени
+  t.innerHTML = html;
+  morphChildren(app, t.content);
+  // плавное появление — только при переходе на другой экран, а не при каждом нажатии
+  if (r !== shownRoute) {
+    shownRoute = r;
+    const s = app.querySelector('.screen');
+    if (s) { s.classList.remove('enter'); void s.offsetWidth; s.classList.add('enter'); }
+  }
+}
+
 async function render() {
   const r = route();
+  if (!r.startsWith('/admin') && shownRoute && shownRoute.startsWith('/admin')) { app.innerHTML = ''; shownRoute = null; }
+  if (r.startsWith('/admin')) shownRoute = r;
   app.classList.toggle('wide', r.startsWith('/admin'));
   if (r.startsWith('/admin')) { await renderAdmin(app, { reloadMenu, esc, rub, toast, photo, fmtPhone }); return; }
   let html = '';
@@ -175,7 +223,7 @@ async function render() {
   else if (r === '/cart') html = Cart();
   else if (r === '/checkout') html = Checkout();
   else if (r.startsWith('/order/')) html = OrderStatus(r.split('/')[2]);
-  else if (r.startsWith('/pay-test/')) { app.innerHTML = PayTest(r.split('/')[2]); return; }
+  else if (r.startsWith('/pay-test/')) { paint(PayTest(r.split('/')[2]), r); return; }
   else if (r === '/profile') html = Profile();
   else if (r === '/profile/orders') html = History();
   else if (r === '/profile/addresses') html = Addresses();
@@ -190,7 +238,7 @@ async function render() {
   else if (r === '/feedback') html = FeedbackForm('boss');
   else if (r === '/profile/feedback') html = MyFeedback();
   else html = Home();
-  app.innerHTML = html + TabBar(r) + CartBar(r);
+  paint(html + TabBar(r) + CartBar(r), r);
   app.classList.toggle('has-cartbar', !!CartBar(r));
   if (r.startsWith('/order/')) pollOrder(r.split('/')[2]);
   if (r === '/profile/orders' && S.history === null) loadHistory();
