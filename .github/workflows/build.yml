@@ -126,6 +126,9 @@ jobs:
           name: patriki-apk
           path: www/download
 
+      - name: Сайт веселый-патрик.рф — копия для проверки на patrikipab.ru/site/
+        run: cp -r site www/site && rm -f www/site/CNAME
+
       - name: Библиотека Supabase внутрь сайта
         run: |
           # те же версии, что и в Android-сборке (из package.json), чтобы сайт и APK не расходились
