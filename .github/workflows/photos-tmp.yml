@@ -24,19 +24,13 @@ jobs:
                 sleep 1
               done
           }
-          q brisket "smoked brisket sliced"
-          q brisket2 "beef brisket barbecue"
-          q salo "salo"
-          q ears "pig ears food"
-          q bread "bread basket"
-          q cheeks "beef cheeks mashed potatoes"
-          q cheeks2 "braised beef cheek"
-          q pelmeni "pelmeni"
-          q pelmeni2 "pelmeni plate"
-          q bbq "barbecue platter meat"
-          q bbq2 "bbq platter ribs sausages"
-          q cured "charcuterie board"
-          q cured2 "cured meat platter"
+          q salo "Salo (food)"
+          q salo2 "сало"
+          q salo3 "salo bacon slices garlic"
+          q salo4 "Słonina"
+          q bread "assorted bread rolls basket"
+          q bread2 "bread basket restaurant table"
+          q bread3 "sliced rye bread"
           cd out && montage *.jpg -geometry 260x260+4+4 -tile 6x -pointsize 14 -set label '%t' sheet.jpg || true
       - name: push results to branch photos-out
         run: |
