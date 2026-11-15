@@ -1,0 +1,40 @@
+name: photos-tmp
+on:
+  push:
+    branches: [photos-tmp]
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: search and download from Wikimedia Commons
+        run: |
+          sudo apt-get -qq install -y imagemagick jq >/dev/null
+          mkdir out
+          UA="PatrikiPubMenuBot/1.0 (github actions)"
+          q() { # id query
+            curl -sG -A "$UA" "https://commons.wikimedia.org/w/api.php" \
+              --data-urlencode "action=query" --data-urlencode "format=json" --data-urlencode "generator=search" \
+              --data-urlencode "gsrnamespace=6" --data-urlencode "gsrlimit=6" --data-urlencode "gsrsearch=filetype:bitmap $2" \
+              --data-urlencode "prop=imageinfo" --data-urlencode "iiprop=url|extmetadata" --data-urlencode "iiurlwidth=900" \
+            | jq -r '.query.pages // {} | to_entries[] | .value | [.index, .title, .imageinfo[0].thumburl, (.imageinfo[0].extmetadata.LicenseShortName.value // ""), (.imageinfo[0].extmetadata.Artist.value // "" | gsub("<[^>]*>";""))] | @tsv' \
+            | sort -n | head -6 | while IFS=$'\t' read -r i t u l a; do
+                f="out/$1-$i.jpg"; curl -sL -A "$UA" "$u" -o tmp && convert tmp -auto-orient -resize '800x800^' -gravity center -extent 800x800 -quality 82 "$f" && printf '%s\t%s\t%s\t%s\t%s\n' "$1-$i" "$t" "$l" "$a" "$u" >> out/list.tsv
+                sleep 1
+              done
+          }
+          q brisket "smoked brisket sliced"
+          q brisket2 "beef brisket barbecue"
+          q salo "salo"
+          q ears "pig ears food"
+          q bread "bread basket"
+          q cheeks "beef cheeks mashed potatoes"
+          q cheeks2 "braised beef cheek"
+          q pelmeni "pelmeni"
+          q pelmeni2 "pelmeni plate"
+          q bbq "barbecue platter meat"
+          q bbq2 "bbq platter ribs sausages"
+          q cured "charcuterie board"
+          q cured2 "cured meat platter"
+          cd out && montage *.jpg -geometry 260x260+4+4 -tile 6x -pointsize 14 -set label '%t' sheet.jpg || true
+      - uses: actions/upload-artifact@v4
+        with: { name: photos, path: out }
