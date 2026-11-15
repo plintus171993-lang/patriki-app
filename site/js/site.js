@@ -300,17 +300,28 @@ function loyText() {
   if (tiers) return `Возвращаем ${tiers[0].pct}–${tiers[tiers.length - 1].pct}% баллами. Вход по номеру телефона — баланс и QR-код прямо на сайте.`;
   return 'Копите баллы с каждого заказа и визита. Вход по номеру телефона — баланс и QR-код прямо на сайте.';
 }
+// Точки на Яндекс Картах: Петроградка — карточка организации «Патрики Паб», Мурино — дом (паб ещё не на картах)
+const MAPS = {
+  petrogradka: { oid: '13394987565', ll: '30.314997,59.937374', link: 'https://yandex.ru/maps/org/patriki_pab/13394987565/' },
+  murino: { ll: '30.438668,60.060173', link: 'https://yandex.ru/maps/?pt=30.438668,60.060173&z=17&l=map' },
+};
+function mapSrc(v) {
+  const m = MAPS[v.id];
+  if (m?.oid) return `https://yandex.ru/map-widget/v1/?oid=${m.oid}&ol=biz&z=16`;
+  if (m) return `https://yandex.ru/map-widget/v1/?ll=${m.ll}&pt=${m.ll},pm2rdl&z=16`;
+  return `https://yandex.ru/map-widget/v1/?text=${encodeURIComponent(v.address || '')}&z=16`;
+}
+const routeHref = (v) => (MAPS[v.id] ? `https://yandex.ru/maps/?rtext=~${MAPS[v.id].ll.split(',').reverse().join(',')}&rtt=auto` : `https://yandex.ru/maps/?text=${encodeURIComponent(v.address || '')}`);
 function VenueCard(v, map = true) {
-  const q = encodeURIComponent((v.id === 'murino' ? 'Мурино, ' : 'Санкт-Петербург, ') + (v.address || ''));
   return `<article class="card venue-card">
     <div class="between"><span class="h3">${esc(v.name)}</span>${v.accepting === false ? '<span class="pill gold">скоро открытие</span>' : '<span class="pill ok">открыто</span>'}</div>
     <span style="color:var(--text-2)">${icon.pin} ${esc(v.address)}</span>
     <span class="muted small">Ежедневно ${esc(v.hours || '12:00–01:00')}${v.zone && v.accepting !== false ? ` · доставка: ${esc(v.zone)}` : ''}</span>
-    ${map ? `<div class="map"><iframe loading="lazy" title="Карта: ${esc(v.name)}" src="https://yandex.ru/map-widget/v1/?text=${q}&z=16"></iframe></div>` : ''}
+    ${map ? `<div class="map"><iframe loading="lazy" title="Карта: ${esc(v.name)}" src="${esc(mapSrc(v))}"></iframe></div>` : ''}
     <div class="row">
       ${v.phone ? `<a class="btn btn-ghost btn-sm" href="${telHref(v.phone)}">${icon.phone} ${esc(v.phone)}</a>` : ''}
-      <a class="btn btn-ghost btn-sm" href="https://yandex.ru/maps/?text=${q}" target="_blank" rel="noopener">${icon.pin} Маршрут</a>
-      ${v.booking_enabled !== false && v.accepting !== false ? `<a class="btn btn-accent btn-sm" href="#/booking" data-act="bk-venue-go" data-id="${esc(v.id)}">Забронировать</a>` : `<a class="btn btn-accent btn-sm" href="#/events">Заявка на банкет</a>`}
+      <a class="btn btn-ghost btn-sm" href="${esc(routeHref(v))}" target="_blank" rel="noopener">${icon.pin} Маршрут</a>
+      <a class="btn btn-accent btn-sm" href="#/booking" data-act="bk-venue-go" data-id="${esc(v.id)}">Забронировать</a>
     </div>
   </article>`;
 }
