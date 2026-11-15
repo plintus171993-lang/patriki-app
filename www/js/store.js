@@ -744,4 +744,61 @@ export const store = {
     if (error) throw error;
     return sb.storage.from('menu').getPublicUrl(path).data.publicUrl;
   },
+
+  /* ---------------- сайт: новости, акции, мероприятия, заявки на банкеты ---------------- */
+  async listNews(all = false) {
+    if (this.demo) return LS.get('news', []);
+    let q = sb.from('news').select('*').order('pinned', { ascending: false }).order('created_at', { ascending: false }).limit(60);
+    if (!all) q = q.eq('published', true);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async saveNews(n) {
+    const row = { ...n }; delete row.id; delete row.created_at; row.updated_at = new Date().toISOString();
+    if (this.demo) { const l = LS.get('news', []); if (n.id) { const i = l.findIndex((x) => x.id === n.id); l[i] = { ...l[i], ...row }; } else l.unshift({ id: uid(), created_at: new Date().toISOString(), ...row }); LS.set('news', l); return; }
+    const q = n.id ? sb.from('news').update(row).eq('id', n.id) : sb.from('news').insert(row);
+    const { error } = await q;
+    if (error) throw error;
+  },
+  async deleteNews(id) {
+    if (this.demo) { LS.set('news', LS.get('news', []).filter((x) => x.id !== id)); return; }
+    const { error } = await sb.from('news').delete().eq('id', id);
+    if (error) throw error;
+  },
+  async submitEventRequest(p) {
+    if (!this.demo) await this.whenGuest();
+    if (this.demo) { const l = LS.get('event_requests', []); const row = { id: uid(), number: 101 + l.length, status: 'new', created_at: new Date().toISOString(), ...p }; l.unshift(row); LS.set('event_requests', l); return { id: row.id, number: row.number }; }
+    await this.ensureGuest();
+    const { data, error } = await sb.rpc('submit_event_request', { p });
+    if (error) throw new Error(error.message);
+    return data;
+  },
+  async myEventRequests() {
+    if (!this.demo) await this.whenGuest();
+    if (this.demo) return LS.get('event_requests', []);
+    const me = await this.me(); if (!me) return [];
+    const { data, error } = await sb.from('event_requests').select('*').eq('user_id', me.id).order('created_at', { ascending: false }).limit(20);
+    if (error) throw error;
+    return data || [];
+  },
+  async listEventRequests() {
+    if (this.demo) return LS.get('event_requests', []);
+    const { data, error } = await sb.from('event_requests').select('*').order('created_at', { ascending: false }).limit(100);
+    if (error) throw error;
+    return data || [];
+  },
+  async setEventRequest(id, status, note = null) {
+    if (this.demo) { const l = LS.get('event_requests', []); const x = l.find((y) => y.id === id); if (x) { x.status = status; if (note !== null) x.staff_note = note; } LS.set('event_requests', l); return; }
+    const { error } = await sb.rpc('set_event_request', { p_id: id, p_status: status, p_note: note });
+    if (error) throw new Error(error.message);
+  },
+  async uploadNewsImage(file) {
+    if (this.demo) return this.uploadImage(file);
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const path = `news/${uid()}.${ext}`;
+    const { error } = await sb.storage.from('menu').upload(path, file, { cacheControl: '31536000', upsert: false });
+    if (error) throw error;
+    return sb.storage.from('menu').getPublicUrl(path).data.publicUrl;
+  },
 };

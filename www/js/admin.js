@@ -89,8 +89,8 @@ function draw() {
       <div class="row"><a class="btn btn-ghost btn-sm" href="#/">В приложение</a><button type="button" class="btn btn-ghost btn-sm" data-a="logout">Выйти</button></div>
     </div>
     ${store.demo ? '<div class="demo-banner">Демо-режим: сервер не подключён, изменения сохраняются только в этом браузере.</div>' : ''}
-    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('bookings', `Брони${A.bk ? (() => { const n = A.bk.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('feedback', `Отзывы${A.fb ? (() => { const n = A.fb.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}</nav>
-    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : A.tab === 'bookings' ? Bookings() : A.tab === 'feedback' ? FeedbackAdmin() : Venues()}</div>
+    <nav class="tabs">${tab('orders', `Заказы${newCount ? ` (${newCount})` : ''}`)}${tab('bookings', `Брони${A.bk ? (() => { const n = A.bk.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('feedback', `Отзывы${A.fb ? (() => { const n = A.fb.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}${tab('cashier', 'Касса · QR')}${tab('menu', 'Меню и цены')}${owner() ? tab('loyalty', 'Баллы') : ''}${tab('venues', 'Заведения')}${tab('site', `Сайт${A.evr ? (() => { const n = A.evr.filter((x) => x.status === 'new').length; return n ? ` (${n})` : ''; })() : ''}`)}</nav>
+    <div id="adm-body">${A.tab === 'orders' ? Orders() : A.tab === 'menu' ? MenuEditor() : A.tab === 'loyalty' ? LoyaltyEditor() : A.tab === 'cashier' ? Cashier() : A.tab === 'bookings' ? Bookings() : A.tab === 'feedback' ? FeedbackAdmin() : A.tab === 'site' ? SiteAdmin() : Venues()}</div>
   </main>`;
 }
 
@@ -633,7 +633,10 @@ function onClick(e) {
   const { a, v, id } = b.dataset;
   const act = {
     'health-refresh': () => refreshHealth(),
-    tab: () => { if (A.scanning) stopScan(); A.tab = v; if (v === 'bookings') A.bk = null; if (v === 'feedback') A.fb = null; draw(); },
+    tab: () => { if (A.scanning) stopScan(); A.tab = v; if (v === 'bookings') A.bk = null; if (v === 'feedback') A.fb = null; if (v === 'site') { A.evr = null; A.news = null; } draw(); },
+    'evr': async () => { try { await store.setEventRequest(id, v); ctx.toast(EVR_RU[v] || 'Готово'); await loadSite(); } catch (ex) { ctx.toast(ex.message || 'Не удалось'); } },
+    'news-new': () => newsSheet(null),
+    'news-edit': () => newsSheet(A.news.find((x) => x.id === id)),
     'fb-pub': async () => {
       try { await store.setFeedback(id, null, v === '1'); ctx.toast(v === '1' ? 'Отзыв опубликован' : 'Отзыв скрыт'); await loadFb(); }
       catch (ex) { ctx.toast(ex.message || 'Не удалось'); }
@@ -790,3 +793,94 @@ document.addEventListener('input', (e) => {
     if (g && lab) lab.textContent = `до ${Math.min(g.balance, Math.floor(A.cashAmount * (g.max_redeem_pct || 0) / 100))}`;
   }
 });
+
+/* ---------- сайт веселый-патрик.рф: заявки на мероприятия и новости ---------- */
+const EVR_RU = { new: 'Новая', in_work: 'В работе', done: 'Проведено', cancelled: 'Отменена' };
+const EVK_RU = { birthday: 'День рождения', corporate: 'Корпоратив', wedding: 'Свадьба', banquet: 'Банкет', rent: 'Аренда зала', other: 'Свой формат' };
+const NEWS_RU = { news: 'Новость', promo: 'Акция', event: 'Афиша' };
+async function loadSite() {
+  try { A.evr = await store.listEventRequests(); } catch (e) { console.error(e); A.evr = []; }
+  if (owner()) { try { A.news = await store.listNews(true); } catch (e) { console.error(e); A.news = []; } }
+  if (A.tab === 'site') draw();
+}
+setInterval(() => { if (location.hash.startsWith('#/admin') && A.menu && A.tab === 'site') loadSite(); }, 60000);
+function SiteAdmin() {
+  const { esc } = ctx;
+  if (!A.evr) { loadSite(); return '<div class="empty">Загружаем…</div>'; }
+  const vn = (id) => (A.menu.venues.find((v) => v.id === id) || {}).name || 'паб не выбран';
+  const reqs = A.evr.filter((x) => owner() || x.venue_id === A.me.venue_id);
+  return `<div class="stack" style="gap:12px">
+    <span class="eyebrow">Заявки на мероприятия с сайта</span>
+    ${reqs.length ? reqs.map((x) => `<article class="card stack" style="gap:6px">
+      <div class="between"><b style="font-size:17px">№${esc(x.number)} · ${esc(EVK_RU[x.kind] || x.kind)}</b><span class="status-pill ${x.status === 'new' ? 'new' : x.status === 'done' ? 'done' : x.status === 'cancelled' ? 'cancelled' : ''}">${EVR_RU[x.status] || esc(x.status)}</span></div>
+      <span>${esc(x.name)} · <a href="tel:${esc(x.phone)}">${esc(ctx.fmtPhone(x.phone) || x.phone)}</a></span>
+      <span class="muted" style="font-size:13px">${esc(vn(x.venue_id))} · ${x.event_date ? esc(new Date(x.event_date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })) : 'дата не выбрана'}${x.guests ? ` · ${esc(x.guests)} гостей` : ''}${x.format ? ` · ${esc(x.format)}` : ''}${x.budget ? ` · бюджет ${esc(x.budget)}` : ''}</span>
+      ${x.comment ? `<span style="font-size:14px;color:var(--text-2)">${esc(x.comment)}</span>` : ''}
+      <span class="muted" style="font-size:12px">получена ${esc(new Date(x.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</span>
+      ${['new', 'in_work'].includes(x.status) ? `<div class="row" style="gap:8px;flex-wrap:wrap">
+        ${x.status === 'new' ? `<button type="button" class="btn btn-accent btn-sm" data-a="evr" data-v="in_work" data-id="${esc(x.id)}">Взять в работу</button>` : `<button type="button" class="btn btn-outline btn-sm" data-a="evr" data-v="done" data-id="${esc(x.id)}">Проведено</button>`}
+        <button type="button" class="btn btn-ghost btn-sm" data-a="evr" data-v="cancelled" data-id="${esc(x.id)}">Отменить</button></div>` : ''}
+    </article>`).join('') : '<div class="empty">Заявок пока нет</div>'}
+    ${owner() ? `<div class="between" style="margin-top:16px"><span class="eyebrow">Новости, акции и афиша на сайте</span><button type="button" class="btn btn-accent btn-sm" data-a="news-new">+ Добавить</button></div>
+    ${(A.news || []).map((n) => `<button type="button" class="card stack" data-a="news-edit" data-id="${esc(n.id)}" style="gap:4px;text-align:left;color:var(--text);${n.published ? '' : 'opacity:.55'}">
+      <span class="row" style="gap:8px"><span class="status-pill">${NEWS_RU[n.kind] || n.kind}</span>${n.pinned ? '<span class="status-pill new">закреплено</span>' : ''}${n.published ? '' : '<span class="status-pill cancelled">скрыто</span>'}</span>
+      <b>${esc(n.title)}</b><span class="muted" style="font-size:13px">${esc(n.body.slice(0, 120))}${n.body.length > 120 ? '…' : ''}</span></button>`).join('') || '<div class="empty">Новостей нет</div>'}
+    <span class="muted" style="font-size:12px">Изменения появляются на сайте сразу.</span>` : ''}
+  </div>`;
+}
+function newsSheet(n) {
+  const { esc, photo } = ctx;
+  const x = n || { kind: 'news', title: '', body: '', image_url: '', venue_id: null, event_at: null, starts_on: null, ends_on: null, published: true, pinned: false };
+  const wrap = document.createElement('div');
+  wrap.className = 'sheet-wrap';
+  const local = (iso) => (iso ? new Date(new Date(iso).getTime() + 3 * 3600e3).toISOString().slice(0, 16) : '');
+  wrap.innerHTML = `<form class="sheet" role="dialog" aria-modal="true" aria-label="Новость">
+    <span class="grab"></span><h2 class="h2">${n ? 'Изменить' : 'Новая запись'}</h2>
+    <label class="field">Тип<select class="select" name="kind">${Object.entries(NEWS_RU).map(([k, l]) => `<option value="${k}" ${x.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="field">Заголовок<input class="input" name="title" required maxlength="120" value="${esc(x.title)}"></label>
+    <label class="field">Текст<textarea class="textarea" name="body" style="min-height:140px">${esc(x.body)}</textarea></label>
+    <div id="nw-prev">${photo(x.image_url)}</div>
+    <div class="grid-2"><label class="btn btn-ghost btn-sm" style="cursor:pointer">Загрузить фото<input type="file" accept="image/*" name="file" class="sr-only"></label>
+      <button type="button" class="btn btn-ghost btn-sm" data-x="img-clear">Убрать фото</button></div>
+    <label class="field">Паб<select class="select" name="venue_id"><option value="">Оба паба</option>${A.menu.venues.map((v) => `<option value="${esc(v.id)}" ${x.venue_id === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+    <label class="field">Дата и время события (для афиши)<input class="input" type="datetime-local" name="event_at" value="${esc(local(x.event_at))}"></label>
+    <div class="grid-2">
+      <label class="field">Показывать с<input class="input" type="date" name="starts_on" value="${esc(x.starts_on || '')}"></label>
+      <label class="field">Показывать по<input class="input" type="date" name="ends_on" value="${esc(x.ends_on || '')}"></label>
+    </div>
+    <div class="between"><span>Опубликовано</span><button type="button" class="switch" role="switch" data-x="published" aria-checked="${x.published !== false}" aria-label="Опубликовано"></button></div>
+    <div class="between"><span>Закрепить первым</span><button type="button" class="switch" role="switch" data-x="pinned" aria-checked="${!!x.pinned}" aria-label="Закрепить"></button></div>
+    <p class="error" role="alert" style="margin:0"></p>
+    <button type="submit" class="btn btn-accent btn-block">Сохранить</button>
+    ${n ? '<button type="button" class="btn btn-danger btn-block" data-x="delete">Удалить</button>' : ''}
+    <button type="button" class="btn btn-ghost btn-block" data-x="close">Отмена</button>
+  </form>`;
+  let imageUrl = x.image_url || '';
+  const form = wrap.querySelector('form'), err = wrap.querySelector('.error');
+  wrap.addEventListener('click', async (e) => {
+    if (e.target === wrap) return wrap.remove();
+    const b = e.target.closest('[data-x]'); if (!b) return;
+    const k = b.dataset.x;
+    if (k === 'close') wrap.remove();
+    if (k === 'published' || k === 'pinned') b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true'));
+    if (k === 'img-clear') { imageUrl = ''; wrap.querySelector('#nw-prev').innerHTML = photo(''); }
+    if (k === 'delete' && confirm(`Удалить «${x.title}»?`)) { await store.deleteNews(x.id); wrap.remove(); await loadSite(); ctx.toast('Удалено'); }
+  });
+  form.file.addEventListener('change', async () => {
+    const f = form.file.files[0]; if (!f) return;
+    err.textContent = 'Загружаем фото…';
+    try { imageUrl = await store.uploadNewsImage(await shrink(f)); wrap.querySelector('#nw-prev').innerHTML = photo(imageUrl); err.textContent = ''; }
+    catch (ex) { console.error(ex); err.textContent = 'Не удалось загрузить фото'; }
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(form));
+    if (!d.title.trim()) return (err.textContent = 'Укажите заголовок');
+    const row = { ...(n ? { id: n.id } : {}), kind: d.kind, title: d.title.trim(), body: d.body.trim(), image_url: imageUrl, venue_id: d.venue_id || null,
+      event_at: d.event_at ? new Date(d.event_at + ':00+03:00').toISOString() : null, starts_on: d.starts_on || null, ends_on: d.ends_on || null,
+      published: wrap.querySelector('[data-x=published]').getAttribute('aria-checked') === 'true', pinned: wrap.querySelector('[data-x=pinned]').getAttribute('aria-checked') === 'true' };
+    try { await store.saveNews(row); wrap.remove(); await loadSite(); ctx.toast('Сохранено — уже на сайте'); }
+    catch (ex) { console.error(ex); err.textContent = 'Не удалось сохранить'; }
+  });
+  document.body.appendChild(wrap);
+}
