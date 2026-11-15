@@ -33,7 +33,7 @@ img { display: block; max-width: 100%; }
 
 .wrap { width: 100%; max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
 main#app { flex: 1; }
-.page { padding: 32px 0 72px; display: flex; flex-direction: column; gap: 28px; animation: fade .22s ease-out; }
+.page { padding-top: 32px; padding-bottom: 72px; display: flex; flex-direction: column; gap: 28px; animation: fade .22s ease-out; }
 @keyframes fade { from { opacity: .3; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* типографика */
