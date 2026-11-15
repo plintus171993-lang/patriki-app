@@ -2,6 +2,8 @@ name: photos-tmp
 on:
   push:
     branches: [photos-tmp]
+permissions:
+  contents: write
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -36,5 +38,7 @@ jobs:
           q cured "charcuterie board"
           q cured2 "cured meat platter"
           cd out && montage *.jpg -geometry 260x260+4+4 -tile 6x -pointsize 14 -set label '%t' sheet.jpg || true
-      - uses: actions/upload-artifact@v4
-        with: { name: photos, path: out }
+      - name: push results to branch photos-out
+        run: |
+          cd out && git init -q -b photos-out && git add -A && git -c user.name=bot -c user.email=bot@x commit -qm photos
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" photos-out
