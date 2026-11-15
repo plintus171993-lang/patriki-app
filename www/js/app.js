@@ -93,7 +93,7 @@ const S = {
   addresses: [],
   history: null,                                  // история заказов из базы
   checkout: { when: 'asap', time: '', payment: 'card', noCall: false, addr: null, comment: '' },
-  booking: { guests: 2, day: '', time: '', comment: '' },
+  booking: { guests: 2, day: '', time: '', comment: '', venue: '' },   // venue — паб брони: гость выбирает сам, по умолчанию пусто
   fb: { kind: 'complaint', rating: 0, venue: '', text: '', order: '', call: false, pdTick: false },
   reviews: null, myFb: null,
   bookings: null,
@@ -678,8 +678,24 @@ function bookingSlots(day) {
   }
   return out;
 }
+// Выбор паба для брони: по умолчанию ничего не выбрано — гость обязательно нажимает сам,
+// чтобы не было случайной брони на Петроградку, когда человек собирался в Мурино
+function BookingVenuePick() {
+  const b = S.booking, none = !b.venue;
+  return `<section class="stack" id="bk-venue"><span class="eyebrow">В какой паб?</span>
+    <div class="seg${none ? ' seg-need' : ''}" role="radiogroup" aria-label="Паб для брони" aria-required="true">
+    ${S.venues.map((v) => `<button type="button" role="radio" data-act="bk-venue" data-id="${esc(v.id)}" aria-pressed="${v.id === b.venue}" aria-checked="${v.id === b.venue}">
+      <span>${esc(v.name)}</span><small>${esc(v.address)}</small></button>`).join('')}
+    </div>${none ? '<span class="seg-hint">Нажмите на паб, в котором хотите забронировать стол</span>' : ''}</section>`;
+}
 function Booking() {
-  const v = venue(), b = S.booking, c = S.draftContact || {};
+  const b = S.booking, c = S.draftContact || {};
+  if (b.venue && !S.venues.some((x) => x.id === b.venue)) b.venue = '';
+  if (!b.venue) return `<main class="screen">
+    <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
+    ${BookingVenuePick()}
+  </main>`;
+  const v = S.venues.find((x) => x.id === b.venue);
   const days = bookingDays();
   if (!b.day || !days.some((d) => d.key === b.day)) b.day = days[0].key;
   let slots = bookingSlots(b.day);
@@ -688,11 +704,12 @@ function Booking() {
   const max = v.booking_max_guests || 12, dep = (v.booking_deposit || 0) * b.guests;
   if (v.booking_enabled === false || v.accepting === false) return `<main class="screen">
     <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
+    ${BookingVenuePick()}
     <div class="card stack"><span style="color:var(--text-2);line-height:1.5">В заведении «${esc(v.name)}» бронирование пока недоступно. Позвоните нам — подскажем.</span>
     <button type="button" class="btn btn-outline" data-act="call">Позвонить в паб</button></div></main>`;
   return `<main class="screen">
     <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
-    ${VenueSwitch()}
+    ${BookingVenuePick()}
     <form id="booking" class="stack" style="gap:18px" novalidate>
       <section class="stack"><span class="eyebrow">Дата</span>
         <div class="chips" style="flex-wrap:nowrap;overflow-x:auto">${days.map((d) => `<button type="button" class="chip" data-act="bk-day" data-v="${d.key}" aria-current="${d.key === b.day}">${esc(d.label)}</button>`).join('')}</div></section>
@@ -725,6 +742,7 @@ function saveBookingForm() {
 async function submitBooking(form) {
   saveBookingForm();
   const b = S.booking, c = S.draftContact || {}, err = document.getElementById('bk-err');
+  if (!b.venue) return (err.textContent = 'Выберите паб');
   if (!b.time) return (err.textContent = 'Выберите время');
   if (!c.name?.trim()) return (err.textContent = 'Укажите имя');
   if (phone10(c.phone).length !== 10) return (err.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX');
@@ -733,10 +751,10 @@ async function submitBooking(form) {
   try {
     await grantPd('booking');
     const res = await store.placeReservation({
-      venue_id: S.venueId, starts_at: new Date(`${b.day}T${b.time}:00+03:00`).toISOString(), guests: b.guests,
+      venue_id: b.venue, starts_at: new Date(`${b.day}T${b.time}:00+03:00`).toISOString(), guests: b.guests,
       name: c.name.trim(), phone: fmtPhone(c.phone), comment: (b.comment || '').trim(), pd_consent: true, pd_consent_version: CV,
     });
-    S.booking = { guests: 2, day: '', time: '', comment: '' };
+    S.booking = { guests: 2, day: '', time: '', comment: '', venue: '' };
     S.bookings = null; loadBookings();
     toast(res.deposit > 0 ? `Бронь №${res.number} создана — осталось оплатить депозит` : `Бронь №${res.number} отправлена в паб`);
     location.hash = '#/profile/bookings';
@@ -1465,9 +1483,10 @@ app.addEventListener('click', async (e) => {
     app.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-current', String(c === b)));
   }
   if (act === 'when') { saveCheckoutForm(); S.checkout.when = v; render(); }
+  if (act === 'bk-venue') { saveBookingForm(); S.booking.venue = id; render(); return; }
   if (act === 'bk-day') { saveBookingForm(); S.booking.day = v; render(); return; }
   if (act === 'bk-time') { saveBookingForm(); S.booking.time = v; render(); return; }
-  if (act === 'bk-g') { saveBookingForm(); const max = venue().booking_max_guests || 12; S.booking.guests = Math.max(1, Math.min(max, S.booking.guests + Number(v))); render(); return; }
+  if (act === 'bk-g') { saveBookingForm(); const max = (S.venues.find((x) => x.id === S.booking.venue) || venue()).booking_max_guests || 12; S.booking.guests = Math.max(1, Math.min(max, S.booking.guests + Number(v))); render(); return; }
   if (act === 'bk-cancel') {
     if (!confirm('Отменить бронь?')) return;
     try { await store.cancelReservation(id); toast('Бронь отменена'); S.bookings = null; loadBookings(); } catch (ex) { toast(ex.message || 'Не удалось отменить'); }
@@ -1577,8 +1596,10 @@ export async function reloadMenu() {
   applyMenu(await store.getMenu());
 }
 
-window.addEventListener('hashchange', () => {
+window.addEventListener('hashchange', (e) => {
   window.scrollTo(0, 0);
+  // каждый новый заход на бронь — паб снова не выбран
+  if (route() === '/booking' && !/#\/booking(\?|$)/.test(new URL(e.oldURL).hash)) S.booking.venue = '';
   if (route() === '/verify' && S.verify.step === 'phone') S.verify.back = S.verify.back || '/profile';
   render();
 });

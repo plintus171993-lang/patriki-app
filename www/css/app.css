@@ -74,6 +74,9 @@ img { display: block; max-width: 100%; }
 .seg button small { font-size: 10px; font-weight: 500; }
 .seg button[aria-pressed="true"] { background: var(--text); color: #0E0E0D; }
 .seg button[aria-pressed="true"] small { color: #4A4843; }
+.seg.seg-need { border-color: var(--accent); }
+.seg.seg-need button { color: var(--text); }
+.seg-hint { font-size: 12px; color: var(--accent); }
 
 /* фото и заглушки */
 .ph { background: repeating-linear-gradient(135deg, #22211E 0 2px, #151513 2px 8px); }
