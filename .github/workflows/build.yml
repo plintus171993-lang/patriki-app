@@ -10,7 +10,6 @@ on:
       - 'iiko-plugin/**'
       - '.github/workflows/iiko-plugin.yml'
       - 'supabase/**'
-      - 'site/**'
       - '*.md'
   workflow_dispatch:
 
