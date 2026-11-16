@@ -257,7 +257,7 @@ async function send(staff: Staff, b: any) {
   if (!clientId) throw new HttpError(400, 'Нет clientId');
   // повторная отправка того же заказа (пропадала связь) — вернуть прежний результат
   const { data: prev } = await db.from('waiter_orders').select('id, correlation_id, iiko_order_id, status, error').eq('client_id', clientId).maybeSingle();
-  if (prev && prev.status !== 'error') return { correlationId: prev.correlation_id, orderId: prev.iiko_order_id, logId: prev.id, repeated: true };
+  if (prev && prev.status !== 'error') return { correlationId: prev.correlation_id || prev.id, orderId: prev.iiko_order_id, logId: prev.id, repeated: true };
   if (await mode() === 'plugin') {
     orderItems(b.items); // проверка
     const items = b.items.map((i: any) => ({
