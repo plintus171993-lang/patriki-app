@@ -60,6 +60,9 @@ namespace Resto.Front.Api.Patriki
             {
                 try { subscriptions.Add(new Inbox()); }
                 catch (Exception ex) { PluginContext.Log.Error("Заявки Патрики: не удалось включить", ex); }
+                // заказы из приложения официантов — тоже только на главной кассе
+                try { subscriptions.Add(new Waiters()); }
+                catch (Exception ex) { PluginContext.Log.Error("Официанты Патрики: не удалось включить", ex); }
             }
             else if (Config.Current.Inbox)
                 PluginContext.Log.Warn("Заявки Патрики: включены, но в patriki.json не указан ключ кассы");

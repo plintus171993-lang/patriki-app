@@ -105,12 +105,12 @@ async function flush() {
           toast(`${q.tableLabel}: ${e.message}`, 'err');
         }
       }
-      if (q.state === 'sent' && q.correlationId) {
+      if ((q.state === 'sent' || q.state === 'slow') && q.correlationId) {
         try {
           const st = await api('status', { correlationId: q.correlationId });
-          if (st.state === 'Success') { q.state = 'ok'; q.doneAt = Date.now(); toast(`${q.tableLabel}: заказ на кассе и на кухне ✓`, 'ok'); vibrate(40); }
+          if (st.state === 'Success') { q.state = 'ok'; q.doneAt = Date.now(); toast(`${q.tableLabel}: ${st.number ? 'заказ №' + st.number : 'заказ'} на кассе и на кухне ✓${st.note ? '. ' + st.note : ''}`, st.note ? '' : 'ok'); vibrate(40); if (S.table === q.tableId) setTimeout(loadTableOrders, 1500); }
           else if (st.state === 'Error') { q.state = 'error'; q.error = st.error; toast(`${q.tableLabel}: касса не приняла — ${st.error}`, 'err'); vibrate([60, 60, 60]); }
-          else if (Date.now() - (q.sentAt || 0) > 90000) { q.state = 'slow'; }
+          else q.wait = st.waiting || null;
           save();
         } catch (e) { if (e.offline) break; }
       }
@@ -121,7 +121,7 @@ async function flush() {
     save();
   } finally { flushing = false; render(); }
 }
-setInterval(() => { if (S.queue.some((q) => ['queued', 'offline', 'sent'].includes(q.state))) flush(); }, 2500);
+setInterval(() => { if (S.queue.some((q) => ['queued', 'offline', 'sent', 'slow'].includes(q.state))) flush(); }, 2500);
 setInterval(refreshStop, 60000);
 addEventListener('online', () => flush());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { flush(); refreshStop(); checkUpdate(); } });
@@ -222,7 +222,7 @@ function renderTables() {
   </div>
   ${S.apkOld ? `<div class="banner warn">Вышла новая версия приложения для Android. <a href="${APK_URL}" style="color:inherit;font-weight:600">Скачать и установить</a> — заказы и вход сохранятся.</div>` : ''}
   ${offline ? '<div class="banner">Нет интернета. Заказы сохранятся на телефоне и уйдут сами, когда связь вернётся.</div>' : ''}
-  ${S.data.alive === false ? '<div class="banner warn">Касса iiko сейчас не на связи с облаком. Заказы будут ждать в очереди iiko до 60 секунд — проверьте, что касса включена и iikoFront запущен.</div>' : ''}
+  ${S.data.alive === false ? '<div class="banner warn">Главная касса не на связи. Проверьте, что она включена, iikoFront запущен и есть интернет. Заказы подождут в очереди и встанут на столы, как только касса появится.</div>' : ''}
   <div class="tabs">${secs.map((s) => `<button class="chip ${s.id === sec?.id ? 'on' : ''}" data-sec="${s.id}">${esc(s.name)}</button>`).join('')}</div>
   <div class="grid">
     ${(sec?.tables || []).map((t) => {
@@ -271,7 +271,7 @@ function openTable(id) {
 }
 async function loadTableOrders() {
   const id = S.table; S.loadingOrders = true; if (S.tab === 'orders') render();
-  try { const r = await api('table_orders', { tableId: id }, { timeout: 20000 }); if (S.table === id) S.tableOrders = r.orders || []; }
+  try { const r = await api('table_orders', { tableId: id }, { timeout: 20000 }); if (S.table === id) { S.tableOrders = r.orders || []; S.ordersAge = r.age ?? null; } }
   catch (e) { if (S.table === id) S.tableOrders = { error: e.message }; }
   finally { S.loadingOrders = false; if (S.table === id) render(); }
 }
@@ -351,11 +351,12 @@ function ordersHtml() {
     ${q.state === 'error' ? `<div class="mini" style="color:var(--danger);margin-top:6px">${esc(q.error || '')}</div><div class="row" style="margin-top:10px"><button class="btn ghost" data-retry="${q.clientId}">Отправить ещё раз</button><button class="btn danger" data-drop="${q.clientId}">Убрать</button></div>` : ''}
   </div>`).join('');
   const os = Array.isArray(S.tableOrders) ? S.tableOrders : [];
+  const stale = S.ordersAge === null || S.ordersAge > 120;
   setTimeout(() => {
     $app.querySelectorAll('[data-retry]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); const q = S.queue.find((x) => x.clientId === b.dataset.retry); if (q) { q.state = 'queued'; q.error = null; save(); flush(); } });
     $app.querySelectorAll('[data-drop]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); S.queue = S.queue.filter((x) => x.clientId !== b.dataset.drop); save(); render(); });
   });
-  return `${qHtml}${os.length ? os.map((o) => `<div class="ord">
+  return `${stale && S.ordersAge !== undefined ? `<div class="banner warn">${S.ordersAge === null ? 'Касса ещё не присылала заказы столов.' : 'Касса давно не на связи — список может быть неполным.'}</div>` : ''}${qHtml}${os.length ? os.map((o) => `<div class="ord">
       <h3><span>Заказ №${esc(o.number)}${o.status === 'Bill' ? ' · пречек' : ''}</span><span>${rub(o.sum)}</span></h3>
       <div class="mini" style="margin-bottom:6px">${esc([o.waiter, o.guests ? o.guests + ' гост.' : '', o.created ? 'с ' + esc(String(o.created).slice(11, 16)) : ''].filter(Boolean).join(' · '))}</div>
       ${o.items.map((i) => `<div class="li"><span>${esc(i.name)} × ${i.amount}${i.mods?.length ? `<small>${esc(i.mods.join(', '))}</small>` : ''}${i.comment ? `<small>«${esc(i.comment)}»</small>` : ''}</span><span>${rub(i.sum)}</span></div>`).join('')}
@@ -364,7 +365,8 @@ function ordersHtml() {
 }
 
 function qLabel(q) {
-  return { queued: 'отправляю…', offline: 'ждёт связи', sent: 'касса принимает…', slow: 'касса не ответила', error: 'ошибка', ok: 'принят' }[q.state] || q.state;
+  if (q.state === 'sent' && q.wait === 'queued' && Date.now() - (q.sentAt || 0) > 20000) return 'ждёт кассу';
+  return { queued: 'отправляю…', offline: 'ждёт связи', sent: 'касса принимает…', slow: 'ждёт кассу', error: 'ошибка', ok: 'принят' }[q.state] || q.state;
 }
 
 /* ---------- добавление позиции ---------- */

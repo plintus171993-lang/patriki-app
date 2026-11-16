@@ -208,10 +208,37 @@ namespace Resto.Front.Api.Patriki
             return Post(body);
         }
 
-        internal static Dictionary<string, object> Post(Dictionary<string, object> body)
+        /* ---------- заказы официантов (функция waiter рядом с iiko) ---------- */
+        private static string WaiterUrl => System.Text.RegularExpressions.Regex.Replace(Config.Current.ApiUrl ?? "", @"/iiko/?$", "/waiter");
+
+        internal static string Serialize(object o) => Json.Serialize(o);
+
+        /// <summary>Пульс кассы + снимок столов (если изменился); в ответ — новые заказы официантов.</summary>
+        public static List<WaiterOrder> WaiterPoll(string venue, Dictionary<string, object> tables)
+        {
+            var body = new Dictionary<string, object> { ["action"] = "pos_poll", ["venue"] = venue, ["version"] = typeof(Api).Assembly.GetName().Version?.ToString() };
+            if (tables != null) body["tables"] = tables;
+            var d = Post(body, WaiterUrl);
+            var list = new List<WaiterOrder>();
+            if (d.TryGetValue("orders", out var os) && os is System.Collections.IEnumerable items)
+                foreach (var x in items) if (x is Dictionary<string, object> o) list.Add(WaiterOrder.From(o));
+            return list.Where(o => !string.IsNullOrEmpty(o.Id)).ToList();
+        }
+
+        public static void WaiterResult(string id, bool ok, string error, Guid? orderId, int number, string kind)
+        {
+            var body = new Dictionary<string, object> { ["action"] = "pos_result", ["venue"] = Config.Current.Venue, ["id"] = id, ["ok"] = ok };
+            if (!string.IsNullOrEmpty(error)) body["error"] = error;
+            if (orderId.HasValue) body["iikoOrderId"] = orderId.Value.ToString();
+            if (number > 0) body["number"] = number;
+            if (!string.IsNullOrEmpty(kind)) body["kind"] = kind;
+            Post(body, WaiterUrl);
+        }
+
+        internal static Dictionary<string, object> Post(Dictionary<string, object> body, string url = null)
         {
             var cfg = Config.Current;
-            var req = new HttpRequestMessage(HttpMethod.Post, cfg.ApiUrl)
+            var req = new HttpRequestMessage(HttpMethod.Post, url ?? cfg.ApiUrl)
             {
                 Content = new StringContent(Json.Serialize(body), Encoding.UTF8, "application/json"),
             };

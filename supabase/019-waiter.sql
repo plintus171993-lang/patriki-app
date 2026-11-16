@@ -114,3 +114,14 @@ grant execute on function public.waiter_upsert(text, text, text, uuid) to servic
 -- сотрудник автоматически отключается в приложении (проверка при открытии списка и при входе).
 alter table public.waiter_staff add column if not exists iiko_employee_id uuid unique;
 alter table public.waiter_staff add column if not exists iiko_name text;
+
+-- ---------- 021: заказы официантов создаёт плагин кассы «Карта Патрики» ----------
+-- Приложение кладёт заказ в очередь (status = queued), главная касса с плагином забирает
+-- его (taken), создаёт на столе в iikoFront от имени официанта, печатает на кухню и
+-- отвечает (ok / error). iikoTransport для этого не нужен.
+alter table public.waiter_orders add column if not exists venue text not null default 'petrogradka';
+alter table public.waiter_orders add column if not exists guests int;
+alter table public.waiter_orders add column if not exists waiter_iiko_id uuid;
+alter table public.waiter_orders add column if not exists taken_at timestamptz;
+alter table public.waiter_orders add column if not exists iiko_number int;
+create index if not exists waiter_orders_queue on public.waiter_orders (venue, status) where status in ('queued','taken');

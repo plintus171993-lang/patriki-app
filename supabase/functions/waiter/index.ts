@@ -18,6 +18,14 @@
 //   history                             → {orders}
 //   staff_list / staff_iiko / staff_save {id?, name, pin, role, iikoEmployeeId?} / staff_disable {id} — только управляющий
 //   (staff_iiko — сотрудники из iiko; уволенный в iiko сотрудник отключается в приложении сам)
+//
+// Как заказ попадает на кассу (app_secrets.waiter_mode):
+//   plugin (по умолчанию) — заказ встаёт в очередь waiter_orders, плагин «Карта Патрики» на главной
+//     кассе забирает его, создаёт на столе в iikoFront от имени официанта и печатает на кухню.
+//     Облако iiko (iikoTransport) для этого не нужно. Плагин ходит сюда с ключом кассы (x-pos-key):
+//       pos_poll {venue, tables?}  → {orders}   — пульс кассы + снимок открытых заказов столов
+//       pos_result {id, ok, error?, iikoOrderId?, number?}
+//   cloud — напрямую через iikoCloud API (нужна касса, подключённая к iikoTransport).
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 const IIKO = 'https://api-ru.iiko.services/api/';
@@ -36,6 +44,9 @@ async function secret(key: string) {
   const { data } = await db.from('app_secrets').select('value').eq('key', key).maybeSingle();
   return ((data?.value as string) || '').trim();
 }
+
+async function mode() { return ((await secret('waiter_mode')) || 'plugin').toLowerCase(); }
+async function venue() { return (await secret('waiter_venue')) || 'petrogradka'; }
 
 /* ---------------- iiko Cloud API ---------------- */
 let token = '', tokenAt = 0;
@@ -142,6 +153,10 @@ async function loadStop(c: Ctx) {
 }
 
 async function alive(c: Ctx) {
+  if (await mode() === 'plugin') {
+    const { data } = await db.from('waiter_cache').select('updated_at').eq('key', 'pos_seen:' + await venue()).maybeSingle();
+    return !!data && Date.now() - new Date(data.updated_at).getTime() < 90 * 1000;
+  }
   try {
     const a = await iiko('1/terminal_groups/is_alive', { organizationIds: [c.org], terminalGroupIds: [c.tg] }, 10);
     const s = (a.isAliveStatus || []).find((x: any) => x.terminalGroupId === c.tg);
@@ -243,6 +258,27 @@ async function send(staff: Staff, b: any) {
   // повторная отправка того же заказа (пропадала связь) — вернуть прежний результат
   const { data: prev } = await db.from('waiter_orders').select('id, correlation_id, iiko_order_id, status, error').eq('client_id', clientId).maybeSingle();
   if (prev && prev.status !== 'error') return { correlationId: prev.correlation_id, orderId: prev.iiko_order_id, logId: prev.id, repeated: true };
+  if (await mode() === 'plugin') {
+    orderItems(b.items); // проверка
+    const items = b.items.map((i: any) => ({
+      productId: i.productId, name: String(i.name || '').slice(0, 120), amount: Number(i.amount), price: Number(i.price || 0),
+      sizeId: i.sizeId || null, comment: i.comment ? String(i.comment).slice(0, 200) : null,
+      mods: (i.mods || []).map((m: any) => ({ id: m.id, groupId: m.groupId || null, name: String(m.name || '').slice(0, 120), amount: Number(m.amount || 1), price: Number(m.price || 0) })),
+    }));
+    if (!b.tableId) throw new HttpError(400, 'Не выбран стол');
+    const total = items.reduce((s: number, i: any) => s + (i.price + i.mods.reduce((a: number, m: any) => a + m.price * m.amount, 0)) * i.amount, 0);
+    const { data: me } = await db.from('waiter_staff').select('iiko_employee_id').eq('id', staff.id).maybeSingle();
+    const row = {
+      client_id: clientId, staff_id: staff.id, kind: 'create', table_id: b.tableId, venue: await venue(),
+      table_label: b.tableLabel ? String(b.tableLabel).slice(0, 60) : null, guests: Number(b.guests) > 0 ? Math.min(Number(b.guests), 50) : null,
+      waiter_iiko_id: me?.iiko_employee_id || null, status: 'queued', error: null, taken_at: null, payload: items, total, updated_at: new Date().toISOString(),
+    };
+    const { data: saved, error } = prev
+      ? await db.from('waiter_orders').update(row).eq('id', prev.id).select('id').single()
+      : await db.from('waiter_orders').insert(row).select('id').single();
+    if (error) throw new Error(error.message);
+    return { correlationId: saved.id, orderId: null, logId: saved.id };
+  }
   const c = await ctx();
   const items = orderItems(b.items);
   const total = items.reduce((s, i) => s + i.price * i.amount + (i.modifiers || []).reduce((a: number, m: any) => a + m.price * m.amount * i.amount, 0), 0);
@@ -272,6 +308,13 @@ async function send(staff: Staff, b: any) {
 }
 
 async function status(b: any) {
+  if (await mode() === 'plugin') {
+    const { data } = await db.from('waiter_orders').select('status, error, iiko_number, created_at').eq('id', b.correlationId).maybeSingle();
+    if (!data) return { state: 'Error', error: 'Заказ не найден' };
+    if (data.status === 'ok') return { state: 'Success', error: null, note: data.error || null, number: data.iiko_number };
+    if (data.status === 'error') return { state: 'Error', error: data.error || 'Касса не приняла заказ' };
+    return { state: 'InProgress', error: null, waiting: data.status === 'queued' ? 'queued' : 'taken' };
+  }
   const c = await ctx();
   const s = await iiko('1/commands/status', { organizationId: c.org, correlationId: b.correlationId });
   const err = s.state === 'Error' ? (s.exception?.message || s.errorReason || 'Касса не приняла заказ') : null;
@@ -282,8 +325,14 @@ async function status(b: any) {
 }
 
 async function tableOrders(b: any) {
-  const c = await ctx();
   if (!b.tableId) throw new HttpError(400, 'Не выбран стол');
+  if (await mode() === 'plugin') {
+    const { data } = await db.from('waiter_cache').select('data, updated_at').eq('key', 'pos_tables:' + await venue()).maybeSingle();
+    const age = data ? Math.round((Date.now() - new Date(data.updated_at).getTime()) / 1000) : null;
+    const orders = ((data?.data as any)?.[b.tableId] || []) as any[];
+    return { orders, age };
+  }
+  const c = await ctx();
   // попросить кассу выгрузить заказы стола в облако, затем прочитать
   try {
     const init = await iiko('1/order/init_by_table', { organizationId: c.org, terminalGroupId: c.tg, tableIds: [b.tableId] });
@@ -302,6 +351,41 @@ async function tableOrders(b: any) {
   return { orders };
 }
 
+/* ---------------- плагин кассы ---------------- */
+async function pos(req: Request, a: string, b: any) {
+  const key = req.headers.get('x-pos-key') || '';
+  const want = await secret('pos_api_key');
+  if (!key || !want || key !== want) throw new HttpError(403, 'Неверный ключ кассы');
+  const v = String(b.venue || await venue());
+  const now = new Date().toISOString();
+  if (a === 'pos_result') {
+    const upd: any = { status: b.ok ? 'ok' : 'error', error: b.ok ? (b.error ? String(b.error).slice(0, 500) : null) : String(b.error || 'Ошибка на кассе').slice(0, 500), updated_at: now };
+    if (b.iikoOrderId) upd.iiko_order_id = b.iikoOrderId;
+    if (b.number) upd.iiko_number = Number(b.number) || null;
+    if (b.kind === 'add' || b.kind === 'create') upd.kind = b.kind;
+    await db.from('waiter_orders').update(upd).eq('id', b.id).eq('venue', v);
+    return { ok: true };
+  }
+  // пульс кассы и снимок открытых заказов по столам
+  await db.from('waiter_cache').upsert({ key: 'pos_seen:' + v, data: { at: now, version: b.version || null }, updated_at: now });
+  if (b.tables && typeof b.tables === 'object') await db.from('waiter_cache').upsert({ key: 'pos_tables:' + v, data: b.tables, updated_at: now });
+  // забрать новые заказы (и зависшие «взятые» больше 3 минут назад — касса могла перезапуститься)
+  const stale = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+  const { data } = await db.from('waiter_orders')
+    .select('id, table_id, table_label, guests, waiter_iiko_id, payload, created_at, status, taken_at, waiter_staff(name)')
+    .eq('venue', v).or(`status.eq.queued,and(status.eq.taken,taken_at.lt.${stale})`)
+    .gte('created_at', new Date(Date.now() - 6 * 3600 * 1000).toISOString())
+    .order('created_at').limit(20);
+  const list = data || [];
+  if (list.length) await db.from('waiter_orders').update({ status: 'taken', taken_at: now, updated_at: now }).in('id', list.map((x: any) => x.id));
+  return {
+    orders: list.map((x: any) => ({
+      id: x.id, tableId: x.table_id, table: x.table_label, guests: x.guests, waiterId: x.waiter_iiko_id,
+      waiter: x.waiter_staff?.name || '', items: x.payload || [], created: x.created_at,
+    })),
+  };
+}
+
 /* ---------------- официанты (управляющий) ---------------- */
 function manager(s: Staff) { if (s.role !== 'manager') throw new HttpError(403, 'Только для управляющего'); }
 
@@ -312,6 +396,7 @@ Deno.serve(async (req) => {
     const b = await req.json().catch(() => ({}));
     const a = b.action;
     if (a === 'login') return json(await login(req, String(b.pin || '')));
+    if (a === 'pos_poll' || a === 'pos_result') return json(await pos(req, a, b));
     const staff = await session(req);
     switch (a) {
       case 'me': return json({ staff });
