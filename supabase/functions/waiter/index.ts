@@ -78,14 +78,25 @@ async function iiko(method: string, body: unknown, timeout = 15) {
 }
 
 /* ---------------- кэш ---------------- */
+// Кэш «отдай сразу, обнови в фоне»: официант не ждёт iiko (меню из облака грузится до 10–20 с).
+// Свежие данные — сразу; устаревшие — тоже сразу, а обновление идёт в фоне. Ждём iiko, только если
+// в кэше ничего нет или явно попросили (кнопка ↻).
+const refreshing = new Set<string>();
 async function cached<T>(key: string, maxAgeSec: number, load: () => Promise<T>, force = false): Promise<T> {
-  if (!force) {
-    const { data } = await db.from('waiter_cache').select('data, updated_at').eq('key', key).maybeSingle();
-    if (data && Date.now() - new Date(data.updated_at).getTime() < maxAgeSec * 1000) return data.data as T;
+  const save = async () => {
+    const v = await load();
+    await db.from('waiter_cache').upsert({ key, data: v as unknown as object, updated_at: new Date().toISOString() });
+    return v;
+  };
+  if (force) return save();
+  const { data } = await db.from('waiter_cache').select('data, updated_at').eq('key', key).maybeSingle();
+  if (!data) return save();
+  if (Date.now() - new Date(data.updated_at).getTime() >= maxAgeSec * 1000 && !refreshing.has(key)) {
+    refreshing.add(key);
+    const job = save().catch((e) => console.error('cache ' + key, e)).finally(() => refreshing.delete(key));
+    try { (globalThis as any).EdgeRuntime?.waitUntil?.(job); } catch { /* */ }
   }
-  const v = await load();
-  await db.from('waiter_cache').upsert({ key, data: v as unknown as object, updated_at: new Date().toISOString() });
-  return v;
+  return data.data as T;
 }
 
 type Ctx = { org: string; tg: string };

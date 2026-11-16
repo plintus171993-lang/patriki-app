@@ -607,6 +607,9 @@ async function start() {
     if (e.auth) return;
     if (!S.data) { $app.innerHTML = `<div class="login"><h1>Нет данных</h1><p>${esc(e.message)}</p><button class="btn" style="max-width:260px" onclick="location.reload()">Повторить</button><button class="link" id="lo">Выйти</button></div>`; document.getElementById('lo').onclick = () => logout(); return; }
     toast('Нет связи — показываю сохранённое меню', 'err');
+    // повторить в фоне, как только сервер ответит — подтянуть свежие столы и меню
+    const retry = (n) => setTimeout(() => loadData().then(() => { if (S.view === 'tables' && $sheet.hidden) render(); }).catch(() => { if (n < 5) retry(n + 1); }), 5000 * n);
+    retry(1);
   }
   render(); flush(); checkUpdate();
 }
