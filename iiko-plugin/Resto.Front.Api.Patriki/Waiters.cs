@@ -130,17 +130,22 @@ namespace Resto.Front.Api.Patriki
             try
             {
                 var os = PluginContext.Operations;
-                ITable table;
-                try { table = os.GetTableById(o.TableId); }
-                catch { table = null; }
+                var table = FindTable(o);
                 if (table == null) throw new InvalidOperationException($"Стол «{o.Table}» не найден на этой кассе");
 
                 var lines = new List<(WaiterLine line, IProduct product, IProductSize size)>();
                 var missing = new List<string>();
+                Dictionary<string, IProduct> byName = null;
                 foreach (var l in o.Lines)
                 {
                     IProduct p = null;
                     try { p = os.GetProductById(l.ProductId); } catch { /* нет такого */ }
+                    if (p == null)
+                    {
+                        // id из облака не совпал с кассой — ищем блюдо по названию
+                        if (byName == null) byName = Inbox.ProductIndex();
+                        byName.TryGetValue(Inbox.Norm(l.Name), out p);
+                    }
                     if (p == null) { missing.Add(l.Name); continue; }
                     IProductSize size = null;
                     if (l.SizeId.HasValue) { try { size = os.GetProductSizeById(l.SizeId.Value); } catch { size = null; } }
@@ -248,11 +253,47 @@ namespace Resto.Front.Api.Patriki
             }
         }
 
+        /* ================= столы ================= */
+
+        private static List<ITable> HostTables() =>
+            PluginContext.Operations.GetHostTerminalRestaurantSections().SelectMany(s => s.Tables).Where(t => t.IsActive).ToList();
+
+        private static string TableName(ITable t) => string.IsNullOrWhiteSpace(t.Name) ? $"Стол {t.Number}" : t.Name.Trim();
+
+        /// <summary>Стол по id кассы; если id из облака не совпал — по названию / номеру (только однозначно).</summary>
+        private static ITable FindTable(WaiterOrder o)
+        {
+            try { var t = PluginContext.Operations.GetTableById(o.TableId); if (t != null) return t; } catch { /* нет такого id */ }
+            var all = HostTables();
+            var label = Inbox.Norm(o.Table);
+            var hit = all.Where(t => Inbox.Norm(TableName(t)) == label || Inbox.Norm("Стол " + t.Number) == label).ToList();
+            if (hit.Count != 1)
+            {
+                var digits = new string((o.Table ?? "").Where(char.IsDigit).ToArray());
+                if (digits.Length > 0 && int.TryParse(digits, out var n)) hit = all.Where(t => t.Number == n).ToList();
+            }
+            return hit.Count == 1 ? hit[0] : null;
+        }
+
+        /// <summary>Схема залов этой кассы — приложение показывает именно её столы (с id кассы).</summary>
+        private static List<object> Layout() =>
+            PluginContext.Operations.GetHostTerminalRestaurantSections()
+                .Select(s => (object)new Dictionary<string, object>
+                {
+                    ["id"] = s.Id.ToString(),
+                    ["name"] = s.Name ?? "",
+                    ["tables"] = s.Tables.Where(t => t.IsActive).OrderBy(t => t.Number).Select(t => (object)new Dictionary<string, object>
+                    {
+                        ["id"] = t.Id.ToString(), ["number"] = t.Number, ["name"] = TableName(t), ["seats"] = t.SeatingCapacity,
+                    }).ToList(),
+                }).ToList();
+
         /* ================= снимок открытых заказов ================= */
 
         private static Dictionary<string, object> Snapshot()
         {
             var map = new Dictionary<string, object>();
+            try { map["_layout"] = Layout(); } catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: схема залов — " + ex.Message); }
             foreach (var o in PluginContext.Operations.GetOrders())
             {
                 if (o.Status != OrderStatus.New && o.Status != OrderStatus.Bill) continue;

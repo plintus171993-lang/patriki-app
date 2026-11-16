@@ -352,7 +352,7 @@ namespace Resto.Front.Api.Patriki
         }
 
         /// <summary>Блюда iiko по названию (без учёта регистра, ё/е и лишних пробелов).</summary>
-        private static Dictionary<string, IProduct> ProductIndex()
+        internal static Dictionary<string, IProduct> ProductIndex()
         {
             var map = new Dictionary<string, IProduct>();
             foreach (var p in PluginContext.Operations.GetActiveProducts())

@@ -112,6 +112,16 @@ async function loadTables(c: Ctx) {
   }));
 }
 
+// столы с кассы (плагин присылает схему залов) — их id совпадают с кассой, в отличие от облака
+async function posLayout() {
+  if ((await mode()) !== 'plugin') return null;
+  const { data } = await db.from('waiter_cache').select('data').eq('key', 'pos_layout:' + await venue()).maybeSingle();
+  const l = data?.data as any[] | undefined;
+  if (!Array.isArray(l) || !l.length) return null;
+  return l.map((s: any) => ({ id: s.id, name: s.name, tables: (s.tables || []).map((t: any) => ({ id: t.id, number: t.number, name: t.name || String(t.number) })) }))
+    .filter((s: any) => s.tables.length);
+}
+
 async function loadMenu(c: Ctx) {
   const want = (await secret('waiter_iiko_menu')) || 'Официант';
   const list = await iiko('2/menu', {});
@@ -368,7 +378,13 @@ async function pos(req: Request, a: string, b: any) {
   }
   // пульс кассы и снимок открытых заказов по столам
   await db.from('waiter_cache').upsert({ key: 'pos_seen:' + v, data: { at: now, version: b.version || null }, updated_at: now });
-  if (b.tables && typeof b.tables === 'object') await db.from('waiter_cache').upsert({ key: 'pos_tables:' + v, data: b.tables, updated_at: now });
+  if (b.tables && typeof b.tables === 'object') {
+    // плагин 1.4+: схема залов кассы (id столов кассы) — приложение берёт столы отсюда
+    const layout = b.tables._layout;
+    delete b.tables._layout;
+    if (Array.isArray(layout) && layout.length) await db.from('waiter_cache').upsert({ key: 'pos_layout:' + v, data: layout, updated_at: now });
+    await db.from('waiter_cache').upsert({ key: 'pos_tables:' + v, data: b.tables, updated_at: now });
+  }
   // забрать новые заказы (и зависшие «взятые» больше 3 минут назад — касса могла перезапуститься)
   const stale = new Date(Date.now() - 3 * 60 * 1000).toISOString();
   const { data } = await db.from('waiter_orders')
@@ -403,7 +419,7 @@ Deno.serve(async (req) => {
       case 'bootstrap': {
         const c = await ctx();
         const [tables, menu, stop, isAlive] = await Promise.all([
-          cached('tables', 600, () => loadTables(c), !!b.force),
+          posLayout().then((l) => l || cached('tables', 600, () => loadTables(c), !!b.force)),
           cached('menu', 600, () => loadMenu(c), !!b.force),
           cached('stop', 60, () => loadStop(c), !!b.force).catch(() => ({})),
           alive(c),
