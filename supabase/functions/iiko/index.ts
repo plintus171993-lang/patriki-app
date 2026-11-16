@@ -240,6 +240,16 @@ Deno.serve(async (req) => {
     const b = await req.json().catch(() => ({}));
     const act = b.action;
 
+    // Плагин 1.3 шлёт опрос официантских заказов сюда — пересылаем в функцию waiter
+    if (act === 'pos_poll' || act === 'pos_result') {
+      const r = await fetch(`${SUPABASE_URL}/functions/v1/waiter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-pos-key': req.headers.get('x-pos-key') || '', 'Authorization': `Bearer ${SERVICE_KEY}` },
+        body: JSON.stringify(b),
+      });
+      return new Response(await r.text(), { status: r.status, headers: { ...CORS, 'Content-Type': 'application/json' } });
+    }
+
     if (act === 'probe') {
       if (!b.key || b.key !== await secret('pos_api_key')) return json({ error: 'Неверный ключ' }, 403);
       const orgs = await iiko('organizations', { returnAdditionalInfo: false, includeDisabled: true });
