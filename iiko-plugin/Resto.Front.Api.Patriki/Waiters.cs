@@ -27,7 +27,7 @@ namespace Resto.Front.Api.Patriki
     internal sealed class Waiters : IDisposable
     {
         private const string Sender = "Официанты Патрики";
-        private static readonly TimeSpan Every = TimeSpan.FromSeconds(4);
+        private static readonly TimeSpan Every = TimeSpan.FromSeconds(2);
 
         private readonly List<IDisposable> subscriptions = new List<IDisposable>();
         private readonly object sync = new object();
@@ -194,11 +194,20 @@ namespace Resto.Front.Api.Patriki
                     try { es.ChangeOrderComment(Inbox.Cut("Нет в меню кассы: " + string.Join(", ", missing), 500), orderStub); } catch { /* */ }
                 }
 
+                var t0 = DateTime.Now;
                 var result = os.SubmitChanges(es, creds);
                 var orderId = created != null ? result.Get(created).Id : open.Id;
+                var number = os.GetOrderById(orderId).Number;
+                var kind = open != null ? "add" : "create";
+                var note = missing.Count > 0 ? "Нет в меню кассы: " + string.Join(", ", missing) + "." : "";
+                var t1 = DateTime.Now;
 
-                // новые позиции — на кухню / бар
-                var kitchen = "";
+                // официант сразу видит «принят» — печать на кухню идёт следом
+                try { Api.WaiterResult(o.Id, true, note, orderId, number, kind); }
+                catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: не удалось сообщить результат — " + ex.Message); }
+                os.AddNotificationMessage($"{o.Table}: {(open != null ? "дозаказ" : "заказ")} от {o.Waiter} (№{number})", Sender, TimeSpan.FromSeconds(15));
+                var t2 = DateTime.Now;
+
                 try
                 {
                     var full = os.GetOrderById(orderId);
@@ -208,14 +217,10 @@ namespace Resto.Front.Api.Patriki
                 catch (Exception ex)
                 {
                     PluginContext.Log.Error($"Официанты Патрики: заказ на столе {o.Table}, но не ушёл на кухню", ex);
-                    kitchen = " Не ушёл на кухню — отправьте с кассы.";
+                    try { Api.WaiterResult(o.Id, true, (note + " Не ушёл на кухню — отправьте с кассы.").Trim(), orderId, number, kind); } catch { /* */ }
                 }
-                var number = os.GetOrderById(orderId).Number;
-
-                var note = (missing.Count > 0 ? " Нет в меню кассы: " + string.Join(", ", missing) + "." : "") + kitchen;
-                Api.WaiterResult(o.Id, true, note.Trim(), orderId, number, open != null ? "add" : "create");
-                os.AddNotificationMessage($"{o.Table}: {(open != null ? "дозаказ" : "заказ")} от {o.Waiter} (№{number})", Sender, TimeSpan.FromSeconds(15));
-                PluginContext.Log.Info($"Официанты Патрики: {o.Table}, заказ №{number}, позиций {lines.Count}, официант {o.Waiter}");
+                PluginContext.Log.Info($"Официанты Патрики: {o.Table}, заказ №{number}, позиций {lines.Count}, официант {o.Waiter}; " +
+                    $"касса {(t1 - t0).TotalMilliseconds:0} мс, ответ {(t2 - t1).TotalMilliseconds:0} мс, кухня {(DateTime.Now - t2).TotalMilliseconds:0} мс");
                 return true;
             }
             catch (Exception ex)
