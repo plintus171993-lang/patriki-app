@@ -139,3 +139,12 @@ button { cursor: pointer; border: 0; background: none; }
 .toast.err { background: #3a1f1a; color: #f3c2b7; }
 .spin { display: inline-block; width: 18px; height: 18px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; }
 @keyframes sp { to { transform: rotate(360deg); } }
+/* занятые столы — по открытым заказам на кассе */
+.tbl.open { background: color-mix(in srgb, var(--ok) 22%, var(--surface)); border-color: var(--ok); }
+.tbl.open b { color: var(--ok); }
+.tbl.open span { color: var(--text, #eee); font-size: 11px; text-align: center; padding: 0 4px; line-height: 1.2; }
+.tbl.open.bill { background: color-mix(in srgb, var(--warn) 20%, var(--surface)); border-color: var(--warn); }
+.tbl.open.bill b { color: var(--warn); }
+.legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--muted); margin: 0 2px 10px; }
+.lg { display: inline-block; width: 12px; height: 12px; border-radius: 4px; vertical-align: -1px; }
+.lg.open { background: var(--ok); } .lg.bill { background: var(--warn); margin-left: 6px; }

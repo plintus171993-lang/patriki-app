@@ -12,6 +12,7 @@
 //   login {pin}                         → {token, name, role}
 //   bootstrap {force?}                  → {staff, tables, menu, stop, alive}
 //   stop                                → {stop, alive}
+//   occupied                            → {occ: {tableId: {mins, sum, bill, n, waiter}} | null, alive}
 //   table_orders {tableId}              → {orders}
 //   send {clientId, tableId, tableLabel, orderId?, guests?, items[]} → {correlationId, orderId, logId}
 //   status {correlationId}              → {state, error?}
@@ -361,6 +362,29 @@ async function tableOrders(b: any) {
   return { orders };
 }
 
+/* ---------- занятые столы (по снимку открытых заказов с кассы) ---------- */
+// время открытия заказа касса присылает по своим часам (Москва) без пояса
+async function occupied() {
+  if (await mode() !== 'plugin') return { tables: null, age: null };
+  const { data } = await db.from('waiter_cache').select('data, updated_at').eq('key', 'pos_tables:' + await venue()).maybeSingle();
+  if (!data) return { tables: null, age: null };
+  const age = Math.round((Date.now() - new Date(data.updated_at).getTime()) / 1000);
+  if (age > 300) return { tables: null, age }; // касса давно молчит — не знаем
+  const out: Record<string, unknown> = {};
+  for (const [tid, list] of Object.entries((data.data || {}) as Record<string, any[]>)) {
+    if (tid.startsWith('_') || !Array.isArray(list) || !list.length) continue;
+    let since = Infinity, sum = 0, bill = false, waiter = '';
+    for (const o of list) {
+      const t = Date.parse(String(o.created || '') + '+03:00');
+      if (t < since) { since = t; waiter = o.waiter || ''; }
+      sum += Number(o.sum || 0);
+      if (o.status === 'Bill') bill = true;
+    }
+    out[tid] = { mins: Number.isFinite(since) ? Math.max(0, Math.round((Date.now() - since) / 60000)) : null, sum: Math.round(sum), bill, n: list.length, waiter };
+  }
+  return { tables: out, age };
+}
+
 /* ---------------- плагин кассы ---------------- */
 async function pos(req: Request, a: string, b: any) {
   const key = req.headers.get('x-pos-key') || '';
@@ -418,18 +442,23 @@ Deno.serve(async (req) => {
       case 'me': return json({ staff });
       case 'bootstrap': {
         const c = await ctx();
-        const [tables, menu, stop, isAlive] = await Promise.all([
+        const [tables, menu, stop, isAlive, occ] = await Promise.all([
           posLayout().then((l) => l || cached('tables', 600, () => loadTables(c), !!b.force)),
           cached('menu', 600, () => loadMenu(c), !!b.force),
           cached('stop', 60, () => loadStop(c), !!b.force).catch(() => ({})),
           alive(c),
+          occupied(),
         ]);
-        return json({ staff, tables, menu, stop, alive: isAlive });
+        return json({ staff, tables, menu, stop, alive: isAlive, occ: occ.tables });
       }
       case 'stop': {
         const c = await ctx();
         const [stop, isAlive] = await Promise.all([cached('stop', 30, () => loadStop(c)).catch(() => ({})), alive(c)]);
         return json({ stop, alive: isAlive });
+      }
+      case 'occupied': {
+        const [occ, isAlive] = await Promise.all([occupied(), alive({ org: '', tg: '' })]);
+        return json({ occ: occ.tables, age: occ.age, alive: isAlive });
       }
       case 'table_orders': return json(await tableOrders(b));
       case 'send': return json(await send(staff, b));

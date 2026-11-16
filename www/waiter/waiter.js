@@ -79,9 +79,22 @@ const cartSum = (tid) => (S.carts[tid]?.items || []).reduce((s, i) => s + lineSu
 async function loadData(force = false) {
   const d = await api('bootstrap', { force });
   S.data = { tables: d.tables, menu: d.menu, stop: d.stop || {}, alive: d.alive, at: Date.now() };
+  S.occ = d.occ || null;
   S.staff = d.staff; LS.set('staff', S.staff); LS.set('data', S.data);
   if (!S.section || !S.data.tables.some((s) => s.id === S.section)) S.section = S.data.tables[0]?.id || null;
 }
+
+// занятые столы: касса присылает открытые заказы, приложение подсвечивает столы
+async function refreshOcc() {
+  if (!S.token || document.hidden || S.view !== 'tables' || !$sheet.hidden) return;
+  try {
+    const d = await api('occupied');
+    S.occ = d.occ || null;
+    if (S.data && d.alive != null) S.data.alive = d.alive;
+    if (S.view === 'tables' && $sheet.hidden) render();
+  } catch { /* тихо */ }
+}
+const ago = (m) => m == null ? '' : m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${String(m % 60).padStart(2, '0')}`;
 
 async function refreshStop() {
   if (!S.token) return;
@@ -123,8 +136,9 @@ async function flush() {
 }
 setInterval(() => { if (S.queue.some((q) => ['queued', 'offline', 'sent', 'slow'].includes(q.state))) flush(); }, 2500);
 setInterval(refreshStop, 60000);
+setInterval(refreshOcc, 10000);
 addEventListener('online', () => flush());
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { flush(); refreshStop(); checkUpdate(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { flush(); refreshStop(); refreshOcc(); checkUpdate(); } });
 
 /* ---------------- автообновление ---------------- */
 // Новая версия выходит на сайт → приложение тихо перезагружается, когда официант на экране столов
@@ -224,11 +238,14 @@ function renderTables() {
   ${offline ? '<div class="banner">Нет интернета. Заказы сохранятся на телефоне и уйдут сами, когда связь вернётся.</div>' : ''}
   ${S.data.alive === false ? '<div class="banner warn">Главная касса не на связи. Проверьте, что она включена, iikoFront запущен и есть интернет. Заказы подождут в очереди и встанут на столы, как только касса появится.</div>' : ''}
   <div class="tabs">${secs.map((s) => `<button class="chip ${s.id === sec?.id ? 'on' : ''}" data-sec="${s.id}">${esc(s.name)}</button>`).join('')}</div>
+  ${S.occ ? '<div class="legend"><i class="lg open"></i>открыт: сколько сидят · сумма <i class="lg bill"></i>пречек</div>' : ''}
   <div class="grid">
     ${(sec?.tables || []).map((t) => {
       const n = cartCount(t.id);
-      return `<button class="tbl ${n ? 'cart' : ''} ${qByTable.has(t.id) ? 'q' : ''}" data-t="${t.id}" data-n="${n}">
-        <b>${esc(t.number)}</b><span>${esc(t.name && t.name !== String(t.number) ? t.name : 'стол')}</span></button>`;
+      const o = S.occ?.[t.id];
+      const sub = o ? `${o.bill ? 'счёт · ' : ''}${ago(o.mins)}${o.sum ? ` · ${rub(o.sum)}` : ''}` : (t.name && t.name !== String(t.number) ? t.name : 'стол');
+      return `<button class="tbl ${o ? (o.bill ? 'open bill' : 'open') : ''} ${n ? 'cart' : ''} ${qByTable.has(t.id) ? 'q' : ''}" data-t="${t.id}" data-n="${n}">
+        <b>${esc(t.number)}</b><span>${esc(sub)}</span></button>`;
     }).join('') || '<div class="empty">В этом зале нет столов</div>'}
   </div>`;
   $app.onclick = (e) => {
@@ -301,7 +318,7 @@ function renderTable() {
   }
   $app.onclick = (e) => {
     const b = e.target.closest('button'); if (!b) return;
-    if (b.dataset.a === 'back') { S.view = 'tables'; S.table = null; return render(); }
+    if (b.dataset.a === 'back') { S.view = 'tables'; S.table = null; render(); return refreshOcc(); }
     if (b.dataset.tab) { S.tab = b.dataset.tab; if (S.tab === 'orders') loadTableOrders(); return render(); }
     if (b.dataset.g !== undefined) { S.group = b.dataset.g || null; return render(); }
     if (b.dataset.p) return addProduct(b.dataset.p);
