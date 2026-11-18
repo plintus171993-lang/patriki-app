@@ -32,6 +32,13 @@ namespace Resto.Front.Api.Patriki
         private readonly List<IDisposable> subscriptions = new List<IDisposable>();
         private readonly object sync = new object();
         private readonly List<WaiterOrder> waiting = new List<WaiterOrder>(); // ждут PIN кассира
+        // заказ стола открыт на экране кассы (iiko: «objects … already in use») — ждём и повторяем сами
+        private static readonly TimeSpan LockRetryEvery = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan LockRetryFor = TimeSpan.FromSeconds(150); // сервер отдаёт «взятый» заказ снова через 3 мин
+        private readonly Dictionary<string, LockedOrder> locked = new Dictionary<string, LockedOrder>();
+        // уже поставленные на стол заказы: если ответ кассы не дошёл до сервера (обрыв связи),
+        // сервер пришлёт заказ ещё раз — второй раз на стол его не ставим, только повторяем ответ
+        private readonly Dictionary<string, DoneOrder> done = new Dictionary<string, DoneOrder>();
         private int busy;
         private string lastSnapshot = "";
         private DateTime lastSnapshotAt = DateTime.MinValue;
@@ -71,21 +78,42 @@ namespace Resto.Front.Api.Patriki
                 catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: снимок столов — " + ex.Message); }
 
                 var orders = Api.WaiterPoll(Config.Current.Venue, tables);
-                if (orders.Count == 0) return;
+                ReportPending();
+                CleanupDone();
+
+                var fresh = new List<WaiterOrder>();
+                foreach (var o in orders)
+                {
+                    DoneOrder d; bool isLocked;
+                    lock (sync) { done.TryGetValue(o.Id, out d); isLocked = locked.ContainsKey(o.Id); }
+                    if (d != null)
+                    {
+                        PluginContext.Log.Info($"Официанты Патрики: заказ {o.Id} ({o.Table}) уже на столе (№{d.Number}) — повторяю ответ серверу");
+                        d.Reported = false;
+                        continue;
+                    }
+                    if (isLocked) continue; // уже ждёт, пока стол освободится на кассе
+                    fresh.Add(o);
+                }
+                ReportPending();
+
+                bool hasLocked; lock (sync) hasLocked = locked.Count > 0;
+                if (fresh.Count == 0 && !hasLocked) return;
 
                 ICredentials creds = null;
                 try { creds = PluginContext.Operations.GetDefaultCredentials(); }
                 catch (Exception ex) { PluginContext.Log.Info("Официанты Патрики: нет учётной записи плагина — " + ex.Message); }
 
-                foreach (var o in orders)
+                foreach (var o in fresh)
                 {
                     if (creds == null)
                     {
                         lock (sync) { if (waiting.All(w => w.Id != o.Id)) waiting.Add(o); }
                         continue;
                     }
-                    Process(o, creds);
+                    TryProcess(o, creds);
                 }
+                if (creds != null) RetryLocked(creds);
 
                 int left; lock (sync) left = waiting.Count;
                 if (left > 0 && DateTime.Now - lastPinHint > TimeSpan.FromMinutes(1))
@@ -117,7 +145,7 @@ namespace Resto.Front.Api.Patriki
             var ok = 0;
             foreach (var o in list)
             {
-                if (Process(o, creds)) ok++;
+                if (Process(o, creds, true) == Outcome.Ok) ok++;
                 lock (sync) waiting.RemoveAll(w => w.Id == o.Id);
             }
             vm.ShowOkPopup(Sender, $"Поставлено на столы: {ok} из {list.Count}.");
@@ -125,7 +153,77 @@ namespace Resto.Front.Api.Patriki
 
         /* ================= создание заказа ================= */
 
-        private bool Process(WaiterOrder o, ICredentials creds)
+        private enum Outcome { Ok, Failed, Locked }
+
+        /// <summary>Первая попытка: если заказ стола занят на кассе — встаёт в ожидание, официанту ошибку не шлём.</summary>
+        private void TryProcess(WaiterOrder o, ICredentials creds)
+        {
+            if (Process(o, creds, false) != Outcome.Locked) return;
+            lock (sync) locked[o.Id] = new LockedOrder { Order = o, Since = DateTime.Now, Next = DateTime.Now + LockRetryEvery };
+            PluginContext.Log.Info($"Официанты Патрики: {o.Table} занят на кассе (заказ открыт на экране) — заказ {o.Id} от {o.Waiter} ждёт");
+            try
+            {
+                PluginContext.Operations.AddNotificationMessage(
+                    $"{o.Table}: заказ официанта {o.Waiter} ждёт — закройте этот стол на экране кассы, позиции добавятся сами", Sender, TimeSpan.FromSeconds(30));
+            }
+            catch { /* */ }
+        }
+
+        private void RetryLocked(ICredentials creds)
+        {
+            List<LockedOrder> due;
+            lock (sync) due = locked.Values.Where(x => x.Next <= DateTime.Now).ToList();
+            foreach (var x in due)
+            {
+                var last = DateTime.Now - x.Since >= LockRetryFor;
+                var r = Process(x.Order, creds, last);
+                lock (sync)
+                {
+                    if (r == Outcome.Locked) { x.Next = DateTime.Now + LockRetryEvery; x.Attempts++; }
+                    else locked.Remove(x.Order.Id);
+                }
+                if (r == Outcome.Ok)
+                    PluginContext.Log.Info($"Официанты Патрики: {x.Order.Table} освободился — заказ {x.Order.Id} поставлен через {(DateTime.Now - x.Since).TotalSeconds:0} с");
+            }
+        }
+
+        /// <summary>Касса не дала изменить заказ: он открыт на экране этой или другой кассы.</summary>
+        private static bool IsLocked(Exception ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                var name = e.GetType().Name;
+                var msg = e.Message ?? "";
+                if (name.IndexOf("InUse", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    name.IndexOf("Lock", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("already in use", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("уже использ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    msg.IndexOf("заблокирован", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+            return false;
+        }
+
+        private void ReportPending()
+        {
+            List<KeyValuePair<string, DoneOrder>> list;
+            lock (sync) list = done.Where(x => !x.Value.Reported).ToList();
+            foreach (var kv in list)
+            {
+                var d = kv.Value;
+                try { Api.WaiterResult(kv.Key, true, d.Note, d.OrderId, d.Number, d.Kind); d.Reported = true; }
+                catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: ответ серверу не ушёл, повторю — " + ex.Message); return; }
+            }
+        }
+
+        private void CleanupDone()
+        {
+            lock (sync)
+                foreach (var k in done.Where(x => x.Value.Reported && DateTime.Now - x.Value.At > TimeSpan.FromHours(7)).Select(x => x.Key).ToList())
+                    done.Remove(k);
+        }
+
+        private Outcome Process(WaiterOrder o, ICredentials creds, bool final)
         {
             try
             {
@@ -202,9 +300,12 @@ namespace Resto.Front.Api.Patriki
                 var note = missing.Count > 0 ? "Нет в меню кассы: " + string.Join(", ", missing) + "." : "";
                 var t1 = DateTime.Now;
 
+                var rec = new DoneOrder { At = DateTime.Now, OrderId = orderId, Number = number, Kind = kind, Note = note };
+                lock (sync) done[o.Id] = rec;
+
                 // официант сразу видит «принят» — печать на кухню идёт следом
-                try { Api.WaiterResult(o.Id, true, note, orderId, number, kind); }
-                catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: не удалось сообщить результат — " + ex.Message); }
+                try { Api.WaiterResult(o.Id, true, note, orderId, number, kind); rec.Reported = true; }
+                catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: не удалось сообщить результат, повторю — " + ex.Message); }
                 os.AddNotificationMessage($"{o.Table}: {(open != null ? "дозаказ" : "заказ")} от {o.Waiter} (№{number})", Sender, TimeSpan.FromSeconds(15));
                 var t2 = DateTime.Now;
 
@@ -217,18 +318,24 @@ namespace Resto.Front.Api.Patriki
                 catch (Exception ex)
                 {
                     PluginContext.Log.Error($"Официанты Патрики: заказ на столе {o.Table}, но не ушёл на кухню", ex);
-                    try { Api.WaiterResult(o.Id, true, (note + " Не ушёл на кухню — отправьте с кассы.").Trim(), orderId, number, kind); } catch { /* */ }
+                    rec.Note = (note + " Не ушёл на кухню — отправьте с кассы.").Trim(); rec.Reported = false;
+                    try { Api.WaiterResult(o.Id, true, rec.Note, orderId, number, kind); rec.Reported = true; } catch { /* повторю на следующем опросе */ }
                 }
                 PluginContext.Log.Info($"Официанты Патрики: {o.Table}, заказ №{number}, позиций {lines.Count}, официант {o.Waiter}; " +
                     $"касса {(t1 - t0).TotalMilliseconds:0} мс, ответ {(t2 - t1).TotalMilliseconds:0} мс, кухня {(DateTime.Now - t2).TotalMilliseconds:0} мс");
-                return true;
+                return Outcome.Ok;
             }
             catch (Exception ex)
             {
+                var busyTable = IsLocked(ex);
+                if (busyTable && !final) return Outcome.Locked;
+                var msg = busyTable
+                    ? $"{o.Table} был открыт на экране кассы, заказ не встал. Закройте стол на кассе и нажмите «Отправить ещё раз»"
+                    : ex.Message;
                 PluginContext.Log.Error($"Официанты Патрики: заказ {o.Id} ({o.Table}) не создан", ex);
-                try { Api.WaiterResult(o.Id, false, ex.Message, null, 0, null); } catch { /* сервер повторит позже */ }
-                try { PluginContext.Operations.AddNotificationMessage($"{o.Table}: заказ официанта {o.Waiter} не создан — {ex.Message}", Sender, TimeSpan.FromMinutes(1)); } catch { /* */ }
-                return false;
+                try { Api.WaiterResult(o.Id, false, msg, null, 0, null); } catch { /* сервер повторит позже */ }
+                try { PluginContext.Operations.AddNotificationMessage($"{o.Table}: заказ официанта {o.Waiter} не создан — {msg}", Sender, TimeSpan.FromMinutes(1)); } catch { /* */ }
+                return Outcome.Failed;
             }
         }
 
@@ -380,6 +487,24 @@ namespace Resto.Front.Api.Patriki
         private static Guid? G(Dictionary<string, object> d, string k) => Guid.TryParse(S(d, k) ?? "", out var g) ? g : (Guid?)null;
         private static int I(Dictionary<string, object> d, string k) { try { return Convert.ToInt32(d.TryGetValue(k, out var v) && v != null ? v : 0, CultureInfo.InvariantCulture); } catch { return 0; } }
         private static decimal M(Dictionary<string, object> d, string k) { try { return Convert.ToDecimal(d.TryGetValue(k, out var v) && v != null ? v : 0, CultureInfo.InvariantCulture); } catch { return 0; } }
+    }
+
+    internal sealed class LockedOrder
+    {
+        public WaiterOrder Order;
+        public DateTime Since;
+        public DateTime Next;
+        public int Attempts;
+    }
+
+    internal sealed class DoneOrder
+    {
+        public DateTime At;
+        public Guid OrderId;
+        public int Number;
+        public string Kind;
+        public string Note;
+        public volatile bool Reported;
     }
 
     internal sealed class WaiterLine
