@@ -3,6 +3,7 @@
 -- без имён и телефонов) и схему зала. Доступ — по ключу control_feed_key (лежит в app_secrets).
 -- Уже применено в базе 18.11.2026. Значение ключа = sha256("patriki-control-feed:" + apiToken сервера «Контроль»);
 -- в репозиторий оно не кладётся — при повторной установке подставьте его вместо KEY_PLACEHOLDER.
+-- 18.11: добавлено меню (позиция → группа) для сверки наливов.
 -- Номер 022, чтобы не пересечься с 021, если он появится в работе над приложением.
 insert into public.app_secrets (key, value) values ('control_feed_key', 'KEY_PLACEHOLDER')
 on conflict (key) do nothing;
@@ -42,7 +43,12 @@ begin
       ) order by r.updated_at)
       from (select * from public.reservations where updated_at >= p_since or starts_at >= now() - interval '1 day' order by updated_at limit 2000) r
     ), '[]'::jsonb),
-    'layout', (select jsonb_object_agg(key, data) from public.waiter_cache where key like 'pos_layout:%')
+    'layout', (select jsonb_object_agg(key, data) from public.waiter_cache where key like 'pos_layout:%'),
+    -- Меню: позиция → группа (пиво разливное, водка…), чтобы сверять наливы с чеками.
+    -- Меню отдаём раз в час и при первом запросе — оно меняется редко.
+    'menu', case when p_since < now() - interval '30 minutes' or extract(minute from now()) = 0 then (select coalesce(jsonb_agg(jsonb_build_object('name', i->>'name', 'id', i->>'id', 'group', g->>'name')), '[]'::jsonb)
+             from public.waiter_cache c, jsonb_array_elements(c.data->'groups') g, jsonb_array_elements(g->'items') i
+             where c.key = 'menu') end
   );
 end;
 $$;
