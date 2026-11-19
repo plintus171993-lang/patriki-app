@@ -1079,6 +1079,8 @@ function Verify() {
     <form id="phone-form" class="stack" style="gap:14px">
       <label class="field">Номер мобильного<input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" data-phone placeholder="${PHONE_PH}" value="${esc(fmtPhone(pre))}"></label>
       ${ConsentBox()}
+      ${S.profile.marketing_consent ? '' : `<label class="check consent"><input type="checkbox" name="mktConsent">
+        <span>Присылать акции, афишу матчей и приглашения — даю ${doc('ads', 'согласие на получение рекламы')} (необязательно)</span></label>`}
       <p class="error" role="alert" style="margin:0"></p>
       <button type="submit" class="btn btn-accent btn-block">Подтвердить звонком</button>
       <span class="muted" style="font-size:12px;text-align:center;margin-top:-6px">Покажем номер — позвоните на него со своего телефона. Звонок бесплатный и сбросится сам.</span>
@@ -1103,6 +1105,7 @@ function tickVerify() {
 }
 // согласие перед любым способом подтверждения
 function consentOk(form) {
+  if (form) keep.set('mktConsent', !!form.mktConsent?.checked);   // галочка рекламы — необязательная, запоминаем до подтверждения номера
   if (hasPdConsent()) return true;
   if (form?.pdConsent?.checked) { keep.set('pdConsent', CV); return true; }
   const e = form?.querySelector('.error'); if (e) e.textContent = 'Отметьте согласие на обработку персональных данных';
@@ -1215,6 +1218,10 @@ async function finishVerify(r) {
   } catch (e) { console.error(e); S.verify.err = e.message; return render(); }
   await loadGuest();
   if (keep.get('pdConsent', '') === CV && S.profile.pd_consent_version !== CV) await grantPd('verify');
+  if (keep.get('mktConsent', false) && !S.profile.marketing_consent) {
+    try { await store.recordConsent('marketing', true, CONFIG.LEGAL.EDITION, 'verify'); S.profile = { ...S.profile, marketing_consent: true }; } catch (e) { console.warn(e); }
+  }
+  keep.set('mktConsent', false);
   const p10 = phone10(r.phone || S.me?.phone || '');
   if (p10 && phone10(S.profile.phone || '') !== p10) {
     try { S.profile = await store.saveProfile({ ...S.profile, phone: fmtPhone(p10) }); } catch (e) { console.warn(e); }
