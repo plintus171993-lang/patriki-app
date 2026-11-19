@@ -125,8 +125,21 @@ jobs:
           name: patriki-apk
           path: www/download
 
-      - name: Сайт веселый-патрик.рф — копия для проверки на patrikipab.ru/site/
-        run: cp -r site www/site && rm -f www/site/CNAME
+      - name: patrikipab.ru/site/ — перенаправление на веселый-патрик.рф
+        # Сайт переехал в репозиторий patriki-site (веселый-патрик.рф). Старая копия здесь только
+        # перенаправляет туда (вместе с #/-адресом), закрыта от индексации и указывает canonical на новый домен.
+        run: |
+          mkdir -p www/site
+          cat > www/site/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="ru"><head><meta charset="utf-8">
+          <meta name="robots" content="noindex, follow">
+          <link rel="canonical" href="https://xn----8sbemauele6bmft5j.xn--p1ai/">
+          <meta http-equiv="refresh" content="0; url=https://xn----8sbemauele6bmft5j.xn--p1ai/">
+          <title>Патрики Паб — сайт переехал на веселый-патрик.рф</title>
+          <script>location.replace('https://xn----8sbemauele6bmft5j.xn--p1ai/' + location.search + location.hash);</script>
+          </head><body><p>Сайт переехал: <a href="https://xn----8sbemauele6bmft5j.xn--p1ai/">веселый-патрик.рф</a></p></body></html>
+          HTML
 
       - name: Библиотека Supabase внутрь сайта
         run: |
