@@ -257,7 +257,7 @@ function itemSheet(item) {
       <button type="button" class="btn btn-ghost btn-sm" data-x="img-clear">Убрать фото</button>
     </div>
     <label class="field">Ссылка на фото (необязательно)<input class="input" name="image_url" value="${esc(x.image_url && !x.image_url.startsWith('data:') ? x.image_url : '')}"></label>
-    <label class="field">Название<input class="input" name="name" ${lock} required value="${esc(x.name)}"></label>
+    <label class="field">Название<input class="input" name="name" required value="${esc(x.name)}"></label>
     <div class="grid-2">
       <label class="field">Цена, ₽<input class="input" name="price" inputmode="numeric" required value="${esc(x.price)}"></label>
       <label class="field">Вес / объём<input class="input" name="weight" placeholder="300 г" value="${esc(x.weight)}"></label>
