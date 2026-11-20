@@ -345,8 +345,8 @@ function listHtml() {
   const item = (it) => {
     const st = isStop(it.id), q = inCart(it.id);
     return `<button class="it ${st ? 'stop' : ''}" data-p="${it.id}">
-      <span class="n">${esc(it.name)}${st ? '<small>стоп-лист</small>' : it.mods?.some((g) => g.items.length > 1) || it.sizes ? '<small>с выбором</small>' : ''}</span>
-      <span class="p">${rub(it.price)}</span>${q ? `<span class="q">${q}</span>` : ''}</button>`;
+      <span class="n">${esc(it.name)}${st ? '<small>стоп-лист</small>' : it.open ? '<small>свободная цена</small>' : it.mods?.some((g) => g.items.length > 1) || it.sizes ? '<small>с выбором</small>' : ''}</span>
+      <span class="p">${it.open && !it.price ? 'цена ✎' : rub(it.price)}</span>${q ? `<span class="q">${q}</span>` : ''}</button>`;
   };
   if (S.q.trim()) {
     const q = S.q.trim().toLowerCase();
@@ -390,26 +390,43 @@ function qLabel(q) {
 function addProduct(pid) {
   const p = products().get(pid); if (!p) return;
   if (isStop(pid)) { toast('Позиция в стоп-листе', 'err'); return; }
+  if (p.open) return openPrice(p);
   if (p.mods?.length || p.sizes?.length) return openMods(p);
   pushItem({ productId: p.id, name: p.name, price: p.price, sizeId: p.sizeId, amount: 1, mods: [] });
 }
+// свободное блюдо (свободная цена на кассе): официант вводит цену, касса ставит её позиции
+function openPrice(p) {
+  openSheet(`
+    <h2>${esc(p.name)}</h2><div class="sub">Свободная цена — введите сумму за 1 шт.</div>
+    <input class="field" id="op" placeholder="Цена, ₽" inputmode="decimal" autocomplete="off" value="${p.price ? esc(String(p.price)) : ''}">
+    <div style="height:14px"></div><button class="btn" data-a="ok">Добавить</button>`, (a) => {
+    if (a !== 'ok') return;
+    const v = Number(String($sheet.querySelector('#op').value).replace(',', '.').replace(/\s/g, ''));
+    if (!(v > 0) || v > 1000000) return toast('Введите цену', 'err');
+    const price = Math.round(v * 100) / 100;
+    closeSheet();
+    if (p.mods?.length || p.sizes?.length) return openMods({ ...p, price, sizes: undefined }, { open: true });
+    pushItem({ productId: p.id, name: p.name, price, sizeId: p.sizeId, amount: 1, mods: [], open: true });
+  });
+  setTimeout(() => $sheet.querySelector('#op')?.focus(), 50);
+}
 function pushItem(item) {
   const c = cart(S.table);
-  const same = c.items.find((i) => i.productId === item.productId && i.sizeId === item.sizeId && !i.comment && JSON.stringify(i.mods) === JSON.stringify(item.mods));
+  const same = c.items.find((i) => i.productId === item.productId && i.sizeId === item.sizeId && !i.comment && i.price === item.price && !!i.open === !!item.open && JSON.stringify(i.mods) === JSON.stringify(item.mods));
   if (same) same.amount += item.amount; else c.items.push({ key: uid(), ...item });
   save(); vibrate();
   const l = $app.querySelector('.list'); const y = window.scrollY;
   renderTable(); if (l) window.scrollTo(0, y);
 }
 
-function openMods(p) {
+function openMods(p, extra = {}) {
   let size = p.sizes ? (p.sizes.find((s) => s.id === p.sizeId) || p.sizes[0]) : null;
   const sel = {}; // groupId → Set(modId)
   for (const g of p.mods || []) { sel[g.id] = new Set(); if ((g.def > 0 || (g.min === 1 && g.max === 1)) && g.items.length === 1) sel[g.id].add(g.items[0].id); }
   // нечего выбирать (только обязательные одиночные модификаторы) — сразу в заказ
   if (!p.sizes && (p.mods || []).every((g) => g.items.length === 1 && sel[g.id].size === 1 && g.min >= 1)) {
     const mods = p.mods.map((g) => ({ id: g.items[0].id, groupId: g.group ? g.id : null, name: g.items[0].name, price: g.items[0].price, amount: 1 }));
-    return pushItem({ productId: p.id, name: p.name, price: p.price, sizeId: p.sizeId, amount: 1, mods });
+    return pushItem({ productId: p.id, name: p.name, price: p.price, sizeId: p.sizeId, amount: 1, mods, ...extra });
   }
   const draw = () => {
     const price = (size ? size.price : p.price) + (p.mods || []).flatMap((g) => g.items.filter((m) => sel[g.id].has(m.id))).reduce((s, m) => s + m.price, 0);
@@ -431,7 +448,7 @@ function openMods(p) {
       if (a === 'add' && ok) {
         const mods = (p.mods || []).flatMap((g) => g.items.filter((m) => sel[g.id].has(m.id)).map((m) => ({ id: m.id, groupId: g.group ? g.id : null, name: m.name, price: m.price, amount: 1 })));
         closeSheet();
-        pushItem({ productId: p.id, name: p.name + (size?.name ? ` (${size.name})` : ''), price: size ? size.price : p.price, sizeId: size ? size.id : p.sizeId, amount: 1, mods });
+        pushItem({ productId: p.id, name: p.name + (size?.name ? ` (${size.name})` : ''), price: size ? size.price : p.price, sizeId: size ? size.id : p.sizeId, amount: 1, mods, ...extra });
       }
     });
   };
