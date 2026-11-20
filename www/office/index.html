@@ -89,7 +89,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tabs a.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
 /* modal */
 #modal{position:fixed;inset:0;background:rgba(20,28,40,.45);display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;z-index:50}
-.mb{background:#fff;border-radius:10px;width:440px;max-width:94vw;max-height:84vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.mb.wide{width:620px}.mb{background:#fff;border-radius:10px;width:440px;max-width:94vw;max-height:84vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
 .mh{padding:16px 20px;border-bottom:1px solid var(--line);font-weight:600;display:flex}
 .mh span{flex:1}.mh a{cursor:pointer;color:var(--muted)}
 .mc{padding:18px 20px}
@@ -159,7 +159,7 @@ const CATS_OUT=['Зарплата и авансы','Продукты и напи
 const CATS_IN=['Выручка','Взносы учредителей и займы','Возврат с зарплаты','Итоги инвентаризации','Прочие приходы'];
 
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.add('hidden'),2600)}
-function modal(title,body,foot){$('#mTitle').textContent=title;$('#mBody').innerHTML=body;$('#mFoot').innerHTML='';(foot||[]).forEach(b=>$('#mFoot').appendChild(b));$('#modal').classList.remove('hidden')}
+function modal(title,body,foot,wide){document.querySelector('.mb').classList.toggle('wide',!!wide);$('#mTitle').textContent=title;$('#mBody').innerHTML=body;$('#mFoot').innerHTML='';(foot||[]).forEach(b=>$('#mFoot').appendChild(b));$('#modal').classList.remove('hidden')}
 function closeModal(){$('#modal').classList.add('hidden')}
 $('#mX').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
 function btn(t,cls,fn){const b=document.createElement('button');b.className='btn '+(cls||'');b.textContent=t;b.onclick=fn;return b}
@@ -217,6 +217,7 @@ function buildNav(){
 }
 window.addEventListener('hashchange',()=>{const h=location.hash.slice(1);if(h&&h!==S.page&&PAGES.find(p=>p.id===h)){S.page=h;render()}});
 function render(){
+  closeModal();
   $('#nav').querySelectorAll('a').forEach(a=>a.classList.toggle('on',a.dataset.p===S.page));
   const p=PAGES.find(p=>p.id===S.page);$('#title').textContent=p.t;
   $('#view').innerHTML='<div class="empty">Загрузка…</div>';
@@ -411,11 +412,12 @@ async function vTs(){
         if(s&&s.venue_id===venue){const v=g==='dish'?s.amount:s.hours;tot+=+v||0;cnt++;cells+=`<td class="c on" data-e="${e.id}" data-d="${d}">${g==='dish'?Math.round((+v||0)/100)/10+'k':num(v)}</td>`}
         else if(s){cells+=`<td class="c other" data-e="${e.id}" data-d="${d}" title="Работал: ${esc(venueName(s.venue_id))}">${esc(venueName(s.venue_id).slice(0,3))}</td>`}
         else cells+=`<td class="c" data-e="${e.id}" data-d="${d}"></td>`}
-      rows+=`<tr><td class="nm">${esc(e.name)} <span class="muted" style="font-size:11px">${esc(e.position||'')}</span></td>${cells}<td class="n" style="padding:4px 10px;min-width:90px"><b>${g==='dish'?rub(tot):num(tot)+' ч'}</b></td><td class="n muted" style="padding:4px 10px;min-width:60px">${cnt} см.</td></tr>`}}
+      rows+=`<tr><td class="nm" data-emp="${e.id}" style="cursor:pointer" title="Открыть карточку"><span style="color:var(--accent)">${esc(e.name)}</span> <span class="muted" style="font-size:11px">${esc(e.position||'')}</span></td>${cells}<td class="n" style="padding:4px 10px;min-width:90px"><b>${g==='dish'?rub(tot):num(tot)+' ч'}</b></td><td class="n muted" style="padding:4px 10px;min-width:60px">${cnt} см.</td></tr>`}}
   $('#view').innerHTML=`<div class="bar">${monthPicker('tm')}<span class="muted">${esc(venueName(venue))}${S.venue==='all'?' (выберите заведение вверху)':''} · нажмите на клетку, чтобы отметить смену</span><span class="sp"></span>
-    <span class="pill g">смена здесь</span><span class="pill y">работал на другой точке</span></div>
+    <span class="pill g">смена здесь</span><span class="pill y">работал на другой точке</span>${S.me.owner?'<button class="btn pri" id="tsAdd">+ Сотрудник</button>':''}</div>
     ${rows?`<div class="tw" style="max-height:72vh"><table class="ts"><thead><tr><th class="nm">Сотрудник</th>${dayHdr}<th>Итого</th><th>Смен</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">Нет сотрудников</div>'}`;
   bindMonth('tm');
+  if(S.me.owner){$('#tsAdd').onclick=()=>empForm(null,vTs);document.querySelectorAll('.ts td[data-emp]').forEach(td=>td.onclick=()=>empCard(S.employees.find(e=>e.id===td.dataset.emp),vTs))}
   document.querySelectorAll('.ts td.c').forEach(td=>td.onclick=()=>shiftForm(td.dataset.e,m+'-'+String(td.dataset.d).padStart(2,'0'),(map[td.dataset.e]||{})[+td.dataset.d],venue));
 }
 function shiftForm(eid,day,s,venue){
@@ -439,14 +441,15 @@ async function vStaff(){
   const list=S.employees.filter(e=>S.venue==='all'||e.home_venue===S.venue||!e.home_venue);
   const showOff=S.cache.showOff;
   const rows=list.filter(e=>showOff||e.active);
+  const mot={};if(S.me.owner)(await q(sb.from('crm_employee_motivation_current').select('*'))).forEach(m=>mot[m.employee_id]=m);
   $('#view').innerHTML=`<div class="bar"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sOff" ${showOff?'checked':''}> показать уволенных</label><span class="sp"></span>${S.me.owner?'<button class="btn pri" id="sAdd">+ Сотрудник</button>':''}</div>
-  <div class="tw"><table><thead><tr><th>Имя</th><th>Должность</th><th>Отдел</th><th>Основная точка</th><th>iiko</th><th>Статус</th></tr></thead><tbody>
-  ${rows.map(e=>`<tr data-id="${e.id}" style="cursor:${S.me.owner?'pointer':'default'}"><td><b>${esc(e.name)}</b></td><td>${esc(e.position||'')}</td><td>${DEPT[e.dept]||''}</td><td>${esc(venueName(e.home_venue))}</td><td>${e.iiko_employee_id?'<span class="pill b">связан</span>':'<span class="muted">—</span>'}</td><td>${e.active?'<span class="pill g">работает</span>':'<span class="pill r">уволен</span>'}</td></tr>`).join('')}
+  <div class="tw"><table><thead><tr><th>Имя</th><th>Должность</th><th>Отдел</th><th>Основная точка</th><th>Мотивация</th><th>iiko</th><th>Статус</th></tr></thead><tbody>
+  ${rows.map(e=>`<tr data-id="${e.id}" style="cursor:${S.me.owner?'pointer':'default'}"><td><b>${esc(e.name)}</b></td><td>${esc(e.position||'')}</td><td>${DEPT[e.dept]||''}</td><td>${esc(venueName(e.home_venue))}</td><td class="muted">${mot[e.id]?motShort(mot[e.id]):'—'}</td><td>${e.iiko_employee_id?'<span class="pill b">связан</span>':'<span class="muted">—</span>'}</td><td>${e.active?'<span class="pill g">работает</span>':'<span class="pill r">уволен</span>'}</td></tr>`).join('')}
   </tbody></table></div>`;
   $('#sOff').onchange=e=>{S.cache.showOff=e.target.checked;vStaff()};
-  if(S.me.owner){$('#sAdd').onclick=()=>empForm();document.querySelectorAll('tr[data-id]').forEach(r=>r.onclick=()=>empForm(S.employees.find(e=>e.id===r.dataset.id)))}
+  if(S.me.owner){$('#sAdd').onclick=()=>empForm(null,vStaff);document.querySelectorAll('tr[data-id]').forEach(r=>r.onclick=()=>empCard(S.employees.find(e=>e.id===r.dataset.id),vStaff))}
 }
-function empForm(e){
+function empForm(e,after){
   modal(e?'Сотрудник':'Новый сотрудник',`
     <label class="f">Имя<input id="eN" value="${esc(e?.name||'')}"></label>
     <div class="row2"><label class="f">Должность<input id="eP" value="${esc(e?.position||'')}" list="posList"></label>
@@ -457,8 +460,46 @@ function empForm(e){
     [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
       const row={name:$('#eN').value.trim(),position:$('#eP').value.trim()||null,dept:$('#eD').value,home_venue:$('#eV').value,active:$('#eA').checked};
       if(!row.name){$('#eErr').textContent='Укажите имя';return}
-      if(e)await q(sb.from('crm_employees').update(row).eq('id',e.id));else await q(sb.from('crm_employees').insert(row));
-      closeModal();toast('Сохранено');vStaff()})]);
+      let saved;if(e){await q(sb.from('crm_employees').update(row).eq('id',e.id));saved={...e,...row}}else saved=(await q(sb.from('crm_employees').insert(row).select()))[0];
+      await loadRefs();toast('Сохранено');
+      if(!e){empCard(saved,after||vStaff)}else{closeModal();(after||vStaff)()}})]);
+}
+
+/* ---------- Карточка сотрудника и мотивация ---------- */
+const PAYT={hourly:'₽ в час',per_shift:'₽ за смену',monthly:'оклад в месяц'};
+function motShort(m){const p=[];p.push(m.pay_type==='monthly'?'оклад '+rub(m.rate):num(m.rate)+' '+PAYT[m.pay_type]);
+  if(m.revenue_bonus)p.push('премия за выручку');if(m.service_fee)p.push('сервисный сбор');
+  if(m.kitchen_pct)p.push(num(m.kitchen_pct)+'% кухни сверх '+rub(m.kitchen_threshold));
+  if(m.revenue_pct)p.push(num(m.revenue_pct)+'% '+({total:'выручки',bar:'бара',kitchen:'кухни'}[m.revenue_base]||'выручки'));
+  if(m.fixed_bonus)p.push('+'+rub(m.fixed_bonus)+'/мес');return p.join(' · ')}
+async function empCard(e,after){
+  const vers=await q(sb.from('crm_employee_motivation').select('*').eq('employee_id',e.id).order('valid_from',{ascending:false}));
+  const td=today(),cur=vers.find(v=>v.valid_from<=td)||vers[vers.length-1];const m=cur||{pay_type:e.dept==='dish'?'per_shift':e.dept==='admin'?'monthly':'hourly'};
+  const m1=today().slice(0,8)+'01';
+  modal(e.name,`
+   <div class="muted" style="font-size:12px;margin-bottom:12px">${esc(e.position||'')} · ${DEPT[e.dept]||''} · ${esc(venueName(e.home_venue))}${e.iiko_employee_id?' · <span class="pill b">связан с iiko</span>':''} · <a style="color:var(--accent);cursor:pointer" id="ecEdit">изменить данные</a></div>
+   <h3>Мотивация</h3>
+   ${cur?`<div class="card" style="padding:10px 12px;margin-bottom:12px;background:#f7f8fa"><b>Сейчас:</b> ${motShort(cur)} <span class="muted">· с ${fd(cur.valid_from)}</span></div>`:'<div class="muted" style="margin-bottom:12px">Мотивация ещё не задана</div>'}
+   <div class="row2"><label class="f">Как платим<select id="mT">${Object.entries(PAYT).map(([k,v])=>`<option value="${k}" ${m.pay_type===k?'selected':''}>${v}</option>`).join('')}</select></label>
+   <label class="f" id="mRl">Ставка, ₽<input type="number" id="mR" min="0" step="1" value="${m.rate??''}"></label></div>
+   <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input type="checkbox" id="mRB" ${m.revenue_bonus?'checked':''}> Доля премии за дневную выручку <span class="muted" style="font-size:12px">(пороги — в разделе «Мотивация»)</span></label>
+   <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><input type="checkbox" id="mSF" ${m.service_fee?'checked':''}> Доля сервисного сбора</label>
+   <div class="row2"><label class="f">% с оборота кухни сверх порога<input type="number" id="mKP" step="0.1" value="${m.kitchen_pct??''}" placeholder="—"></label><label class="f">Порог оборота кухни, ₽<input type="number" id="mKT" step="1000" value="${m.kitchen_threshold??''}" placeholder="—"></label></div>
+   <div class="row2"><label class="f">% с выручки за месяц<input type="number" id="mVP" step="0.1" value="${m.revenue_pct??''}" placeholder="—"></label><label class="f">С какой выручки<select id="mVB"><option value="total">Общая</option><option value="bar">Бар</option><option value="kitchen">Кухня</option></select></label></div>
+   <div class="row2"><label class="f">Фиксированная доплата в месяц, ₽<input type="number" id="mFB" step="100" value="${m.fixed_bonus??''}" placeholder="—"></label><label class="f">Действует с<input type="date" id="mFrom" value="${cur&&cur.valid_from>=m1?cur.valid_from:m1}"></label></div>
+   <label class="f">Комментарий<input id="mN" value="" placeholder="Например: повышение ставки после аттестации"></label>
+   <div class="err" id="mErr"></div>
+   ${vers.length>1?`<h3 style="margin-top:12px">История</h3><div class="tw"><table><tbody>${vers.map(v=>`<tr><td class="muted" style="white-space:nowrap">с ${fd(v.valid_from)}</td><td>${motShort(v)}${v.note?` <span class="muted">· ${esc(v.note)}</span>`:''}</td></tr>`).join('')}</tbody></table></div>`:''}`,
+   [btn('Закрыть','',()=>{closeModal();after&&after()}),btn('Сохранить мотивацию','pri',async()=>{
+     const r=+$('#mR').value;if(!(r>=0)||$('#mR').value===''){$('#mErr').textContent='Укажите ставку';return}
+     const nz=id=>$(id).value===''?null:+$(id).value;
+     const row={employee_id:e.id,valid_from:$('#mFrom').value,pay_type:$('#mT').value,rate:r,revenue_bonus:$('#mRB').checked,service_fee:$('#mSF').checked,
+       kitchen_pct:nz('#mKP'),kitchen_threshold:nz('#mKT'),revenue_pct:nz('#mVP'),revenue_base:nz('#mVP')!=null?$('#mVB').value:null,fixed_bonus:nz('#mFB'),note:$('#mN').value.trim()||null};
+     await q(sb.from('crm_employee_motivation').upsert(row,{onConflict:'employee_id,valid_from'}));
+     toast('Мотивация сохранена');empCard(e,after)})],true);
+  if(m.revenue_base)$('#mVB').value=m.revenue_base;
+  const lbl=()=>$('#mRl').firstChild.textContent={hourly:'Ставка, ₽ в час',per_shift:'Ставка, ₽ за смену',monthly:'Оклад, ₽ в месяц'}[$('#mT').value];lbl();$('#mT').onchange=lbl;
+  $('#ecEdit').onclick=()=>empForm(e,after);
 }
 
 /* ---------- Зарплата ---------- */
