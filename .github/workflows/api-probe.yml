@@ -13,4 +13,4 @@ jobs:
       - run: cd iiko-plugin/Resto.Front.Api.Patriki && dotnet restore
       - run: |
           X=$(find ~/.nuget/packages/resto.front.api.v8 -name '*.xml' | head -1); echo $X
-          grep -o 'name="[^"]*"' "$X" | grep -E 'Assortment\.(IProduct|IProductGroup|IChildModifierBase|IChildModifier|IGroupModifier|ISimpleModifier|IModifierBase|IProductItemBase)\.|IOperationService\.[A-Za-z]*(Product|Menu)|Hierarch|IsIncluded|InMenu' | sort -u
+          grep -o 'name="[^"]*"' "$X" | sed 's/name="//;s/"$//' | grep -E 'Amount$|Assortment\.[A-Za-z]*\.(Name|Id|Price|Type|Parent|Deleted|IsActive|Items|ProductGroup|Product|Required|Hide[A-Za-z]*)$|^T:Resto.Front.Api.Data.Assortment' | sort -u
