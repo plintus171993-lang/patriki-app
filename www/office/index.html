@@ -337,9 +337,10 @@ async function loadOps(list){
     if(f.dir)b=b.eq('direction',f.dir);if(f.cat)b=b.eq('category',f.cat);if(f.s)b=b.ilike('comment','%'+f.s+'%');return b});
   const cbn=id=>(S.cashboxes.find(c=>c.id===id)||{}).name||'';
   const tin=rows.filter(r=>r.direction==='in').reduce((s,r)=>s+ +r.amount,0),tout=rows.filter(r=>r.direction==='out').reduce((s,r)=>s+ +r.amount,0);
-  $('#opsTbl').innerHTML=rows.length?`<div class="tw" style="max-height:62vh"><table><thead><tr><th>Дата</th><th>Касса</th><th>Категория</th><th>Комментарий</th><th class="n">Приход</th><th class="n">Расход</th></tr></thead><tbody>
-    ${rows.map(r=>`<tr><td style="white-space:nowrap">${fd(r.op_date)}</td><td style="white-space:nowrap">${esc(cbn(r.cashbox_id))}</td><td><span class="pill ${r.transfer_id?'b':r.direction==='in'?'g':''}">${esc(r.category||'—')}</span></td><td>${esc(r.comment||'')}${r.source&&r.source.startsWith('import')?' <span class="muted" style="font-size:11px">импорт</span>':''}</td><td class="n in">${r.direction==='in'?rub(r.amount):''}</td><td class="n out">${r.direction==='out'?rub(r.amount):''}</td></tr>`).join('')}
-    <tr class="tot"><td colspan="4">Итого: ${rows.length} операций · сальдо ${rub(tin-tout)}</td><td class="n in">${rub(tin)}</td><td class="n out">${rub(tout)}</td></tr></tbody></table></div>`:'<div class="empty">Операций за период нет</div>';
+  $('#opsTbl').innerHTML=rows.length?`<div class="tw" style="max-height:62vh"><table><thead><tr><th>Дата</th><th>Касса</th><th>Категория</th><th>Комментарий</th><th class="n">Приход</th><th class="n">Расход</th><th></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td style="white-space:nowrap">${fd(r.op_date)}</td><td style="white-space:nowrap">${esc(cbn(r.cashbox_id))}</td><td><span class="pill ${r.transfer_id?'b':r.direction==='in'?'g':''}">${esc(r.category||'—')}</span></td><td>${esc(r.comment||'')}${r.source&&r.source.startsWith('import')?' <span class="muted" style="font-size:11px">импорт</span>':''}</td><td class="n in">${r.direction==='in'?rub(r.amount):''}</td><td class="n out">${r.direction==='out'?rub(r.amount):''}</td><td>${S.me.owner&&r.source==='manual'&&!r.transfer_id?`<a data-del="${r.id}" title="Удалить операцию" style="cursor:pointer;color:var(--muted)">✕</a>`:''}</td></tr>`).join('')}
+    <tr class="tot"><td colspan="4">Итого: ${rows.length} операций · сальдо ${rub(tin-tout)}</td><td class="n in">${rub(tin)}</td><td class="n out">${rub(tout)}</td><td></td></tr></tbody></table></div>`:'<div class="empty">Операций за период нет</div>';
+  document.querySelectorAll('[data-del]').forEach(a=>a.onclick=()=>{const r=rows.find(x=>x.id===a.dataset.del);modal('Удалить операцию?',`<div>${fd(r.op_date)} · ${r.direction==='in'?'приход':'расход'} <b>${rub(r.amount)}</b><br><span class="muted">${esc(r.comment||r.category||'')}</span></div><div class="muted" style="font-size:12px;margin-top:10px">Операция исчезнет из кассы, запись об удалении останется в журнале действий.</div>`,[btn('Отмена','',closeModal),btn('Удалить','red',async()=>{await q(sb.from('crm_cash_ops').delete().eq('id',r.id));closeModal();toast('Операция удалена');vCash()})])});
 }
 function cbOptions(list,sel){return list.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${esc(c.name)} · ${esc(venueName(c.venue_id))}</option>`).join('')}
 
@@ -503,29 +504,105 @@ async function empCard(e,after){
 }
 
 /* ---------- Зарплата ---------- */
+const PAYK={advance:'Аванс',salary:'Зарплата',bonus:'Премия'};
+function dayGroup(d){const w=new Date(d+'T12:00:00').getDay();return w===4?'thu':(w===5||w===6)?'fri_sat':'sun_wed'}
+function ruleOn(rules,kind,day){return rules.filter(r=>r.kind===kind&&r.active&&r.valid_from<=day&&(!r.valid_to||r.valid_to>=day)).sort((a,b)=>b.valid_from.localeCompare(a.valid_from))[0]}
+async function calcPayroll(m,venue){
+  const from=m+'-01',to=monthEnd(m);
+  const [shifts,rev,rules,mots,pays]=await Promise.all([
+    all(()=>sb.from('crm_shifts').select('employee_id,venue_id,day,hours,amount').eq('venue_id',venue).gte('day',from).lte('day',to)),
+    q(sb.from('crm_daily_revenue').select('*').eq('venue_id',venue).gte('day',from).lte('day',to)),
+    q(sb.from('crm_motivation_rules').select('*').or(`venue_id.eq.${venue},venue_id.is.null`)),
+    q(sb.from('crm_employee_motivation').select('*').lte('valid_from',to).order('valid_from',{ascending:false})),
+    all(()=>sb.from('crm_cash_ops').select('id,cashbox_id,op_date,amount,comment,employee_id,pay_kind').eq('pay_month',from).not('employee_id','is',null))]);
+  const motOf={};mots.forEach(x=>{if(!motOf[x.employee_id])motOf[x.employee_id]=x});
+  const revDay={};rev.forEach(r=>revDay[r.day]=r);
+  const byEmp={};const E=id=>byEmp[id]=byEmp[id]||{shifts:0,hours:0,amount:0,base:0,revBonus:0,service:0,pct:0,fixed:0,days:[]};
+  shifts.forEach(s=>{const x=E(s.employee_id);x.shifts++;x.hours+=+s.hours||0;x.amount+=+s.amount||0;x.days.push(s.day)});
+  // ежедневные премии: делятся поровну между теми, у кого в мотивации стоит галочка и кто был на смене
+  const onShift={};shifts.forEach(s=>(onShift[s.day]=onShift[s.day]||[]).push(s.employee_id));
+  for(const [day,ids] of Object.entries(onShift)){
+    const r=revDay[day];if(!r)continue;
+    const rb=ids.filter(id=>motOf[id]?.revenue_bonus),sf=ids.filter(id=>motOf[id]?.service_fee);
+    const tr=ruleOn(rules,'revenue_tiers',day);
+    if(tr&&rb.length){const t=(tr.params.tiers||{})[dayGroup(day)]||[];let bonus=0;t.forEach(([th,b])=>{if(+r.total>=th)bonus=b});if(bonus)rb.forEach(id=>E(id).revBonus+=bonus/rb.length)}
+    const sr=ruleOn(rules,'service_fee',day);
+    if(+r.service_fee&&sf.length){const k=1-((sr?.params?.withhold_pct)||0)/100;sf.forEach(id=>E(id).service+=r.service_fee*k/sf.length)}
+  }
+  const sumRev=f=>rev.reduce((s,r)=>s+(+r[f]||0),0);
+  const monthRev={total:sumRev('total'),bar:sumRev('bar_turnover'),kitchen:sumRev('kitchen_turnover')};
+  const out=[];
+  for(const e of S.employees){
+    const mo=motOf[e.id],x=byEmp[e.id];const paid=pays.filter(p=>p.employee_id===e.id);
+    if(!x&&!paid.length&&mo?.pay_type!=='monthly')continue;
+    if(!e.active&&!x&&!paid.length)continue;
+    if(e.home_venue!==venue&&!x&&!paid.length)continue;
+    const y=x||E(e.id);
+    if(mo){
+      if(mo.pay_type==='hourly')y.base=y.hours*mo.rate;
+      else if(mo.pay_type==='per_shift')y.base=y.amount||y.shifts*mo.rate;
+      else y.base=+mo.rate;
+      if(mo.kitchen_pct)y.pct+=Math.max(0,monthRev.kitchen-(+mo.kitchen_threshold||0))*mo.kitchen_pct/100;
+      if(mo.revenue_pct)y.pct+=(monthRev[mo.revenue_base||'total']||0)*mo.revenue_pct/100;
+      y.fixed=+mo.fixed_bonus||0;
+    }
+    const accrued=y.base+y.revBonus+y.service+y.pct+y.fixed,paidSum=paid.reduce((s,p)=>s+ +p.amount,0);
+    out.push({e,mo,...y,accrued,paid,paidSum,debt:accrued-paidSum});
+  }
+  const ord=['bar','hall','kitchen','dish','admin'];
+  out.sort((a,b)=>ord.indexOf(a.e.dept)-ord.indexOf(b.e.dept)||a.e.name.localeCompare(b.e.name));
+  return {rows:out,monthRev,noRev:!rev.length};
+}
 async function vPay(){
-  const m=S.month,from=m+'-01',to=monthEnd(m);
-  const [pay,shifts,rules]=await Promise.all([
-    q(vFilter(sb.from('crm_payroll').select('*')).eq('month',from)),
-    all(()=>vFilter(sb.from('crm_shifts').select('employee_id,venue_id,hours,amount')).gte('day',from).lte('day',to)),
-    S.me.owner?q(sb.from('crm_motivation_rules').select('*').eq('active',true).lte('valid_from',to)):Promise.resolve([])]);
-  const hourly=(rules.filter(r=>r.kind==='hourly'&&(!r.valid_to||r.valid_to>=from)).pop()||{params:{}}).params.by_position||{};
-  const en=id=>S.employees.find(e=>e.id===id)||{};
-  const agg={};shifts.forEach(s=>{const a=agg[s.employee_id]=agg[s.employee_id]||{h:0,a:0,c:0};a.h+=+s.hours||0;a.a+=+s.amount||0;a.c++});
-  const sum=f=>pay.reduce((s,p)=>s+(+p[f]||0),0);
-  const deptOrder=['bar','hall','kitchen','dish','admin'];
-  pay.sort((a,b)=>deptOrder.indexOf(en(a.employee_id).dept)-deptOrder.indexOf(en(b.employee_id).dept)||(en(a.employee_id).name||'').localeCompare(en(b.employee_id).name||''));
-  const draft=Object.entries(agg).filter(([id])=>!pay.find(p=>p.employee_id===id)).map(([id,a])=>{const e=en(id),r=hourly[e.position];return {e,a,base:e.dept==='dish'?a.a:(r?a.h*r:null),r}});
-  $('#view').innerHTML=`<div class="bar">${monthPicker('pm')}<span class="muted">${monthName(m)}</span></div>
-  ${pay.length?`<div class="tw"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th class="n">Часы</th><th class="n">Ставка</th><th class="n">ЗП</th><th class="n">План</th><th class="n">Мотивация</th><th class="n">Сервис</th><th class="n">Штрафы</th><th class="n">Начислено</th><th class="n">Аванс</th><th class="n">Выдано</th><th class="n">Остаток</th></tr></thead><tbody>
-  ${pay.map(p=>{const e=en(p.employee_id);return `<tr><td><b>${esc(e.name)}</b></td><td class="muted">${esc(e.position||'')}</td><td class="n">${num(p.hours)}</td><td class="n">${num(p.rate)}</td><td class="n">${rub(p.base)}</td><td class="n">${p.plan_bonus?rub(p.plan_bonus):''}</td><td class="n">${p.motivation?rub(p.motivation):''}</td><td class="n">${p.service?rub(p.service):''}</td><td class="n out">${p.fines?rub(p.fines):''}</td><td class="n"><b>${rub(p.total)}</b></td><td class="n">${rub((+p.advance||0)+(+p.adv_official||0))}</td><td class="n">${rub(p.paid)}</td><td class="n ${p.balance<0?'out':''}">${rub(p.balance)}</td></tr>`}).join('')}
-  <tr class="tot"><td colspan="4">Итого · ${pay.length} чел.</td><td class="n">${rub(sum('base'))}</td><td class="n">${rub(sum('plan_bonus'))}</td><td class="n">${rub(sum('motivation'))}</td><td class="n">${rub(sum('service'))}</td><td class="n">${rub(sum('fines'))}</td><td class="n">${rub(sum('total'))}</td><td class="n">${rub(sum('advance')+sum('adv_official'))}</td><td class="n">${rub(sum('paid'))}</td><td class="n">${rub(sum('balance'))}</td></tr></tbody></table></div>`:''}
-  ${draft.length?`<div class="card" style="margin-top:14px"><h3>По табелю за ${monthName(m)} — предварительно</h3><div class="muted" style="font-size:12px;margin-bottom:10px">Ведомость за этот месяц ещё не закрыта. Ниже — база по отмеченным сменам и ставкам; премии и сервисный сбор добавятся при расчёте.</div>
-  <div class="tw"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th class="n">Смен</th><th class="n">Часы</th><th class="n">Ставка</th><th class="n">База</th></tr></thead><tbody>
-  ${draft.map(d=>`<tr><td><b>${esc(d.e.name)}</b></td><td class="muted">${esc(d.e.position||'')}</td><td class="n">${d.a.c}</td><td class="n">${d.e.dept==='dish'?'—':num(d.a.h)}</td><td class="n">${d.e.dept==='dish'?'за смену':d.r?num(d.r):'<span class="muted">не задана</span>'}</td><td class="n">${d.base!=null?rub(d.base):'—'}</td></tr>`).join('')}
-  </tbody></table></div></div>`:''}
-  ${!pay.length&&!draft.length?'<div class="empty">За этот месяц нет ни ведомости, ни смен</div>':''}`;
+  const m=S.month,venue=S.venue==='all'?(S.venues[0]||{}).id:S.venue;
+  const {rows,monthRev,noRev}=await calcPayroll(m,venue);
+  const T=f=>rows.reduce((s,r)=>s+(+r[f]||0),0);
+  $('#view').innerHTML=`<div class="bar">${monthPicker('pm')}<span class="muted">${monthName(m)} · ${esc(venueName(venue))}${S.venue==='all'?' (заведение выбирается вверху)':''}</span><span class="sp"></span>
+    <span class="muted">Начислено <b>${rub(T('accrued'))}</b> · выплачено <b>${rub(T('paidSum'))}</b> · долг <b style="color:var(--out)">${rub(T('debt'))}</b></span></div>
+  ${noRev?'<div class="card" style="margin-bottom:12px;background:var(--warnSoft);border-color:#f1d9a8">За этот месяц нет выручки в CRM — премии за выручку не посчитаются. Загрузите её: «Сводка» → «Выручка из iiko».</div>':''}
+  ${rows.length?`<div class="tw"><table><thead><tr><th>Сотрудник</th><th>Мотивация</th><th class="n">Смен</th><th class="n">Часы</th><th class="n">База</th><th class="n">Премия за выручку</th><th class="n">Сервис</th><th class="n">% / доплата</th><th class="n">Начислено</th><th class="n">Выплачено</th><th class="n">Долг</th><th></th></tr></thead><tbody>
+  ${rows.map((r,i)=>`<tr><td><a data-card="${r.e.id}" style="cursor:pointer;color:var(--accent)"><b>${esc(r.e.name)}</b></a><div class="muted" style="font-size:11px">${esc(r.e.position||'')}</div></td>
+    <td class="muted" style="font-size:12px;min-width:200px;max-width:260px">${r.mo?motShort(r.mo):'<span style="color:var(--out)">не задана</span>'}</td>
+    <td class="n">${r.shifts||''}</td><td class="n">${r.hours?num(r.hours):''}</td><td class="n">${rub(r.base)}</td>
+    <td class="n">${r.revBonus?rub(r.revBonus):''}</td><td class="n">${r.service?rub(r.service):''}</td><td class="n">${(r.pct+r.fixed)?rub(r.pct+r.fixed):''}</td>
+    <td class="n"><b>${rub(r.accrued)}</b></td>
+    <td class="n">${r.paidSum?`<a data-hist="${i}" style="cursor:pointer;color:var(--accent)">${rub(r.paidSum)}</a>`:'—'}</td>
+    <td class="n" style="color:${r.debt>0.5?'var(--out)':r.debt<-0.5?'var(--warn)':'var(--in)'}"><b>${rub(r.debt)}</b></td>
+    <td><button class="btn sm green" data-pay="${i}">Выплатить</button></td></tr>`).join('')}
+  <tr class="tot"><td colspan="4">Итого · ${rows.length} чел.</td><td class="n">${rub(T('base'))}</td><td class="n">${rub(T('revBonus'))}</td><td class="n">${rub(T('service'))}</td><td class="n">${rub(T('pct')+T('fixed'))}</td><td class="n">${rub(T('accrued'))}</td><td class="n">${rub(T('paidSum'))}</td><td class="n">${rub(T('debt'))}</td><td></td></tr></tbody></table></div>
+  <div class="muted" style="font-size:12px;margin-top:8px">Начисление пересчитывается из табеля, мотивации сотрудника и выручки дня. Отрицательный долг — выплачено больше начисленного (переплата/аванс вперёд).</div>`:'<div class="empty">За этот месяц нет ни смен, ни мотивации</div>'}`;
   bindMonth('pm');
+  document.querySelectorAll('[data-card]').forEach(a=>a.onclick=()=>empCard(S.employees.find(e=>e.id===a.dataset.card),vPay));
+  document.querySelectorAll('[data-pay]').forEach(b=>b.onclick=()=>payForm(rows[+b.dataset.pay],m,venue));
+  document.querySelectorAll('[data-hist]').forEach(a=>a.onclick=()=>payHist(rows[+a.dataset.hist]));
+}
+function payForm(r,m,venue){
+  const list=S.cashboxes.filter(c=>c.venue_id===venue||!c.venue_id);
+  const def=(list.find(c=>c.kind==='cash')||list[0]||{}).id;
+  modal('Выплата · '+r.e.name,`
+    <div class="card" style="padding:10px 12px;margin-bottom:12px;background:#f7f8fa">За ${monthName(m)}: начислено <b>${rub(r.accrued)}</b>, выплачено <b>${rub(r.paidSum)}</b>, долг <b>${rub(r.debt)}</b></div>
+    <div class="row2"><label class="f">Сумма, ₽<input type="number" id="pA" min="0" step="1" value="${Math.max(0,Math.round(r.debt))||''}"></label>
+    <label class="f">Что выплачиваем<select id="pK"><option value="salary">Зарплата</option><option value="advance">Аванс</option><option value="bonus">Премия</option></select></label></div>
+    <label class="f">Из какой кассы<select id="pC">${cbOptions(list,def)}</select></label>
+    <div class="row2"><label class="f">Дата выплаты<input type="date" id="pD" value="${today()}"></label><label class="f">За месяц<input type="month" id="pM" value="${m}"></label></div>
+    <label class="f">Комментарий<input id="pN" placeholder="Например: аванс наличными"></label>
+    <div class="muted" style="font-size:12px" id="pBal"></div><div class="err" id="pErr"></div>`,
+    [btn('Отмена','',closeModal),btn('Выплатить','green',async()=>{
+      const a=+$('#pA').value;if(!(a>0)){$('#pErr').textContent='Укажите сумму';return}
+      if(!$('#pC').value){$('#pErr').textContent='Выберите кассу';return}
+      const kind=$('#pK').value;
+      await q(sb.from('crm_cash_ops').insert({cashbox_id:$('#pC').value,op_date:$('#pD').value,direction:'out',amount:a,category:'Зарплата и авансы',
+        comment:`${PAYK[kind]}: ${r.e.name} за ${monthName($('#pM').value)}${$('#pN').value.trim()?' · '+$('#pN').value.trim():''}`,
+        employee_id:r.e.id,pay_month:$('#pM').value+'-01',pay_kind:kind,source:'manual'}));
+      closeModal();toast('Выплата записана');await loadRefs();vPay()})]);
+  const showBal=()=>{const c=S.cashboxes.find(c=>c.id===$('#pC').value);$('#pBal').textContent=c?'В кассе сейчас: '+rub(c.balance):''};$('#pC').onchange=showBal;showBal();
+}
+function payHist(r){
+  const cbn=id=>(S.cashboxes.find(c=>c.id===id)||{}).name||'';
+  modal('Выплаты · '+r.e.name,`<div class="tw"><table><thead><tr><th>Дата</th><th>Что</th><th>Касса</th><th class="n">Сумма</th></tr></thead><tbody>
+    ${r.paid.sort((a,b)=>a.op_date.localeCompare(b.op_date)).map(p=>`<tr><td>${fd(p.op_date)}</td><td>${PAYK[p.pay_kind]||'Выплата'}</td><td>${esc(cbn(p.cashbox_id))}</td><td class="n">${rub(p.amount)}</td></tr>`).join('')}
+    <tr class="tot"><td colspan="3">Итого</td><td class="n">${rub(r.paidSum)}</td></tr></tbody></table></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">Ошибочную выплату удалите в «Кассы и деньги» — она отмечена именем сотрудника.</div>`,[btn('Закрыть','',closeModal)]);
 }
 
 /* ---------- Система лояльности ---------- */
