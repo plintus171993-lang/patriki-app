@@ -141,7 +141,8 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 <script>
 const SB_URL='https://ozbdmczmpejyctezxrdk.supabase.co';
 const SB_KEY='sb_publishable_PhI0d9qM0Hp7KrERGKHQfg_668fWJMv';
-const sb=supabase.createClient(SB_URL,SB_KEY);
+// своё хранилище сессии: гостевое приложение на том же домене (patrikipab.ru) не должно перетирать вход в Офис
+const sb=supabase.createClient(SB_URL,SB_KEY,{auth:{storageKey:'patriki-office-auth',persistSession:true,autoRefreshToken:true}});
 
 const S={me:null,venues:[],venue:'all',cashboxes:[],employees:[],page:'dash',month:new Date().toISOString().slice(0,7),cbSel:null,cache:{}};
 const $=s=>document.querySelector(s);
