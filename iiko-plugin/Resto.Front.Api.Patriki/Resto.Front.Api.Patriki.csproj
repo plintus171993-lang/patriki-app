@@ -7,8 +7,8 @@
     <AssemblyTitle>Карта Патрики — баллы по QR и заявки из приложения</AssemblyTitle>
     <Company>ООО «ПАТРИККИ ПАБ»</Company>
     <Product>Resto.Front.Api.Patriki</Product>
-    <AssemblyVersion>1.5.0.0</AssemblyVersion>
-    <FileVersion>1.5.0.0</FileVersion>
+    <AssemblyVersion>1.7.0.0</AssemblyVersion>
+    <FileVersion>1.7.0.0</FileVersion>
     <OutputPath>bin\$(Configuration)\</OutputPath>
   </PropertyGroup>
   <ItemGroup>
