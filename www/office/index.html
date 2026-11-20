@@ -155,8 +155,8 @@ const monthEnd=m=>m+'-'+String(daysIn(m)).padStart(2,'0');
 const today=()=>new Date(Date.now()+3*3600e3).toISOString().slice(0,10);
 const DEPT={bar:'Бар',hall:'Зал',kitchen:'Кухня',dish:'Мойка',admin:'Администрация'};
 const KIND={accountable:'Подотчёт',cash:'Наличные',bank:'Безнал / р/с',safe:'Сейф',other:'Другое'};
-const CATS_OUT=['Зарплата и авансы','Продукты и напитки','Хозтовары и магазин','Ремонт и обслуживание','Маркетинг и печать','Игровые автоматы','Вывоз, уборка, охрана','Налоги, юристы, штрафы','Связь и IT','Транспорт и доставка','Финансы','Прочее'];
-const CATS_IN=['Выручка','Взносы учредителей и займы','Возврат с зарплаты','Итоги инвентаризации','Прочие приходы'];
+const CATS_OUT=['Зарплата и авансы','Поставщики','Аренда','Коммунальные услуги','Комиссия банка','Продукты и напитки','Хозтовары и магазин','Ремонт и обслуживание','Маркетинг и печать','Игровые автоматы','Вывоз, уборка, охрана','Налоги, юристы, штрафы','Связь и IT','Транспорт и доставка','Финансы','Прочее'];
+const CATS_IN=['Выручка','Эквайринг','Яндекс Доставка','Поступление на счёт','Взносы учредителей и займы','Возврат с зарплаты','Итоги инвентаризации','Прочие приходы'];
 
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.add('hidden'),2600)}
 function modal(title,body,foot,wide){document.querySelector('.mb').classList.toggle('wide',!!wide);$('#mTitle').textContent=title;$('#mBody').innerHTML=body;$('#mFoot').innerHTML='';(foot||[]).forEach(b=>$('#mFoot').appendChild(b));$('#modal').classList.remove('hidden')}
@@ -165,7 +165,7 @@ $('#mX').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')clo
 function btn(t,cls,fn){const b=document.createElement('button');b.className='btn '+(cls||'');b.textContent=t;b.onclick=fn;return b}
 async function q(p){const {data,error}=await p;if(error){toast('Ошибка: '+error.message);throw error}return data}
 async function all(build){let out=[],from=0;for(;;){const d=await q(build().range(from,from+999));out=out.concat(d);if(d.length<1000)break;from+=1000}return out}
-const venueName=id=>(S.venues.find(v=>v.id===id)||{}).name||id||'—';
+const venueName=id=>id?((S.venues.find(v=>v.id===id)||{}).name||id):'Вся компания';
 const vFilter=(qb,col='venue_id')=>S.venue==='all'?qb:qb.eq(col,S.venue);
 
 /* ---------- auth ---------- */
@@ -230,7 +230,7 @@ function bindMonth(id){$('#'+id).onchange=e=>{S.month=e.target.value;render()}}
 async function vDash(){
   const m=S.month,from=m+'-01',to=monthEnd(m);
   const rev=await q(vFilter(sb.from('crm_daily_revenue').select('*')).gte('day',from).lte('day',to).order('day'));
-  const cbIds=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue).map(c=>c.id);
+  const cbIds=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue||!c.venue_id).map(c=>c.id);
   const ops=cbIds.length?await all(()=>sb.from('crm_cash_ops').select('amount,direction,category,transfer_id').in('cashbox_id',cbIds).gte('op_date',from).lte('op_date',to)):[];
   const pay=await q(vFilter(sb.from('crm_payroll').select('total')).eq('month',from));
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
@@ -260,7 +260,7 @@ async function vDash(){
   document.querySelectorAll('.cb').forEach(c=>c.onclick=()=>{S.cbSel=c.dataset.id;S.page='cash';location.hash='cash';render()});
 }
 const kpi=(l,v,s)=>`<div class="card kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s||''}</div></div>`;
-function cbCards(){const list=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue);
+function cbCards(){const list=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue||!c.venue_id);
   return list.length?list.map(c=>`<div class="card kpi cb ${S.cbSel===c.id?'sel':''}" data-id="${c.id}"><div class="l">${esc(KIND[c.kind]||c.kind)} · ${esc(venueName(c.venue_id))}</div><div class="v ${c.balance<0?'neg':''}">${rub(c.balance)}</div><div class="s">${esc(c.name)}${c.iiko_pay_type?' · <span class="pill b">iiko</span>':''}${c.last_op?' · посл. операция '+fd(c.last_op):''}</div></div>`).join(''):'<div class="empty">Касс нет</div>'}
 function revChart(rev,m){
   const n=daysIn(m),by={};rev.forEach(r=>{const d=+r.day.slice(8);by[d]=by[d]||{a:0,b:0};by[d].a+=+r.cashless||0;by[d].b+=+r.cash||0});
@@ -297,7 +297,7 @@ function iikoForm(){
 let cashTab='ops';
 async function vCash(){
   await loadRefs();
-  const list=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue);
+  const list=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue||!c.venue_id);
   if(S.cbSel&&!list.find(c=>c.id===S.cbSel))S.cbSel=null;
   const canAdd=S.me.owner||S.me.perms.includes('cash.add'),canTr=S.me.owner||S.me.perms.includes('cash.transfer');
   $('#view').innerHTML=`
@@ -320,14 +320,14 @@ async function cashOps(list,canAdd,canTr){
     <span class="sp"></span>
     ${canAdd?'<button class="btn green" id="bIn">+ Приход</button><button class="btn red" id="bOut">− Расход</button>':''}
     ${canTr?'<button class="btn pri" id="bTr">⇄ Перемещение</button>':''}
-    ${S.me.owner?'<button class="btn" id="bCb">+ Касса</button>':''}
+    ${S.me.owner?'<button class="btn" id="bCb">+ Касса</button><button class="btn" id="bBank">⇪ Выписка банка</button>':''}
   </div><div id="opsTbl"><div class="empty">Загрузка…</div></div>`;
   $('#fDir').value=f.dir;$('#fCat').value=f.cat;
   const upd=()=>{Object.assign(f,{from:$('#fFrom').value,to:$('#fTo').value,dir:$('#fDir').value,cat:$('#fCat').value,s:$('#fS').value.trim()});loadOps(list)};
   ['fFrom','fTo','fDir','fCat'].forEach(i=>$('#'+i).onchange=upd);$('#fS').oninput=()=>{clearTimeout(S._t);S._t=setTimeout(upd,350)};
   if(canAdd){$('#bIn').onclick=()=>opForm('in',list);$('#bOut').onclick=()=>opForm('out',list)}
   if(canTr)$('#bTr').onclick=()=>trForm(list);
-  if(S.me.owner)$('#bCb').onclick=()=>cbForm();
+  if(S.me.owner){$('#bCb').onclick=()=>cbForm();$('#bBank').onclick=bankPick}
   loadOps(list);
 }
 async function loadOps(list){
@@ -394,6 +394,74 @@ async function cashTransfers(list){
     <td>${r.status==='sent'?`<button class="btn sm green" data-rc="${r.id}">Получено</button>${S.me.owner?` <button class="btn sm" data-cn="${r.id}">Отменить</button>`:''}`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Перемещений нет</div>';
   document.querySelectorAll('[data-rc]').forEach(b=>b.onclick=async()=>{await q(sb.from('crm_transfers').update({status:'received',received_by:S.me.uid,received_at:new Date().toISOString()}).eq('id',b.dataset.rc));toast('Получение подтверждено');vCash()});
   document.querySelectorAll('[data-cn]').forEach(b=>b.onclick=async()=>{await q(sb.from('crm_transfers').update({status:'cancelled'}).eq('id',b.dataset.cn));toast('Перемещение отменено');vCash()});
+}
+
+/* ---------- Банковская выписка (формат 1С) ---------- */
+function bankPick(){
+  const inp=document.createElement('input');inp.type='file';inp.accept='.txt,.1c,text/plain';
+  inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
+    const buf=await f.arrayBuffer();let txt=new TextDecoder('utf-8').decode(buf);
+    if(!/1CClientBankExchange/.test(txt)||/Кодировка=Windows/i.test(txt)||txt.includes('�'))txt=new TextDecoder('windows-1251').decode(buf);
+    try{bankPreview(parse1C(txt),f.name)}catch(e){toast(e.message)}};
+  inp.click();
+}
+function parse1C(txt){
+  if(!/1CClientBankExchange/.test(txt))throw new Error('Это не выписка в формате 1С (нет заголовка 1CClientBankExchange)');
+  const lines=txt.split(/\r?\n/);const head={},docs=[];let cur=null,accs=[];
+  for(const l of lines){const i=l.indexOf('=');const k=i>0?l.slice(0,i).trim():l.trim(),v=i>0?l.slice(i+1).trim():'';
+    if(k.startsWith('СекцияДокумент')){cur={_type:v};continue}
+    if(k==='КонецДокумента'){if(cur)docs.push(cur);cur=null;continue}
+    if(cur){cur[k]=v}else{if(k==='РасчСчет'&&v)accs.push(v);head[k]=v}}
+  const cnt={};docs.forEach(d=>[d.ПлательщикСчет,d.ПолучательСчет].forEach(a=>{if(accs.includes(a))cnt[a]=(cnt[a]||0)+1}));
+  const acc=accs.length===1?accs[0]:Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0]?.[0];
+  if(!acc)throw new Error('Не нашёл номер расчётного счёта в выписке');
+  const dt=s=>s&&/^\d\d\.\d\d\.\d{4}$/.test(s)?s.slice(6)+'-'+s.slice(3,5)+'-'+s.slice(0,2):null;
+  const clean=s=>(s||'').replace(/^ИНН\s*\d+\s*/,'').trim();
+  const ops=docs.filter(d=>d.ПлательщикСчет===acc||d.ПолучательСчет===acc).map(d=>{
+    const out=d.ПлательщикСчет===acc;
+    const cp=out?clean(d.Получатель1||d.Получатель):clean(d.Плательщик1||d.Плательщик),inn=out?d.ПолучательИНН:d.ПлательщикИНН;
+    return {ext:[d.Номер,d.Дата,d.Сумма,d.ПлательщикСчет,d.ПолучательСчет].join('|'),date:dt(out?d.ДатаСписано:d.ДатаПоступило)||dt(d.Дата),
+      dir:out?'out':'in',amount:+String(d.Сумма||'0').replace(',','.'),cp,inn:inn||null,purpose:d.НазначениеПлатежа||'',num:d.Номер}}).filter(o=>o.amount>0&&o.date);
+  return {acc,bank:head.Отправитель||'',from:dt(head.ДатаНачала),to:dt(head.ДатаКонца),ops};
+}
+function autoCat(o,rules){
+  const r=rules.find(r=>r.direction===o.dir&&((o.inn&&r.inn===o.inn)||(!r.inn&&r.name&&r.name===o.cp)));if(r)return r.category;
+  const t=(o.cp+' '+o.purpose).toLowerCase();
+  if(o.dir==='in'){if(/эквайр|возмещ|торгов.*эквайр|pos/.test(t))return 'Эквайринг';if(/яндекс/.test(t))return 'Яндекс Доставка';if(/займ|учредит|взнос|пополнение/.test(t))return 'Взносы учредителей и займы';return 'Поступление на счёт'}
+  if(/налог|фнс|уфк|страхов|взнос|енп|пени/.test(t))return 'Налоги, юристы, штрафы';
+  if(/аренд/.test(t))return 'Аренда';
+  if(/коммун|электроэнерг|водоснаб|теплоснаб|газоснаб|жку/.test(t))return 'Коммунальные услуги';
+  if(/комисси|обслуживан.{0,20}сч|тариф|плата за/.test(t))return 'Комиссия банка';
+  if(/заработн|зарплат|аванс|реестр/.test(t))return 'Зарплата и авансы';
+  if(/пиво|напит|продукт|товар|поставк|упд|накладн|счет-фактур|счёт-фактур|за товар/.test(t))return 'Поставщики';
+  if(/реклам|маркет|продвижен/.test(t))return 'Маркетинг и печать';
+  if(/ремонт|обслуживан|монтаж/.test(t))return 'Ремонт и обслуживание';
+  return 'Прочее';
+}
+async function bankPreview(st,fname){
+  const rules=await q(sb.from('crm_bank_rules').select('*'));
+  const cb=S.cashboxes.find(c=>c.account_no===st.acc);
+  const have=new Set(cb?(await all(()=>sb.from('crm_cash_ops').select('ext_id').eq('cashbox_id',cb.id).not('ext_id','is',null))).map(x=>x.ext_id):[]);
+  st.ops.forEach(o=>{o.dup=have.has(o.ext);o.cat=autoCat(o,rules);o.cat0=o.cat});
+  const fresh=st.ops.filter(o=>!o.dup);const tin=fresh.filter(o=>o.dir==='in').reduce((s,o)=>s+o.amount,0),tout=fresh.filter(o=>o.dir==='out').reduce((s,o)=>s+o.amount,0);
+  const opt=dir=>(dir==='in'?CATS_IN:CATS_OUT).map(c=>`<option>${c}</option>`).join('');
+  modal('Выписка банка',`<div class="muted" style="font-size:12px;margin-bottom:8px">${esc(fname)} · ${esc(st.bank)} · счёт ••${esc(st.acc.slice(-4))} · ${fd(st.from)}–${fd(st.to)}</div>
+    <div class="card" style="padding:10px 12px;margin-bottom:10px;background:#f7f8fa">Новых операций: <b>${fresh.length}</b> · поступления <b class="in">${rub(tin)}</b> · списания <b class="out">${rub(tout)}</b>${st.ops.length-fresh.length?` · уже загружено раньше: ${st.ops.length-fresh.length} (пропущу)`:''}${cb?'':`<br><span class="muted">Будет создана касса «Расчётный счёт ••${esc(st.acc.slice(-4))}».</span>`}</div>
+    <div class="muted" style="font-size:12px;margin-bottom:6px">Категории подобраны автоматически — поправьте, где нужно. Исправленная категория запомнится для этого контрагента.</div>
+    <div class="tw" style="max-height:46vh"><table><thead><tr><th>Дата</th><th>Контрагент / назначение</th><th class="n">Сумма</th><th>Категория</th></tr></thead><tbody>
+    ${st.ops.map((o,i)=>`<tr style="${o.dup?'opacity:.45':''}"><td style="white-space:nowrap">${fd(o.date)}</td><td><b>${esc(o.cp)}</b><div class="muted" style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(o.purpose)}">${esc(o.purpose)}</div></td>
+      <td class="n ${o.dir==='in'?'in':'out'}">${o.dir==='in'?'+':'−'}${rub(o.amount)}</td><td>${o.dup?'<span class="muted">уже есть</span>':`<select data-bi="${i}" style="max-width:190px">${opt(o.dir)}</select>`}</td></tr>`).join('')}
+    </tbody></table></div><div class="err" id="bErr"></div>`,
+    [btn('Отмена','',closeModal),btn(`Загрузить ${fresh.length}`,'pri',async()=>{
+      if(!fresh.length){closeModal();return}
+      let id=cb?.id;
+      if(!id)id=(await q(sb.from('crm_cashboxes').insert({name:'Расчётный счёт ••'+st.acc.slice(-4),kind:'bank',account_no:st.acc,venue_id:null,sort:0}).select()))[0].id;
+      const rows=fresh.map(o=>({cashbox_id:id,op_date:o.date,direction:o.dir,amount:o.amount,category:o.cat,comment:(o.purpose||'').slice(0,500),counterparty:o.cp,counterparty_inn:o.inn,ext_id:o.ext,source:'bank'}));
+      for(let i=0;i<rows.length;i+=500)await q(sb.from('crm_cash_ops').insert(rows.slice(i,i+500)));
+      const learn={};fresh.filter(o=>o.cat!==o.cat0).forEach(o=>{const k=(o.inn||o.cp)+'|'+o.dir;learn[k]={inn:o.inn,name:o.inn?null:o.cp,direction:o.dir,category:o.cat}});
+      for(const r of Object.values(learn)){if(r.inn)await q(sb.from('crm_bank_rules').upsert(r,{onConflict:'inn,direction'}));else await q(sb.from('crm_bank_rules').insert(r))}
+      closeModal();toast('Загружено операций: '+rows.length);vCash()})],true);
+  document.querySelectorAll('[data-bi]').forEach(s=>{const o=st.ops[+s.dataset.bi];s.value=o.cat;s.onchange=()=>o.cat=s.value});
 }
 
 /* ---------- Табель ---------- */
