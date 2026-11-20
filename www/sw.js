@@ -47,6 +47,8 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.includes('/update/') || url.pathname.includes('/download/')) return;
   // приложение официантов (/waiter/) — у него свой service worker
   if (url.pathname.includes('/waiter/')) return;
+  // CRM «Патрики Офис» (/office/) — всегда из сети, офлайн-копия гостевого приложения ей не подходит
+  if (url.pathname.includes('/office/')) return;
 
   // страница: сеть не дольше 3 секунд, иначе — сохранённая
   if (req.mode === 'navigate') {
