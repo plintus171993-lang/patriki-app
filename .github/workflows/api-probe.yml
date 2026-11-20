@@ -1,0 +1,16 @@
+name: api probe
+on:
+  push:
+    branches: [waiter-cash-menu]
+    paths: ['.github/workflows/api-probe.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: cd iiko-plugin/Resto.Front.Api.Patriki && dotnet restore
+      - run: |
+          X=$(find ~/.nuget/packages/resto.front.api.v8 -name '*.xml' | head -1); echo $X
+          grep -o 'name="[^"]*"' "$X" | grep -iE 'HierarchicalMenu|OpenPrice|\.Price|GetPrice|PriceCategor|IProduct\.|IProductGroup\.|IProductSize\.|ProductScale|ModifierRestriction|MinimumAmount|MaximumAmount|IGroupModifier\.|ISimpleModifier\.|ChildModifier|IsIncludedInMenu|GetProductGroup|GetActiveProducts' | sort -u
