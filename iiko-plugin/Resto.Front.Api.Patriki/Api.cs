@@ -278,6 +278,9 @@ namespace Resto.Front.Api.Patriki
         public int PollSeconds { get; set; } = 15;
         // Скидка iiko для оплаты баллами: тип скидки «на произвольную сумму» с таким названием (пусто — оплата баллами выключена)
         public string RedeemDiscount { get; set; } = "Баллы Патрики";
+        // Тип оплаты iiko для оплаты баллами (1.7): если такой тип оплаты есть — баллы проводятся ОПЛАТОЙ
+        // (видно отдельной строкой в отчёте 48 «Итого по смене»), иначе — по-старому скидкой RedeemDiscount
+        public string RedeemPayment { get; set; } = "Баллы Патрики";
 
         public bool IsReady => !string.IsNullOrWhiteSpace(PosKey) && !string.IsNullOrWhiteSpace(ApiUrl);
 
@@ -297,7 +300,7 @@ namespace Resto.Front.Api.Patriki
                 if (File.Exists(Path))
                 {
                     var c = json.Deserialize<Config>(File.ReadAllText(Path, Encoding.UTF8)) ?? new Config();
-                    PluginContext.Log.Info($"Карта Патрики: настройки из {Path}, заведение {c.Venue}, ключ {(c.IsReady ? "указан" : "НЕ указан")}, заявки из приложения: {(c.Inbox ? "ВКЛ (главная касса)" : "выкл")}, оплата баллами: {(string.IsNullOrWhiteSpace(c.RedeemDiscount) ? "выкл" : "скидка «" + c.RedeemDiscount + "»")}");
+                    PluginContext.Log.Info($"Карта Патрики: настройки из {Path}, заведение {c.Venue}, ключ {(c.IsReady ? "указан" : "НЕ указан")}, заявки из приложения: {(c.Inbox ? "ВКЛ (главная касса)" : "выкл")}, оплата баллами: тип оплаты «{c.RedeemPayment}», запасной вариант — скидка «{c.RedeemDiscount}»");
                     return c;
                 }
                 var def = new Config();

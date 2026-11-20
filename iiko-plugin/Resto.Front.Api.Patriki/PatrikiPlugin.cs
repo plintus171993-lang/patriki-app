@@ -15,7 +15,7 @@ namespace Resto.Front.Api.Patriki
     /// <summary>
     /// «Карта Патрики»: бармен сканирует QR гостя из приложения «Патрики», при закрытии заказа
     /// плагин отправляет чек на сервер лояльности, сервер начисляет баллы.
-    /// Оплата баллами: по QR гостя баллы списываются и в заказ добавляется скидка «Баллы Патрики».
+    /// Оплата баллами: по QR гостя баллы списываются и в заказ добавляется оплата «Баллы Патрики» (1.7; если такого типа оплаты нет — скидка, как раньше).
     /// Заказ доставки из приложения (стол «Доставка») при закрытии отмечается выполненным — гостю начисляются баллы.
     /// На главной кассе ("Inbox": true) ещё и показывает заявки из приложения — брони и доставку (Inbox.cs).
     /// Установка: папка Plugins\Resto.Front.Api.Patriki рядом с iikoFront.exe.
@@ -39,6 +39,10 @@ namespace Resto.Front.Api.Patriki
             Store.Init();
 
             subscriptions.Add(PluginContext.Operations.AddButtonToOrderEditScreen("Карта Патрики", x => OnCardButton(x.order, x.os, x.vm), CardIcon));
+
+            // 1.7: платёжная система «Баллы Патрики» — для типа оплаты баллами (отдельная строка в отчёте 48)
+            try { subscriptions.Add(PluginContext.Operations.RegisterPaymentSystem(new PointsPayment(), false, Resto.Front.Api.Data.Payments.FiscalPaymentTypeGroup.Default)); }
+            catch (Exception ex) { PluginContext.Log.Error("Карта Патрики: не удалось зарегистрировать платёжную систему «Баллы Патрики»", ex); }
 
             // Заказы, закрытые до запуска плагина, не трогаем
             foreach (var o in PluginContext.Operations.GetOrders().Where(o => o.Status == OrderStatus.Closed))
@@ -97,7 +101,7 @@ namespace Resto.Front.Api.Patriki
                 {
                     // гость уже оплатил часть баллами — менять гостя можно только отменив оплату баллами
                     if (!vm.ShowYesNoPopup(Sender,
-                        $"К заказу привязан гость: {bound.Name}. Оплачено баллами: {bound.Redeemed}.\n\nОтменить оплату баллами (скидка уберётся, баллы вернутся гостю) и отвязать гостя?"))
+                        $"К заказу привязан гость: {bound.Name}. Оплачено баллами: {bound.Redeemed}.\n\nОтменить оплату баллами (оплата баллами уберётся из заказа, баллы вернутся гостю) и отвязать гостя?"))
                         return;
                     vm.ChangeProgressBarMessage("Возвращаем баллы…");
                     var back = CancelRedeem(order, os, vm, bound);
@@ -191,22 +195,25 @@ namespace Resto.Front.Api.Patriki
         private bool OfferRedeem(IOrder order, IOperationService os, IViewManager vm, string code, GuestInfo g, BoundGuest guest, string info)
         {
             var cfg = Config.Current;
-            if (string.IsNullOrWhiteSpace(cfg.RedeemDiscount) || g.Legacy || g.Balance <= 0 || g.MaxRedeemPct <= 0) return false;
+            if ((string.IsNullOrWhiteSpace(cfg.RedeemPayment) && string.IsNullOrWhiteSpace(cfg.RedeemDiscount)) || g.Legacy || g.Balance <= 0 || g.MaxRedeemPct <= 0) return false;
             if (!code.StartsWith("PK1:", StringComparison.Ordinal))
             {
                 vm.ShowOkPopup(Sender, info + "\n\nГость привязан к заказу. Баллы начислятся после закрытия." +
                     "\n\nОплатить баллами можно только по QR-коду из приложения гостя (не по номеру карты или телефону).");
                 return true;
             }
-            var type = RedeemDiscountType();
-            if (type == null)
+            // 1.7: в первую очередь — тип оплаты (виден в отчёте 48), запасной вариант — скидка, как в 1.2–1.6
+            var payType = RedeemPaymentType();
+            var type = payType == null ? RedeemDiscountType() : null;
+            if (payType == null && type == null)
             {
-                PluginContext.Log.Warn($"Карта Патрики: в iiko нет активной скидки «{cfg.RedeemDiscount}» на произвольную сумму — оплата баллами недоступна");
+                PluginContext.Log.Warn($"Карта Патрики: в iiko нет ни типа оплаты «{cfg.RedeemPayment}», ни скидки «{cfg.RedeemDiscount}» — оплата баллами недоступна");
                 vm.ShowOkPopup(Sender, info + "\n\nГость привязан к заказу. Баллы начислятся после закрытия." +
-                    $"\n\nОплата баллами не настроена: в iiko нет скидки «{cfg.RedeemDiscount}» на произвольную сумму.");
+                    $"\n\nОплата баллами не настроена: в iiko нет типа оплаты «{cfg.RedeemPayment}».");
                 return true;
             }
-            var sum = order.ResultSum;
+            // уже внесённые баллами суммы не считаем частью чека
+            var sum = order.ResultSum - RedeemPaidSum(order);
             var max = Math.Min(g.Balance, (int)Math.Floor(sum * g.MaxRedeemPct / 100m));
             if (max <= 0) return false;
 
@@ -229,15 +236,38 @@ namespace Resto.Front.Api.Patriki
             try { r = Api.Redeem(code, order.Id, points, sum); }
             catch (ApiException ex) { vm.ShowErrorPopup("Баллы не списаны: " + ex.Message); return true; }
 
+            string what;
             try
             {
-                os.AddFlexibleSumDiscount(points, type, order, CredentialsFor(os, vm));
+                var creds = CredentialsFor(os, vm);
+                if (payType != null)
+                {
+                    // оплата баллами — отдельный тип оплаты: в отчёте 48 «Итого по смене» своя строка
+                    PointsPayment.AddingFor = order.Id.ToString();
+                    try
+                    {
+                        if (payType.Kind == Resto.Front.Api.Data.Payments.PaymentTypeKind.External)
+                            // своя платёжная система: при оплате iiko только сверит сумму (PointsPayment.Pay)
+                            os.AddExternalPaymentItem(points, false, null, null, payType, order, creds);
+                        else if (payType.CanBeExternalProcessed)
+                            os.AddExternalPaymentItem(points, true, null, null, payType, order, creds);
+                        else
+                            os.AddPaymentItem(points, null, payType, order, creds);
+                    }
+                    finally { PointsPayment.AddingFor = ""; }
+                    what = $"оплата «{payType.Name}»";
+                }
+                else
+                {
+                    os.AddFlexibleSumDiscount(points, type, order, creds);
+                    what = $"скидка «{type.Name}»";
+                }
             }
             catch (Exception ex)
             {
-                PluginContext.Log.Error("Карта Патрики: не удалось добавить скидку «Баллы Патрики»", ex);
+                PluginContext.Log.Error($"Карта Патрики: не удалось добавить {(payType != null ? "оплату" : "скидку")} баллами", ex);
                 try { Api.RedeemCancel(r.Id); } catch (Exception ex2) { PluginContext.Log.Error($"Карта Патрики: не удалось вернуть баллы ({r.Id})", ex2); }
-                vm.ShowErrorPopup("Не удалось добавить скидку в заказ, баллы возвращены гостю: " + ex.Message);
+                vm.ShowErrorPopup("Не удалось провести оплату баллами в заказе, баллы возвращены гостю: " + ex.Message);
                 return true;
             }
 
@@ -245,14 +275,25 @@ namespace Resto.Front.Api.Patriki
             guest.Redeemed += points;
             guest.Balance = r.Balance;
             Store.SetGuest(order.Id, guest);
-            vm.ShowOkPopup(Sender, $"Списано {points} баллов — скидка «{Config.Current.RedeemDiscount}» добавлена в заказ.\nОстаток у гостя: {r.Balance} баллов.");
+            vm.ShowOkPopup(Sender, $"Списано {points} баллов — {what} добавлена в заказ." +
+                (payType != null ? $"\nОстаток к оплате гость платит как обычно (наличные / карта)." : "") +
+                $"\nОстаток у гостя: {r.Balance} баллов.");
             return true;
         }
 
-        /// <summary>Отменить оплату баллами: убрать скидку из заказа и вернуть баллы. Возвращает, сколько вернули.</summary>
+        /// <summary>Отменить оплату баллами: убрать оплату / скидку из заказа и вернуть баллы. Возвращает, сколько вернули.</summary>
         private static int CancelRedeem(IOrder order, IOperationService os, IViewManager vm, BoundGuest guest)
         {
             var creds = CredentialsFor(os, vm);
+            foreach (var p in RedeemPaymentItems(order))
+            {
+                try
+                {
+                    if (p.IsExternal) os.DeleteExternalPaymentItem(p, order, creds);
+                    else os.DeletePaymentItem(p, order, creds);
+                }
+                catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось убрать оплату баллами — {ex.Message}"); }
+            }
             foreach (var d in RedeemDiscountItems(order))
             {
                 try { os.DeleteDiscount(d, order, creds); }
@@ -300,7 +341,41 @@ namespace Resto.Front.Api.Patriki
             return order.Discounts.Where(d => string.Equals((d.DiscountType?.Name ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
-        private static bool HasRedeemDiscount(IOrder order) => RedeemDiscountItems(order).Count > 0;
+        /// <summary>Тип оплаты «Баллы Патрики» (1.7), если он заведён в iiko и включён.</summary>
+        private static Resto.Front.Api.Data.Payments.IPaymentType RedeemPaymentType()
+        {
+            var name = (Config.Current.RedeemPayment ?? "").Trim();
+            if (name.Length == 0) return null;
+            try
+            {
+                // сначала — тип оплаты, привязанный к нашей платёжной системе, затем — просто по названию
+                return PluginContext.Operations.GetActivePaymentTypes(PointsPayment.Key).FirstOrDefault()
+                    ?? PluginContext.Operations.GetPaymentTypes()
+                        .FirstOrDefault(p => p.IsEnabled && string.Equals((p.Name ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase));
+            }
+            catch (Exception ex)
+            {
+                PluginContext.Log.Warn($"Карта Патрики: не удалось получить типы оплат — {ex.Message}");
+                return null;
+            }
+        }
+
+        private static List<Resto.Front.Api.Data.Payments.IPaymentItem> RedeemPaymentItems(IOrder order)
+        {
+            var name = (Config.Current.RedeemPayment ?? "").Trim();
+            if (order.Payments == null) return new List<Resto.Front.Api.Data.Payments.IPaymentItem>();
+            HashSet<Guid> ours;
+            try { ours = new HashSet<Guid>(PluginContext.Operations.GetActivePaymentTypes(PointsPayment.Key).Select(t => t.Id)); }
+            catch { ours = new HashSet<Guid>(); }
+            return order.Payments.Where(p => p.Type != null &&
+                (ours.Contains(p.Type.Id) || (name.Length > 0 && string.Equals((p.Type.Name ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase)))).ToList();
+        }
+
+        /// <summary>Сколько уже внесено баллами оплатой (для скидки — 0: она и так уменьшает ResultSum).</summary>
+        private static decimal RedeemPaidSum(IOrder order) => RedeemPaymentItems(order).Sum(p => p.Sum);
+
+        /// <summary>В заказе есть оплата баллами — оплатой (1.7) или скидкой (1.2–1.6).</summary>
+        private static bool HasRedeemDiscount(IOrder order) => RedeemPaymentItems(order).Count > 0 || RedeemDiscountItems(order).Count > 0;
 
         private static Resto.Front.Api.Data.Security.ICredentials CredentialsFor(IOperationService os, IViewManager vm)
         {
@@ -372,6 +447,8 @@ namespace Resto.Front.Api.Patriki
                     guest.RedeemIds.Clear(); guest.Redeemed = 0;
                 }
                 var request = CloseRequest.FromOrder(order, guest.Code, Config.Current.Venue);
+                // оплаченное баллами (оплатой) не считается покупкой — как было со скидкой
+                request.Sum -= RedeemPaidSum(order);
                 Store.RemoveGuest(order.Id);
                 Task.Run(() => Send(request, guest.Name));
             }
