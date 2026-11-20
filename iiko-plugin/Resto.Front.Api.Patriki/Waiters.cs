@@ -44,6 +44,11 @@ namespace Resto.Front.Api.Patriki
         private DateTime lastSnapshotAt = DateTime.MinValue;
         private DateTime lastError = DateTime.MinValue;
         private DateTime lastPinHint = DateTime.MinValue;
+        // меню кассы: собираем раз в MenuEvery, отправляем, если изменилось (или раз в MenuResend — на случай сброса на сервере)
+        private static readonly TimeSpan MenuEvery = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan MenuResend = TimeSpan.FromMinutes(30);
+        private string lastMenu = "";
+        private DateTime lastMenuBuilt = DateTime.MinValue, lastMenuSent = DateTime.MinValue;
 
         public Waiters()
         {
@@ -77,7 +82,21 @@ namespace Resto.Front.Api.Patriki
                 }
                 catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: снимок столов — " + ex.Message); }
 
-                var orders = Api.WaiterPoll(Config.Current.Venue, tables);
+                object menu = null; string menuKey = null;
+                if (DateTime.Now - lastMenuBuilt > MenuEvery)
+                {
+                    lastMenuBuilt = DateTime.Now;
+                    try
+                    {
+                        var m = CashMenu.Build();
+                        menuKey = Api.Serialize(m);
+                        if (menuKey != lastMenu || DateTime.Now - lastMenuSent > MenuResend) menu = m;
+                    }
+                    catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: меню кассы — " + ex.Message); }
+                }
+
+                var orders = Api.WaiterPoll(Config.Current.Venue, tables, menu);
+                if (menu != null) { lastMenu = menuKey; lastMenuSent = DateTime.Now; }
                 ReportPending();
                 CleanupDone();
 
@@ -285,6 +304,11 @@ namespace Resto.Front.Api.Patriki
                         try { es.ChangeOrderItemComment(Inbox.Cut(line.Comment, 200), orderStub, item); }
                         catch (Exception ex) { PluginContext.Log.Warn("Официанты Патрики: комментарий не добавлен — " + ex.Message); }
                     }
+                    if (line.OpenPrice.HasValue && product.CanSetOpenPrice)
+                    {
+                        try { es.SetOpenPrice(line.OpenPrice.Value, item, orderStub); }
+                        catch (Exception ex) { PluginContext.Log.Warn($"Официанты Патрики: свободная цена для «{product.Name}» не задана — {ex.Message}"); }
+                    }
                     AddModifiers(es, product, orderStub, item, line);
                 }
                 if (missing.Count > 0)
@@ -474,6 +498,8 @@ namespace Resto.Front.Api.Patriki
                             SizeId = G(i, "sizeId"),
                             Comment = S(i, "comment"),
                         };
+                        // свободная цена: официант ввёл цену в приложении
+                        if (S(i, "open") == "True" || S(i, "open") == "true") { var pr = M(i, "price"); if (pr > 0) line.OpenPrice = pr; }
                         if (i.TryGetValue("mods", out var mods) && mods is IEnumerable ml)
                             foreach (var y in ml)
                                 if (y is Dictionary<string, object> m)
@@ -514,6 +540,7 @@ namespace Resto.Front.Api.Patriki
         public decimal Amount;
         public Guid? SizeId;
         public string Comment;
+        public decimal? OpenPrice;
         public List<WaiterMod> Mods = new List<WaiterMod>();
     }
 

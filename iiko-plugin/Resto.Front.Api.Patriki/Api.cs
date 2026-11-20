@@ -93,7 +93,7 @@ namespace Resto.Front.Api.Patriki
 
     internal static class Api
     {
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         private static readonly HttpClient Http;
 
         static Api()
@@ -214,10 +214,11 @@ namespace Resto.Front.Api.Patriki
         internal static string Serialize(object o) => Json.Serialize(o);
 
         /// <summary>Пульс кассы + снимок столов (если изменился); в ответ — новые заказы официантов.</summary>
-        public static List<WaiterOrder> WaiterPoll(string venue, Dictionary<string, object> tables)
+        public static List<WaiterOrder> WaiterPoll(string venue, Dictionary<string, object> tables, object menu = null)
         {
             var body = new Dictionary<string, object> { ["action"] = "pos_poll", ["venue"] = venue, ["version"] = typeof(Api).Assembly.GetName().Version?.ToString() };
             if (tables != null) body["tables"] = tables;
+            if (menu != null) body["menu"] = menu; // меню кассы — приложение официантов показывает его один в один
             var d = Post(body, WaiterUrl);
             var list = new List<WaiterOrder>();
             if (d.TryGetValue("orders", out var os) && os is System.Collections.IEnumerable items)
