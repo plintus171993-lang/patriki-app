@@ -38,7 +38,7 @@ jobs:
           rm -f dist/Resto.Front.Api.Patriki/*.pdb
           cp iiko-plugin/INSTALL.txt iiko-plugin/patriki.json dist/
           # справочник API iiko (для разработки, на кассу не нужен)
-          mkdir -p sdk && find ~/.nuget/packages/resto.front.api.v8 -name '*.xml' -exec cp {} sdk/ \; || true
+          mkdir -p sdk && find ~/.nuget/packages/resto.front.api.v8 \( -name 'Resto.Front.Api.V8.xml' -o -name 'Resto.Front.Api.V8.dll' \) -exec cp {} sdk/ \; || true
           find dist -type f | sort
           echo '## Состав плагина' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
