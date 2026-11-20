@@ -233,7 +233,7 @@ async function vDash(){
   const pay=await q(vFilter(sb.from('crm_payroll').select('total')).eq('month',from));
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
   const cashless=sum(rev,r=>r.cashless),cash=sum(rev,r=>r.cash),total=cashless+cash;
-  const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id);
+  const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id&&o.category!=='Корректировка остатка');
   const expSum=sum(exp,o=>o.amount),fot=sum(pay,p=>p.total);
   const byCat={};exp.forEach(o=>byCat[o.category||'Прочее']=(byCat[o.category||'Прочее']||0)+ +o.amount);
   const cats=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);const maxC=cats.length?cats[0][1]:1;
@@ -303,6 +303,7 @@ async function vCash(){
   <div class="tabs"><a data-t="ops">Движение денег</a><a data-t="tr">Перемещения</a></div>
   <div id="cashBody"></div>`;
   document.querySelectorAll('.cb').forEach(c=>c.onclick=()=>{S.cbSel=S.cbSel===c.dataset.id?null:c.dataset.id;vCash()});
+  if(S.me.owner)document.querySelectorAll('.cb').forEach(c=>c.ondblclick=()=>cbForm(S.cashboxes.find(x=>x.id===c.dataset.id)));
   document.querySelectorAll('.tabs a').forEach(a=>{a.classList.toggle('on',a.dataset.t===cashTab);a.onclick=()=>{cashTab=a.dataset.t;vCash()}});
   if(cashTab==='ops')await cashOps(list,canAdd,canTr);else await cashTransfers(list,canTr);
 }
@@ -317,12 +318,14 @@ async function cashOps(list,canAdd,canTr){
     <span class="sp"></span>
     ${canAdd?'<button class="btn green" id="bIn">+ Приход</button><button class="btn red" id="bOut">− Расход</button>':''}
     ${canTr?'<button class="btn pri" id="bTr">⇄ Перемещение</button>':''}
+    ${S.me.owner?'<button class="btn" id="bCb">+ Касса</button>':''}
   </div><div id="opsTbl"><div class="empty">Загрузка…</div></div>`;
   $('#fDir').value=f.dir;$('#fCat').value=f.cat;
   const upd=()=>{Object.assign(f,{from:$('#fFrom').value,to:$('#fTo').value,dir:$('#fDir').value,cat:$('#fCat').value,s:$('#fS').value.trim()});loadOps(list)};
   ['fFrom','fTo','fDir','fCat'].forEach(i=>$('#'+i).onchange=upd);$('#fS').oninput=()=>{clearTimeout(S._t);S._t=setTimeout(upd,350)};
   if(canAdd){$('#bIn').onclick=()=>opForm('in',list);$('#bOut').onclick=()=>opForm('out',list)}
   if(canTr)$('#bTr').onclick=()=>trForm(list);
+  if(S.me.owner)$('#bCb').onclick=()=>cbForm();
   loadOps(list);
 }
 async function loadOps(list){
@@ -337,6 +340,20 @@ async function loadOps(list){
     <tr class="tot"><td colspan="4">Итого: ${rows.length} операций · сальдо ${rub(tin-tout)}</td><td class="n in">${rub(tin)}</td><td class="n out">${rub(tout)}</td></tr></tbody></table></div>`:'<div class="empty">Операций за период нет</div>';
 }
 function cbOptions(list,sel){return list.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${esc(c.name)} · ${esc(venueName(c.venue_id))}</option>`).join('')}
+
+function cbForm(c){
+  modal(c?'Касса':'Новая касса',`
+    <label class="f">Название<input id="cN" value="${esc(c?.name||'')}" placeholder="Например: Сейф Мурино"></label>
+    <div class="row2"><label class="f">Заведение<select id="cV">${S.venues.map(v=>`<option value="${v.id}" ${(c?c.venue_id:(S.venue==='all'?'':S.venue))===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label>
+    <label class="f">Тип<select id="cK">${Object.entries(KIND).map(([k,v])=>`<option value="${k}" ${(c?.kind||'cash')===k?'selected':''}>${v}</option>`).join('')}</select></label></div>
+    <div class="err" id="cErr"></div>`,
+    [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
+      const row={name:$('#cN').value.trim(),venue_id:$('#cV').value,kind:$('#cK').value};
+      if(!row.name){$('#cErr').textContent='Укажите название';return}
+      if(c)await q(sb.from('crm_cashboxes').update(row).eq('id',c.id));
+      else await q(sb.from('crm_cashboxes').insert({...row,sort:(S.cashboxes.length||0)+1}));
+      closeModal();toast('Касса сохранена');vCash()})]);
+}
 function opForm(dir,list){
   modal(dir==='in'?'Приход в кассу':'Расход из кассы',`
     <label class="f">Касса<select id="oCb">${cbOptions(list,S.cbSel||(list.find(c=>c.kind==='accountable')||list[0]||{}).id)}</select></label>
