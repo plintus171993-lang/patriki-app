@@ -235,7 +235,7 @@ async function vDash(){
   const pay=await q(vFilter(sb.from('crm_payroll').select('total')).eq('month',from));
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
   const cashless=sum(rev,r=>r.cashless),cash=sum(rev,r=>r.cash),total=cashless+cash;
-  const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id&&o.category!=='Корректировка остатка');
+  const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id&&!['Корректировка остатка','Перемещение'].includes(o.category));
   const expSum=sum(exp,o=>o.amount),fot=sum(pay,p=>p.total);
   const byCat={};exp.forEach(o=>byCat[o.category||'Прочее']=(byCat[o.category||'Прочее']||0)+ +o.amount);
   const cats=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);const maxC=cats.length?cats[0][1]:1;
@@ -438,29 +438,84 @@ function autoCat(o,rules){
   if(/ремонт|обслуживан|монтаж/.test(t))return 'Ремонт и обслуживание';
   return 'Прочее';
 }
+const PAYK2={advance:'аванс',salary:'зарплата',bonus:'премия',vacation:'отпускные'};
+const normFio=s=>(s||'').toLowerCase().replace(/ё/g,'е').replace(/[^а-яa-z ]/g,' ').replace(/\s+/g,' ').trim();
+function findEmpByFio(fio){const f=normFio(fio);if(!f)return null;const w=f.split(' ');
+  let m=S.employees.filter(e=>e.full_name&&normFio(e.full_name)===f);if(m.length===1)return m[0];
+  m=S.employees.filter(e=>e.full_name&&normFio(e.full_name).split(' ').slice(0,2).join(' ')===w.slice(0,2).join(' '));if(m.length===1)return m[0];
+  m=S.employees.filter(e=>e.full_name&&normFio(e.full_name).split(' ')[0]===w[0]);return m.length===1?m[0]:null}
+const monthOf=(d,shift)=>{const x=new Date(d.slice(0,7)+'-15T12:00:00');x.setMonth(x.getMonth()+(shift||0));return x.toISOString().slice(0,7)};
+const MONTHS_RU=['январ','феврал','март','апрел','ма','июн','июл','август','сентябр','октябр','ноябр','декабр'];
+function guessSalary(o){
+  const t=o.purpose.toLowerCase();
+  const kind=/отпуск/.test(t)?'vacation':/аванс/.test(t)?'advance':/преми/.test(t)?'bonus':'salary';
+  let month=null;const mm=t.match(/за\s+(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)\S*\s+(\d{4})/);
+  if(mm){const i=MONTHS_RU.findIndex(x=>mm[1].startsWith(x));month=mm[2]+'-'+String(i+1).padStart(2,'0')}
+  if(!month)month=kind==='advance'||+o.date.slice(8)>15?o.date.slice(0,7):monthOf(o.date,-1);
+  const reg=(o.purpose.match(/реестр\S*\s*№\s*(\d+)/i)||[])[1]||null;
+  return {kind,month,reg};
+}
+function classify(o){
+  const t=(o.cp+' '+o.purpose).toLowerCase();
+  if(o.dir==='in'&&/эквайр/.test(t)){const c=(o.purpose.match(/Комиссия\s+([\d\s]+[.,]\d+)/i)||[])[1];return {type:'acq',fee:c?+c.replace(/\s/g,'').replace(',','.'):0}}
+  if(o.dir==='in'&&/яндекс/.test(t))return {type:'yandex'};
+  if(o.dir==='out'&&/заработн|зарплат|аванс|отпускн|оплат[аы] труда/.test(o.purpose.toLowerCase())&&!/ндфл|налог|взнос/.test(t)){
+    const g=guessSalary(o);if(g.reg||/сбербанк/i.test(o.cp)&&/реестр/i.test(o.purpose))return {type:'salreg',...g};
+    return {type:'salperson',...g,emp:findEmpByFio(o.cp)};
+  }
+  return {type:'plain'};
+}
+function howText(o){const c=o.cls;
+  if(c.type==='acq')return `Карты → р/с${c.fee?' · комиссия '+rub(c.fee):''}`;
+  if(c.type==='yandex')return 'Яндекс → р/с';
+  if(c.type==='salreg')return `Зарплата по реестру №${c.reg||'?'} · ${PAYK2[c.kind]} за ${monthName(c.month)} → разнести`;
+  if(c.type==='salperson')return c.emp?`→ ${esc(c.emp.name)}: ${PAYK2[c.kind]} за ${monthName(c.month)}`:`Зарплата: сотрудник не найден по ФИО → разнести`;
+  return '';
+}
 async function bankPreview(st,fname){
+  await loadRefs();
   const rules=await q(sb.from('crm_bank_rules').select('*'));
   const cb=S.cashboxes.find(c=>c.account_no===st.acc);
   const have=new Set(cb?(await all(()=>sb.from('crm_cash_ops').select('ext_id').eq('cashbox_id',cb.id).not('ext_id','is',null))).map(x=>x.ext_id):[]);
-  st.ops.forEach(o=>{o.dup=have.has(o.ext);o.cat=autoCat(o,rules);o.cat0=o.cat});
+  const cardCb=S.cashboxes.find(c=>/банковск|карт/i.test(c.iiko_pay_type||'')),yaCb=S.cashboxes.find(c=>/яндекс/i.test(c.iiko_pay_type||''));
+  st.ops.forEach(o=>{o.dup=have.has(o.ext);o.cls=classify(o);o.cat=o.cls.type.startsWith('sal')?'Зарплата и авансы':(o.cls.type==='acq'&&cardCb)||(o.cls.type==='yandex'&&yaCb)?'Перемещение':autoCat(o,rules);o.cat0=o.cat});
   const fresh=st.ops.filter(o=>!o.dup);const tin=fresh.filter(o=>o.dir==='in').reduce((s,o)=>s+o.amount,0),tout=fresh.filter(o=>o.dir==='out').reduce((s,o)=>s+o.amount,0);
-  const opt=dir=>(dir==='in'?CATS_IN:CATS_OUT).map(c=>`<option>${c}</option>`).join('');
+  const nSal=fresh.filter(o=>o.cls.type.startsWith('sal')).length,nAcq=fresh.filter(o=>o.cls.type==='acq').length;
+  const opt=dir=>(dir==='in'?[...CATS_IN,'Перемещение']:[...CATS_OUT,'Перемещение']).map(c=>`<option>${c}</option>`).join('');
   modal('Выписка банка',`<div class="muted" style="font-size:12px;margin-bottom:8px">${esc(fname)} · ${esc(st.bank)} · счёт ••${esc(st.acc.slice(-4))} · ${fd(st.from)}–${fd(st.to)}</div>
-    <div class="card" style="padding:10px 12px;margin-bottom:10px;background:#f7f8fa">Новых операций: <b>${fresh.length}</b> · поступления <b class="in">${rub(tin)}</b> · списания <b class="out">${rub(tout)}</b>${st.ops.length-fresh.length?` · уже загружено раньше: ${st.ops.length-fresh.length} (пропущу)`:''}${cb?'':`<br><span class="muted">Будет создана касса «Расчётный счёт ••${esc(st.acc.slice(-4))}».</span>`}</div>
-    <div class="muted" style="font-size:12px;margin-bottom:6px">Категории подобраны автоматически — поправьте, где нужно. Исправленная категория запомнится для этого контрагента.</div>
+    <div class="card" style="padding:10px 12px;margin-bottom:10px;background:#f7f8fa">Новых операций: <b>${fresh.length}</b> · поступления <b class="in">${rub(tin)}</b> · списания <b class="out">${rub(tout)}</b>${st.ops.length-fresh.length?` · уже загружено раньше: ${st.ops.length-fresh.length} (пропущу)`:''}
+      ${nAcq?`<br>Зачислений эквайринга: ${nAcq} — это деньги из кассы «${esc(cardCb?.name||'Банковские карты')}», учту как перемещение на счёт, а не новый доход.`:''}
+      ${nSal?`<br>Выплат зарплаты: ${nSal} — спишу со счёта и засчитаю сотрудникам один раз (по реестру или по ФИО).`:''}
+      ${cb?'':`<br><span class="muted">Будет создана касса «Расчётный счёт ••${esc(st.acc.slice(-4))}».</span>`}</div>
     <div class="tw" style="max-height:46vh"><table><thead><tr><th>Дата</th><th>Контрагент / назначение</th><th class="n">Сумма</th><th>Категория</th></tr></thead><tbody>
-    ${st.ops.map((o,i)=>`<tr style="${o.dup?'opacity:.45':''}"><td style="white-space:nowrap">${fd(o.date)}</td><td><b>${esc(o.cp)}</b><div class="muted" style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(o.purpose)}">${esc(o.purpose)}</div></td>
+    ${st.ops.map((o,i)=>`<tr style="${o.dup?'opacity:.45':''}"><td style="white-space:nowrap">${fd(o.date)}</td><td><b>${esc(o.cp)}</b><div class="muted" style="font-size:11px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(o.purpose)}">${esc(o.purpose)}</div>${howText(o)?`<div style="font-size:11px;color:var(--accent)">${howText(o)}</div>`:''}</td>
       <td class="n ${o.dir==='in'?'in':'out'}">${o.dir==='in'?'+':'−'}${rub(o.amount)}</td><td>${o.dup?'<span class="muted">уже есть</span>':`<select data-bi="${i}" style="max-width:190px">${opt(o.dir)}</select>`}</td></tr>`).join('')}
     </tbody></table></div><div class="err" id="bErr"></div>`,
     [btn('Отмена','',closeModal),btn(`Загрузить ${fresh.length}`,'pri',async()=>{
       if(!fresh.length){closeModal();return}
       let id=cb?.id;
       if(!id)id=(await q(sb.from('crm_cashboxes').insert({name:'Расчётный счёт ••'+st.acc.slice(-4),kind:'bank',account_no:st.acc,venue_id:null,sort:0}).select()))[0].id;
-      const rows=fresh.map(o=>({cashbox_id:id,op_date:o.date,direction:o.dir,amount:o.amount,category:o.cat,comment:(o.purpose||'').slice(0,500),counterparty:o.cp,counterparty_inn:o.inn,ext_id:o.ext,source:'bank'}));
-      for(let i=0;i<rows.length;i+=500)await q(sb.from('crm_cash_ops').insert(rows.slice(i,i+500)));
-      const learn={};fresh.filter(o=>o.cat!==o.cat0).forEach(o=>{const k=(o.inn||o.cp)+'|'+o.dir;learn[k]={inn:o.inn,name:o.inn?null:o.cp,direction:o.dir,category:o.cat}});
+      const base=o=>({op_date:o.date,counterparty:o.cp,counterparty_inn:o.inn,ext_id:o.ext,source:'bank'});
+      const rows=[],side=[];
+      for(const o of fresh){
+        const r={...base(o),cashbox_id:id,direction:o.dir,amount:o.amount,category:o.cat,comment:(o.purpose||'').slice(0,500)};
+        const c=o.cls;
+        if(o.cat==='Перемещение'&&c.type==='acq'&&cardCb){r.comment='Эквайринг → р/с · '+r.comment;
+          side.push({...base(o),cashbox_id:cardCb.id,direction:'out',amount:o.amount,category:'Перемещение',comment:'Зачислено на расчётный счёт (эквайринг)'});
+          if(c.fee)side.push({...base(o),ext_id:o.ext+'|fee',cashbox_id:cardCb.id,direction:'out',amount:c.fee,category:'Комиссия банка',comment:'Комиссия эквайринга'});}
+        if(o.cat==='Перемещение'&&c.type==='yandex'&&yaCb)side.push({...base(o),cashbox_id:yaCb.id,direction:'out',amount:o.amount,category:'Перемещение',comment:'Зачислено на расчётный счёт (Яндекс)'});
+        if(o.cat==='Зарплата и авансы'&&c.type?.startsWith('sal')){r.salary_bank=true;r.registry_no=c.reg;r.pay_kind=c.kind;r.pay_month=c.month+'-01'}
+        rows.push(r);
+      }
+      const ins=[];for(let i=0;i<rows.length;i+=400)ins.push(...await q(sb.from('crm_cash_ops').insert(rows.slice(i,i+400)).select('id,ext_id')));
+      for(let i=0;i<side.length;i+=400)await q(sb.from('crm_cash_ops').insert(side.slice(i,i+400)));
+      // прямые переводы сотруднику по ФИО — засчитываем сразу
+      const idOf={};ins.forEach(x=>idOf[x.ext_id]=x.id);
+      const auto=fresh.filter(o=>o.cat==='Зарплата и авансы'&&o.cls.type==='salperson'&&o.cls.emp).map(o=>({op_id:idOf[o.ext],employee_id:o.cls.emp.id,amount:o.amount,pay_month:o.cls.month+'-01',pay_kind:o.cls.kind,source:'auto'}));
+      if(auto.length)await q(sb.from('crm_salary_alloc').insert(auto));
+      const learn={};fresh.filter(o=>o.cat!==o.cat0&&!['Перемещение','Зарплата и авансы'].includes(o.cat)).forEach(o=>{const k=(o.inn||o.cp)+'|'+o.dir;learn[k]={inn:o.inn,name:o.inn?null:o.cp,direction:o.dir,category:o.cat}});
       for(const r of Object.values(learn)){if(r.inn)await q(sb.from('crm_bank_rules').upsert(r,{onConflict:'inn,direction'}));else await q(sb.from('crm_bank_rules').insert(r))}
-      closeModal();toast('Загружено операций: '+rows.length);vCash()})],true);
+      closeModal();toast(`Загружено: ${rows.length}${auto.length?' · засчитано сотрудникам: '+auto.length:''}`);await loadRefs();render()})],true);
   document.querySelectorAll('[data-bi]').forEach(s=>{const o=st.ops[+s.dataset.bi];s.value=o.cat;s.onchange=()=>o.cat=s.value});
 }
 
@@ -520,14 +575,14 @@ async function vStaff(){
 }
 function empForm(e,after){
   modal(e?'Сотрудник':'Новый сотрудник',`
-    <label class="f">Имя<input id="eN" value="${esc(e?.name||'')}"></label>
+    <div class="row2"><label class="f">Имя (как в табеле)<input id="eN" value="${esc(e?.name||'')}"></label><label class="f">ФИО полностью (как в банке)<input id="eF" value="${esc(e?.full_name||'')}" placeholder="Фамилия Имя Отчество"></label></div>
     <div class="row2"><label class="f">Должность<input id="eP" value="${esc(e?.position||'')}" list="posList"></label>
     <label class="f">Отдел<select id="eD">${Object.entries(DEPT).map(([k,v])=>`<option value="${k}" ${e?.dept===k?'selected':''}>${v}</option>`).join('')}</select></label></div>
     <datalist id="posList">${[...new Set(S.employees.map(x=>x.position).filter(Boolean))].map(p=>`<option>${esc(p)}</option>`).join('')}</datalist>
     <label class="f">Основная точка<select id="eV">${S.venues.map(v=>`<option value="${v.id}" ${e?.home_venue===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label>
     <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="eA" ${!e||e.active?'checked':''}> работает</label><div class="err" id="eErr"></div>`,
     [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
-      const row={name:$('#eN').value.trim(),position:$('#eP').value.trim()||null,dept:$('#eD').value,home_venue:$('#eV').value,active:$('#eA').checked};
+      const row={name:$('#eN').value.trim(),full_name:$('#eF').value.trim()||null,position:$('#eP').value.trim()||null,dept:$('#eD').value,home_venue:$('#eV').value,active:$('#eA').checked};
       if(!row.name){$('#eErr').textContent='Укажите имя';return}
       let saved;if(e){await q(sb.from('crm_employees').update(row).eq('id',e.id));saved={...e,...row}}else saved=(await q(sb.from('crm_employees').insert(row).select()))[0];
       await loadRefs();toast('Сохранено');
@@ -572,7 +627,7 @@ async function empCard(e,after){
 }
 
 /* ---------- Зарплата ---------- */
-const PAYK={advance:'Аванс',salary:'Зарплата',bonus:'Премия'};
+const PAYK={advance:'Аванс',salary:'Зарплата',bonus:'Премия',vacation:'Отпускные'};
 function dayGroup(d){const w=new Date(d+'T12:00:00').getDay();return w===4?'thu':(w===5||w===6)?'fri_sat':'sun_wed'}
 function ruleOn(rules,kind,day){return rules.filter(r=>r.kind===kind&&r.active&&r.valid_from<=day&&(!r.valid_to||r.valid_to>=day)).sort((a,b)=>b.valid_from.localeCompare(a.valid_from))[0]}
 async function calcPayroll(m,venue){
@@ -582,7 +637,9 @@ async function calcPayroll(m,venue){
     q(sb.from('crm_daily_revenue').select('*').eq('venue_id',venue).gte('day',from).lte('day',to)),
     q(sb.from('crm_motivation_rules').select('*').or(`venue_id.eq.${venue},venue_id.is.null`)),
     q(sb.from('crm_employee_motivation').select('*').lte('valid_from',to).order('valid_from',{ascending:false})),
-    all(()=>sb.from('crm_cash_ops').select('id,cashbox_id,op_date,amount,comment,employee_id,pay_kind').eq('pay_month',from).not('employee_id','is',null))]);
+    all(()=>sb.from('crm_cash_ops').select('id,cashbox_id,op_date,amount,comment,employee_id,pay_kind').eq('pay_month',from).not('employee_id','is',null)),
+    all(()=>sb.from('crm_salary_alloc').select('id,op_id,employee_id,amount,pay_kind,source,crm_cash_ops(op_date,cashbox_id,registry_no)').eq('pay_month',from))]).then(r=>{
+      r[4]=r[4].concat(r[5].map(a=>({id:a.id,alloc:true,cashbox_id:a.crm_cash_ops?.cashbox_id,op_date:a.crm_cash_ops?.op_date,amount:a.amount,employee_id:a.employee_id,pay_kind:a.pay_kind,reg:a.crm_cash_ops?.registry_no})));return r.slice(0,5)});
   const motOf={};mots.forEach(x=>{if(!motOf[x.employee_id])motOf[x.employee_id]=x});
   const revDay={};rev.forEach(r=>revDay[r.day]=r);
   const byEmp={};const E=id=>byEmp[id]=byEmp[id]||{shifts:0,hours:0,amount:0,base:0,revBonus:0,service:0,pct:0,fixed:0,days:[]};
@@ -625,8 +682,12 @@ async function vPay(){
   const m=S.month,venue=S.venue==='all'?(S.venues[0]||{}).id:S.venue;
   const {rows,monthRev,noRev}=await calcPayroll(m,venue);
   const T=f=>rows.reduce((s,r)=>s+(+r[f]||0),0);
-  $('#view').innerHTML=`<div class="bar">${monthPicker('pm')}<span class="muted">${monthName(m)} · ${esc(venueName(venue))}${S.venue==='all'?' (заведение выбирается вверху)':''}</span><span class="sp"></span>
+  const unal=(await q(sb.from('crm_salary_bank_ops').select('*').order('op_date'))).filter(o=>+o.amount-+o.allocated>0.009);
+  $('#view').innerHTML=`<div class="bar">${monthPicker('pm')}<span class="muted">${monthName(m)} · ${esc(venueName(venue))}${S.venue==='all'?' (заведение выбирается вверху)':''}</span>
+    ${S.me.owner?'<button class="btn" id="pBank">⇪ Выписка банка</button><button class="btn" id="pReg">⇪ Реестр зарплаты</button>':''}<span class="sp"></span>
     <span class="muted">Начислено <b>${rub(T('accrued'))}</b> · выплачено <b>${rub(T('paidSum'))}</b> · долг <b style="color:var(--out)">${rub(T('debt'))}</b></span></div>
+  ${unal.length?`<div class="card" style="margin-bottom:12px;background:var(--warnSoft);border-color:#f1d9a8"><b>Из банка выплачено, но не разнесено по сотрудникам: ${rub(unal.reduce((s,o)=>s+o.amount-o.allocated,0))}</b> <span class="muted">— пока не разнесёте, долг в таблице завышен на эту сумму</span>
+    <div class="tw" style="margin-top:8px"><table><tbody>${unal.map((o,i)=>`<tr><td style="white-space:nowrap">${fd(o.op_date)}</td><td>${o.registry_no?'Реестр №'+esc(o.registry_no):'Перевод'} · ${PAYK[o.pay_kind]||''} ${o.pay_month?'за '+monthName(o.pay_month.slice(0,7)):''}<div class="muted" style="font-size:11px">${esc((o.comment||'').slice(0,120))}</div></td><td class="n">${rub(o.amount)}${o.allocated?`<div class="muted" style="font-size:11px">разнесено ${rub(o.allocated)}</div>`:''}</td><td><button class="btn sm" data-alloc="${i}">Разнести вручную</button></td></tr>`).join('')}</tbody></table></div></div>`:''}
   ${noRev?'<div class="card" style="margin-bottom:12px;background:var(--warnSoft);border-color:#f1d9a8">За этот месяц нет выручки в CRM — премии за выручку не посчитаются. Загрузите её: «Сводка» → «Выручка из iiko».</div>':''}
   ${rows.length?`<div class="tw"><table><thead><tr><th>Сотрудник</th><th>Мотивация</th><th class="n">Смен</th><th class="n">Часы</th><th class="n">База</th><th class="n">Премия за выручку</th><th class="n">Сервис</th><th class="n">% / доплата</th><th class="n">Начислено</th><th class="n">Выплачено</th><th class="n">Долг</th><th></th></tr></thead><tbody>
   ${rows.map((r,i)=>`<tr><td><a data-card="${r.e.id}" style="cursor:pointer;color:var(--accent)"><b>${esc(r.e.name)}</b></a><div class="muted" style="font-size:11px">${esc(r.e.position||'')}</div></td>
@@ -640,6 +701,8 @@ async function vPay(){
   <tr class="tot"><td colspan="4">Итого · ${rows.length} чел.</td><td class="n">${rub(T('base'))}</td><td class="n">${rub(T('revBonus'))}</td><td class="n">${rub(T('service'))}</td><td class="n">${rub(T('pct')+T('fixed'))}</td><td class="n">${rub(T('accrued'))}</td><td class="n">${rub(T('paidSum'))}</td><td class="n">${rub(T('debt'))}</td><td></td></tr></tbody></table></div>
   <div class="muted" style="font-size:12px;margin-top:8px">Начисление пересчитывается из табеля, мотивации сотрудника и выручки дня. Отрицательный долг — выплачено больше начисленного (переплата/аванс вперёд).</div>`:'<div class="empty">За этот месяц нет ни смен, ни мотивации</div>'}`;
   bindMonth('pm');
+  if(S.me.owner){$('#pBank').onclick=bankPick;$('#pReg').onclick=()=>regPick(unal)}
+  document.querySelectorAll('[data-alloc]').forEach(b=>b.onclick=()=>allocForm(unal[+b.dataset.alloc],[]));
   document.querySelectorAll('[data-card]').forEach(a=>a.onclick=()=>empCard(S.employees.find(e=>e.id===a.dataset.card),vPay));
   document.querySelectorAll('[data-pay]').forEach(b=>b.onclick=()=>payForm(rows[+b.dataset.pay],m,venue));
   document.querySelectorAll('[data-hist]').forEach(a=>a.onclick=()=>payHist(rows[+a.dataset.hist]));
@@ -668,9 +731,72 @@ function payForm(r,m,venue){
 function payHist(r){
   const cbn=id=>(S.cashboxes.find(c=>c.id===id)||{}).name||'';
   modal('Выплаты · '+r.e.name,`<div class="tw"><table><thead><tr><th>Дата</th><th>Что</th><th>Касса</th><th class="n">Сумма</th></tr></thead><tbody>
-    ${r.paid.sort((a,b)=>a.op_date.localeCompare(b.op_date)).map(p=>`<tr><td>${fd(p.op_date)}</td><td>${PAYK[p.pay_kind]||'Выплата'}</td><td>${esc(cbn(p.cashbox_id))}</td><td class="n">${rub(p.amount)}</td></tr>`).join('')}
+    ${r.paid.sort((a,b)=>a.op_date.localeCompare(b.op_date)).map(p=>`<tr><td>${fd(p.op_date)}</td><td>${PAYK[p.pay_kind]||'Выплата'}${p.alloc?` <span class="pill b">банк${p.reg?' · реестр №'+esc(p.reg):''}</span>`:''}</td><td>${esc(cbn(p.cashbox_id))}</td><td class="n">${rub(p.amount)}</td></tr>`).join('')}
     <tr class="tot"><td colspan="3">Итого</td><td class="n">${rub(r.paidSum)}</td></tr></tbody></table></div>
-    <div class="muted" style="font-size:12px;margin-top:8px">Ошибочную выплату удалите в «Кассы и деньги» — она отмечена именем сотрудника.</div>`,[btn('Закрыть','',closeModal)]);
+    <div class="muted" style="font-size:12px;margin-top:8px">Ошибочную наличную выплату удалите в «Кассы и деньги». Раскладку банковского платежа можно пересобрать: «Разнести вручную» заменит её.</div>`,[btn('Закрыть','',closeModal)]);
+}
+
+/* ---------- Раскладка банковской зарплаты по сотрудникам ---------- */
+function allocForm(op,pre){
+  const left=Math.round((op.amount-op.allocated)*100)/100;
+  const emps=S.employees.filter(e=>e.active);
+  const rows=pre.length?pre:[{emp:'',amount:''}];
+  const m0=(op.pay_month||op.op_date).slice(0,7);
+  const draw=()=>{$('#aRows').innerHTML=rows.map((r,i)=>`<div class="row2" style="grid-template-columns:2fr 1fr auto;margin-bottom:6px">
+      <select data-ae="${i}"><option value="">— сотрудник —</option>${emps.map(e=>`<option value="${e.id}" ${r.emp===e.id?'selected':''}>${esc(e.name)}${e.full_name?' · '+esc(e.full_name):''}</option>`).join('')}</select>
+      <input type="number" step="0.01" data-aa="${i}" value="${r.amount}" placeholder="сумма">${r.fio?`<span class="muted" style="font-size:11px;align-self:center">${esc(r.fio)}</span>`:`<a data-ax="${i}" style="cursor:pointer;color:var(--muted);align-self:center">✕</a>`}</div>`).join('');
+    const s=rows.reduce((t,r)=>t+(+r.amount||0),0);$('#aSum').innerHTML=`Разнесено ${rub(s)} из ${rub(left)}${Math.abs(s-left)<0.01?' ✓':''}`;$('#aSum').style.color=Math.abs(s-left)<0.01?'var(--in)':'var(--out)';
+    document.querySelectorAll('[data-ae]').forEach(x=>x.onchange=()=>rows[+x.dataset.ae].emp=x.value);
+    document.querySelectorAll('[data-aa]').forEach(x=>x.oninput=()=>{rows[+x.dataset.aa].amount=x.value;const s=rows.reduce((t,r)=>t+(+r.amount||0),0);$('#aSum').innerHTML=`Разнесено ${rub(s)} из ${rub(left)}${Math.abs(s-left)<0.01?' ✓':''}`;$('#aSum').style.color=Math.abs(s-left)<0.01?'var(--in)':'var(--out)'});
+    document.querySelectorAll('[data-ax]').forEach(x=>x.onclick=()=>{rows.splice(+x.dataset.ax,1);if(!rows.length)rows.push({emp:'',amount:''});draw()})};
+  modal('Разнести выплату по сотрудникам',`<div class="card" style="padding:10px 12px;margin-bottom:10px;background:#f7f8fa">${fd(op.op_date)} · ${op.registry_no?'реестр №'+esc(op.registry_no):'перевод'} · <b>${rub(op.amount)}</b>${op.allocated?' · уже разнесено '+rub(op.allocated):''}</div>
+    <div class="row2"><label class="f">Что это<select id="aK">${Object.entries(PAYK).map(([k,v])=>`<option value="${k}" ${op.pay_kind===k?'selected':''}>${v}</option>`).join('')}</select></label><label class="f">За месяц<input type="month" id="aM" value="${m0}"></label></div>
+    <div id="aRows"></div><a id="aAdd" style="cursor:pointer;color:var(--accent);font-size:13px">+ ещё сотрудник</a>
+    <div id="aSum" style="margin-top:10px;font-weight:600"></div><div class="err" id="aErr"></div>`,
+    [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
+      const ok=rows.filter(r=>r.emp&&+r.amount>0);const s=ok.reduce((t,r)=>t+ +r.amount,0);
+      if(!ok.length){$('#aErr').textContent='Добавьте хотя бы одного сотрудника';return}
+      if(s-left>0.009){$('#aErr').textContent='Разнесено больше суммы платежа';return}
+      await q(sb.from('crm_salary_alloc').insert(ok.map(r=>({op_id:op.id,employee_id:r.emp,amount:+r.amount,pay_month:$('#aM').value+'-01',pay_kind:$('#aK').value,source:r.fio?'registry':'manual'}))));
+      for(const r of ok.filter(r=>r.fio)){const e=S.employees.find(e=>e.id===r.emp);if(e&&!e.full_name)await q(sb.from('crm_employees').update({full_name:r.fio}).eq('id',e.id))}
+      closeModal();toast('Выплата разнесена');await loadRefs();vPay()})],true);
+  $('#aAdd').onclick=()=>{rows.push({emp:'',amount:''});draw()};draw();
+}
+/* ---------- Загрузка реестра зарплатного проекта (Excel / CSV / XML) ---------- */
+function regPick(unal){
+  const inp=document.createElement('input');inp.type='file';inp.accept='.xlsx,.xls,.csv,.xml,.txt';
+  inp.onchange=async()=>{const f=inp.files[0];if(!f)return;try{regMatch(await parseRegistry(f),unal,f.name)}catch(e){toast('Не получилось прочитать реестр: '+e.message)}};inp.click();
+}
+async function loadXLSX(){if(window.XLSX)return;await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=ok;s.onerror=()=>no(new Error('не загрузилась библиотека Excel'));document.head.appendChild(s)})}
+const isFio=s=>/^[А-ЯЁ][а-яё-]+\s+[А-ЯЁ][а-яё-]+(\s+[А-ЯЁ][а-яё-]+){0,2}$/.test(String(s||'').trim());
+const toNum=v=>typeof v==='number'?v:+String(v||'').replace(/\s/g,'').replace(',','.');
+async function parseRegistry(f){
+  const buf=await f.arrayBuffer();let rows=[],text='';
+  if(/\.xml$/i.test(f.name)||/^\s*</.test(new TextDecoder().decode(buf.slice(0,200)))){
+    let t=new TextDecoder('utf-8').decode(buf);if(t.includes('�')||/windows-1251/i.test(t.slice(0,200)))t=new TextDecoder('windows-1251').decode(buf);text=t;
+    const doc=new DOMParser().parseFromString(t,'text/xml');
+    doc.querySelectorAll('*').forEach(n=>{const k=[...n.children].map(c=>c.tagName);if(k.includes('Фамилия')&&k.includes('Имя')){
+      const g=x=>n.querySelector(':scope > '+x)?.textContent?.trim()||'';const sum=[...n.querySelectorAll('*')].find(c=>/^Сумма$/i.test(c.tagName))?.textContent;
+      rows.push({fio:[g('Фамилия'),g('Имя'),g('Отчество')].filter(Boolean).join(' '),amount:toNum(sum)})}});
+  }else{
+    await loadXLSX();const wb=XLSX.read(buf,{type:'array'});
+    for(const sn of wb.SheetNames){const a=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,raw:true,defval:''});
+      a.forEach(r=>{text+=r.join(' ')+'\n';let fi=r.findIndex(isFio);
+        if(fi<0){const j=r.findIndex((c,i)=>/^[А-ЯЁ][а-яё-]+$/.test(String(c).trim())&&/^[А-ЯЁ][а-яё-]+$/.test(String(r[i+1]||'').trim()));if(j>=0){const fio=[r[j],r[j+1],/^[А-ЯЁ][а-яё-]+$/.test(String(r[j+2]||'').trim())?r[j+2]:''].join(' ').trim();r=[...r];r[j]=fio;fi=j}}
+        if(fi<0)return;const amts=r.slice(fi+1).map(toNum).filter(n=>n>0&&n<10000000&&!Number.isInteger(n/1e9));
+        const amt=amts.find(n=>n>=100&&String(Math.round(n)).length<=7);if(amt)rows.push({fio:String(r[fi]).trim(),amount:amt})})}
+  }
+  rows=rows.filter(r=>r.fio&&r.amount>0);if(!rows.length)throw new Error('не нашёл строк с ФИО и суммой');
+  const reg=(text.match(/(?:реестр|ведомост)\S*\s*№?\s*(\d+)/i)||[])[1]||null;
+  return {reg,rows,total:Math.round(rows.reduce((s,r)=>s+r.amount,0)*100)/100};
+}
+function regMatch(R,unal,fname){
+  const cand=unal.filter(o=>(R.reg&&o.registry_no===R.reg)||Math.abs((o.amount-o.allocated)-R.total)<0.01);
+  const op=cand.find(o=>R.reg&&o.registry_no===R.reg&&Math.abs((o.amount-o.allocated)-R.total)<0.01)||cand[0];
+  if(!op){modal('Реестр',`<div>В реестре ${R.reg?'№'+esc(R.reg)+' ':''}${R.rows.length} чел. на <b>${rub(R.total)}</b>, но в загруженных выписках нет неразнесённого платежа на эту сумму.</div><div class="muted" style="font-size:12px;margin-top:8px">Сначала загрузите банковскую выписку за период, когда был этот платёж.</div>`,[btn('Понятно','',closeModal)]);return}
+  const pre=R.rows.map(r=>({fio:r.fio,amount:r.amount,emp:(findEmpByFio(r.fio)||{}).id||''}));
+  toast(`${fname}: ${R.rows.length} чел., ${rub(R.total)} — проверьте сотрудников`);
+  allocForm(op,pre);
 }
 
 /* ---------- Система лояльности ---------- */
