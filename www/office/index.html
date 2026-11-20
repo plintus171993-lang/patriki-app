@@ -239,7 +239,7 @@ async function vDash(){
   const cats=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);const maxC=cats.length?cats[0][1]:1;
   const kitchen=sum(rev,r=>r.kitchen_turnover),bar=sum(rev,r=>r.bar_turnover),fee=sum(rev,r=>r.service_fee);
   $('#view').innerHTML=`
-  <div class="bar">${monthPicker('dm')}<span class="muted">${monthName(m)}</span></div>
+  <div class="bar">${monthPicker('dm')}<span class="muted">${monthName(m)}</span><span class="sp"></span>${S.me.owner?'<button class="btn pri" id="bIiko">⟳ Выручка из iiko</button>':''}</div>
   <div class="grid k4">
     ${kpi('Выручка',rub(total),rev.length?`${rev.length} дн. · в среднем ${rub(total/rev.length)}`:'нет данных')}
     ${kpi('Безнал',rub(cashless),total?Math.round(cashless/total*100)+'% выручки':'')}
@@ -254,6 +254,7 @@ async function vDash(){
   </div>
   <div class="card" style="margin-top:14px"><h3>Остатки касс</h3><div class="grid k4">${cbCards()}</div></div>`;
   bindMonth('dm');
+  if(S.me.owner)$('#bIiko').onclick=iikoForm;
   document.querySelectorAll('.cb').forEach(c=>c.onclick=()=>{S.cbSel=c.dataset.id;S.page='cash';location.hash='cash';render()});
 }
 const kpi=(l,v,s)=>`<div class="card kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s||''}</div></div>`;
@@ -269,6 +270,26 @@ function revChart(rev,m){
     s+=`<g><title>${d}.${m.slice(5)}: ${rub(v.a+v.b)}</title><rect x="${x}" y="${H-ha}" width="${w}" height="${ha}" fill="#2f7de1" rx="1"/><rect x="${x}" y="${H-ha-hb}" width="${w}" height="${hb}" fill="#7fb3f0" rx="1"/></g>`;
     if(n<=31)s+=`<text x="${x+w/2}" y="${H+14}" font-size="9" text-anchor="middle" fill="${wd===0||wd===6?'#d64545':'#9aa4b2'}">${d}</text>`}
   return s+'</svg>'}
+
+/* ---------- выгрузка из iiko ---------- */
+async function callSync(body){
+  const {data:{session}}=await sb.auth.getSession();
+  const r=await fetch(SB_URL+'/functions/v1/crm-sync',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({error:'нет ответа'}));if(!r.ok||d.error)throw new Error(d.error||r.status);return d}
+function iikoForm(){
+  const y=new Date(Date.now()+3*3600e3-864e5).toISOString().slice(0,10);
+  const venue=S.venue==='all'?(S.venues[0]||{}).id:S.venue;
+  modal('Выручка из iiko',`<div class="row2"><label class="f">С<input type="date" id="iF" value="${y}"></label><label class="f">По<input type="date" id="iT" value="${y}"></label></div>
+    <label class="f">Заведение<select id="iV">${S.venues.map(v=>`<option value="${v.id}" ${v.id===venue?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label>
+    <div class="muted" style="font-size:12px">Безнал и наличные по кассе за выбранные дни. Сначала покажу цифры, записать — отдельной кнопкой. Записанное заменит выручку этих дней в кассах.</div>
+    <div id="iRes"></div><div class="err" id="iErr"></div>`,
+    [btn('Закрыть','',closeModal),btn('Показать','',()=>run('preview')),btn('Записать в CRM','pri',()=>run('save'))]);
+  async function run(action){$('#iErr').textContent='';$('#iRes').innerHTML='<div class="empty">Запрос к iiko…</div>';
+    try{const d=await callSync({from:$('#iF').value,to:$('#iT').value,venue:$('#iV').value,action});
+      $('#iRes').innerHTML=d.days.length?`<div class="tw" style="margin-top:10px"><table><thead><tr><th>День</th><th class="n">Безнал</th><th class="n">Наличные</th><th class="n">Итого</th></tr></thead><tbody>${d.days.map(x=>`<tr><td>${fd(x.day)}</td><td class="n">${rub(x.cashless)}</td><td class="n">${rub(x.cash)}</td><td class="n"><b>${rub(x.cashless+x.cash)}</b></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Продаж за эти дни нет</div>';
+      if(action==='save'){toast('Записано дней: '+d.saved);closeModal();render()}}
+    catch(e){$('#iRes').innerHTML='';$('#iErr').textContent='Не получилось: '+e.message}}
+}
 
 /* ---------- Кассы ---------- */
 let cashTab='ops';
