@@ -5,6 +5,7 @@
 //   { action: 'check',  venue?: 'petrogradka', trigger?: 'cron'|'manual' } → {stats}   — проверить и обновить cost_issues
 //   { action: 'digest', venue? }                                            → {sent}    — сводка управляющему в Telegram
 //   { action: 'card_parse', text?, image? (base64 jpeg), media? }            → {card, catalog} — техкарта «с листочка» (ИИ, ключ app_secrets.anthropic_api_key)
+//   { action: 'dish_card', product_id }                                     → {card, catalog} — действующая техкарта блюда из iiko для правки
 //   { action: 'card_catalog' }                                              → {catalog} — товары и заготовки iiko с последней ценой прихода
 // Доступ: service-role, x-pos-key = app_secrets.pos_api_key (pg_cron), либо вход в Офис с правом cost.view (или владелец).
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -71,7 +72,7 @@ const xmlText = (x: string) => x.replace(/&quot;/g, '"').replace(/&amp;/g, '&').
 const tag = (x: string, t: string) => (x.match(new RegExp(`<${t}>([^<]*)</${t}>`)) || [])[1];
 
 type Product = { id: string; name: string; type: string; deleted: boolean; parent: string | null };
-type Chart = { product: string; amount: number; items: { product: string; amountIn: number; amountOut: number }[] };
+type Chart = { product: string; amount: number; items: { product: string; amountIn: number; amountMiddle: number; amountOut: number }[] };
 type Delivery = { at: string; supplier: string; price: number; amount: number; doc: string };
 
 async function loadIiko(salesDays: number) {
@@ -144,7 +145,7 @@ function parseCharts(raw: string) {
     if (!pid || charts.has(pid)) continue;
     charts.set(pid, {
       product: pid, amount: Number(c.assembledAmount || 1) || 1,
-      items: (c.items || []).map((i: any) => ({ product: i.productId, amountIn: Number(i.amountIn || 0), amountOut: Number(i.amountOut || 0) })).filter((i: any) => i.product),
+      items: (c.items || []).map((i: any) => ({ product: i.productId, amountIn: Number(i.amountIn || 0), amountMiddle: Number(i.amountMiddle ?? i.amountIn ?? 0), amountOut: Number(i.amountOut || 0) })).filter((i: any) => i.product),
     });
   }
   return charts;
@@ -311,7 +312,7 @@ async function cardCatalog() {
   const today = mskDate(), invFrom = mskDate(-120), salesFrom = mskDate(-30);
   const raw = await iikoServer(async (get, post) => {
     const [prods, units, inv, charts] = await Promise.all([
-      get('v2/entities/products/list', { includeDeleted: 'false' }),
+      get('v2/entities/products/list', { includeDeleted: 'true' }),
       get('v2/entities/list', { rootType: 'MeasureUnit', includeDeleted: 'false' }).catch(() => '[]'),
       get('documents/export/incomingInvoice', { from: invFrom, to: today }),
       get('v2/assemblyCharts/getAll', { dateFrom: today, dateTo: today, includeDeletedProducts: 'false', includePreparedCharts: 'false' }).catch(() => '{}'),
@@ -352,7 +353,9 @@ async function cardCatalog() {
   };
   const goods: { id: string; name: string; type: string; unit: string; price: number | null; at: string | null }[] = [];
   const dishes: { id: string; name: string; price: number | null }[] = [];
+  const all = new Map<string, { name: string; type: string; unit: string; deleted: boolean }>();
   for (const p of JSON.parse(raw.prods) as any[]) {
+    all.set(p.id, { name: String(p.name || '').trim(), type: String(p.type || '').toUpperCase(), unit: unitName.get(p.mainUnit) || '', deleted: !!p.deleted });
     if (p.deleted) continue;
     const t = String(p.type || '').toUpperCase(), name = String(p.name || '').trim();
     if (t === 'GOODS' || t === 'PREPARED') {
@@ -361,7 +364,29 @@ async function cardCatalog() {
       goods.push({ id: p.id, name, type: t, unit: unitName.get(p.mainUnit) || '', price: price != null ? round(price) : null, at: last?.at || (price != null ? 'техкарта' : null) });
     } else if (t === 'DISH') dishes.push({ id: p.id, name, price: salePrice.has(p.id) ? round(salePrice.get(p.id)!) : null });
   }
-  return { goods, dishes };
+  return { goods, dishes, charts, all };
+}
+
+// карточка блюда / заготовки: действующая техкарта iiko в формате редактора техкарт CRM
+async function dishCard(id: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Не указано блюдо');
+  const cat = await cardCatalog();
+  const p = cat.all.get(id);
+  if (!p) throw new Error('Блюдо не найдено в iiko');
+  const goods = new Map(cat.goods.map((g) => [g.id, g]));
+  const ch = cat.charts.get(id);
+  const qu = (u: string) => /^кг|килогр/i.test(u) ? 'кг' : /^л|литр/i.test(u) ? 'л' : /^г/i.test(u) ? 'г' : 'шт';
+  const pct = (a: number, b: number) => a > 0 && b >= 0 && b < a ? round((1 - b / a) * 100, 1) : 0;
+  const items = (ch?.items || []).map((it) => {
+    const g = goods.get(it.product), a = cat.all.get(it.product);
+    const unit = g?.unit || a?.unit || '';
+    return { raw: a?.name || it.product, product_id: g ? g.id : null, product_name: g?.name || a?.name || null, unit, qty: round(it.amountIn / (ch!.amount || 1), 4), qty_unit: qu(unit), qty_is: 'брутто',
+      process: '', loss_cold: pct(it.amountIn, it.amountMiddle), loss_hot: pct(it.amountMiddle, it.amountOut), price: g?.price ?? null, price_at: g?.at ?? null,
+      note: !g ? (a?.deleted ? 'Товар удалён из номенклатуры iiko — замените' : 'Товар не найден в iiko') : null };
+  });
+  const dish = cat.dishes.find((d) => d.id === id);
+  return { card: { name: p.name, product_id: id, price: dish?.price ?? null, output: null, source_text: null, items, notes: ch && ch.items.length ? [] : ['В iiko у этой позиции нет техкарты — заполните состав и занесите в iiko'] },
+    catalog: cat.goods.map((g) => ({ id: g.id, name: g.name, unit: g.unit, price: g.price, at: g.at })), type: p.type };
 }
 
 const CARD_TOOL = {
@@ -497,6 +522,7 @@ Deno.serve(async (req) => {
     const venue = String(b.venue || 'petrogradka');
     if (b.action === 'digest') return json(await digest(venue));
     if (b.action === 'card_parse') return json(await cardParse(b));
+    if (b.action === 'dish_card') return json(await dishCard(String(b.product_id || '')));
     if (b.action === 'card_catalog') { const c = await cardCatalog(); return json({ catalog: c.goods.map((g) => ({ id: g.id, name: g.name, unit: g.unit, price: g.price, at: g.at })) }); }
     return json({ venue, stats: await check(venue, b.trigger === 'cron' ? 'cron' : 'manual') });
   } catch (e) {

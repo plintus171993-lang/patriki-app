@@ -12,8 +12,7 @@
 --      foodcost            себестоимость по последним ценам выше порога к средней цене продажи
 --  Проблема, которой больше нет, закрывается сама (resolved_at). Управляющий может пометить
 --  «не проблема» (muted) — тогда она не попадает в сводку.
---  Утром — одно сообщение управляющему в Telegram: telegram_chat_id:cost,
---  иначе чат заведения telegram_chat_id:petrogradka, иначе общий telegram_chat_id.
+--  Сводка в Telegram есть в функции (action digest), но по расписанию не отправляется.
 --
 --  Права: владелец — всё; управляющий — галочка «Себестоимость» (cost.view) во вкладке «Доступы».
 --  Можно запускать повторно.
@@ -88,7 +87,7 @@ grant update (muted, note, updated_by) on public.cost_issues to authenticated;
 grant update (params, updated_at, updated_by) on public.cost_settings to authenticated;
 
 -- ---------- расписание (время сервера — UTC) ----------
--- 04:20 МСК — проверка; 09:10 МСК — сводка в Telegram
+-- 04:20 МСК — проверка
 select cron.unschedule('cost-check-nightly') where exists (select 1 from cron.job where jobname = 'cost-check-nightly');
 select cron.schedule('cost-check-nightly', '20 1 * * *', $cron$
   select net.http_post(
@@ -97,14 +96,9 @@ select cron.schedule('cost-check-nightly', '20 1 * * *', $cron$
     body := '{"action":"check","venue":"petrogradka","trigger":"cron"}'::jsonb,
     timeout_milliseconds := 150000);
 $cron$);
+-- утренняя сводка в Telegram отключена по решению владельца: всё видно в разделе Офиса.
+-- Включить обратно: cron.schedule('cost-digest-morning', '10 6 * * *', … body '{"action":"digest"}')
 select cron.unschedule('cost-digest-morning') where exists (select 1 from cron.job where jobname = 'cost-digest-morning');
-select cron.schedule('cost-digest-morning', '10 6 * * *', $cron$
-  select net.http_post(
-    url := 'https://ozbdmczmpejyctezxrdk.supabase.co/functions/v1/cost-check',
-    headers := jsonb_build_object('Content-Type','application/json','x-pos-key',(select value from public.app_secrets where key = 'pos_api_key')),
-    body := '{"action":"digest","venue":"petrogradka"}'::jsonb,
-    timeout_milliseconds := 60000);
-$cron$);
 
 -- =====================================================================
 --  Техкарта «с листочка»: шеф фотографирует листок (или пишет текстом) → ИИ распознаёт состав,
