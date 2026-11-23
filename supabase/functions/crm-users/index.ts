@@ -11,7 +11,7 @@ const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const db = createClient(URL_, SERVICE_KEY, { auth: { persistSession: false } });
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json', ...CORS } });
-const PERMS = ['revenue.view', 'cash.view', 'cash.add', 'cash.transfer', 'staff.edit'];
+const PERMS = ['revenue.view', 'cash.view', 'cash.add', 'cash.transfer', 'staff.edit', 'cost.view'];
 
 async function isOwner(req: Request) {
   const auth = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
