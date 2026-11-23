@@ -946,19 +946,11 @@ function supplierAppLink(c, text) {
   const u = c.contact.trim().replace(/^https?:\/\/t\.me\//, '').replace(/^@/, '');
   return /^[a-z][a-z0-9_]{3,}$/i.test(u) ? `tg://resolve?domain=${u}&text=${t}` : `tg://resolve?phone=${d}&text=${t}`;
 }
-// сначала приложение; если за 1,5 с страница не ушла в фон (приложения нет) — веб-версия
+// открываем только приложение мессенджера; браузер — отдельной ссылкой «открыть в браузере»
+// (автоматический переход в браузер в Android-приложении срабатывал поверх уже открытого Telegram)
 function openMessenger(c, text) {
-  const app = supplierAppLink(c, text), web = supplierLink(c, text);
-  let left = false;
-  const onHide = (e) => { if (document.hidden || e?.type === 'blur') left = true; };
-  document.addEventListener('visibilitychange', onHide);
-  window.addEventListener('blur', onHide);
-  try { location.href = app; } catch { left = false; }
-  setTimeout(() => {
-    document.removeEventListener('visibilitychange', onHide);
-    window.removeEventListener('blur', onHide);
-    if (!left && !document.hidden) window.open(web, '_blank');
-  }, 1500);
+  const app = supplierAppLink(c, text);
+  location.href = app; // в Android-оболочке ссылку tg:// / whatsapp:// система открывает в приложении
 }
 function editSupplier(name, back) {
   const c = suppliers?.[name] || {};
@@ -991,13 +983,18 @@ function sendSheet(groups, note) {
         <div class="row" style="margin-top:8px">
           ${c ? `<button class="btn ${g.sent ? 'ghost' : ''}" data-send="${i}">Отправить в ${label}</button>` : g.supplier !== NO_SUP ? `<button class="btn" data-contact="${i}">Указать WhatsApp / Telegram</button>` : ''}
           <button class="btn ghost" data-copy="${i}" style="max-width:${c || g.supplier !== NO_SUP ? '120px' : 'none'}">Копировать</button>
-        </div>${c ? `<button class="link mini" data-contact="${i}" style="margin-top:6px">${esc(label)}: ${esc(c.contact)} · изменить</button>` : ''}</div>`;
+        </div>${c ? `<div class="row" style="margin-top:6px;justify-content:space-between"><button class="link mini" data-contact="${i}">${esc(label)}: ${esc(c.contact)} · изменить</button>${g.sent ? `<button class="link mini" data-web="${i}">не открылось? в браузере</button>` : ''}</div>` : ''}</div>`;
     }).join('')}
     <div style="height:10px"></div><button class="btn ghost" data-a="close">Готово</button>`, async (a, b) => {
     if (b.dataset.contact) return editSupplier(groups[+b.dataset.contact].supplier, draw);
     if (b.dataset.copy) {
       const g = groups[+b.dataset.copy];
       try { await navigator.clipboard.writeText(orderMessage(g.items, note)); toast('Текст заказа скопирован', 'ok'); } catch { if (navigator.share) navigator.share({ text: orderMessage(g.items, note) }).catch(() => {}); }
+      return;
+    }
+    if (b.dataset.web) {
+      const g = groups[+b.dataset.web];
+      window.open(supplierLink(suppliers[g.supplier], orderMessage(g.items, note)), '_blank');
       return;
     }
     if (b.dataset.send) {
