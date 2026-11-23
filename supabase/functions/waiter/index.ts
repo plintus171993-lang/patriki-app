@@ -25,7 +25,9 @@
 //   stock {force?}                → {items, stores, at, perms, sections} — права stock_view / stock_order / stock_setup,
 //                                    разделы stock_bar / stock_kitchen (шеф — только кухня; управляющий — всё)
 //   stock_catalog {q}             → {products}                    — товары iiko для добавления (stock_setup)
-//   stock_all {force?}            → {items, supplyError, at}      — все закупаемые товары с остатками и поставщиком
+//   stock_all {force?}            → {items, supplyError, at, stores, perms, sections} — все закупаемые товары:
+//                                    остаток, поставщик, минимум и «сколько заказать», если минимум задан
+//   stock_check (x-pos-key, pg_cron каждые 5 мин) → {checked, notified} — уведомление в Telegram «пора заказать»
 //   stock_item_save {productId, …} / stock_item_delete {productId}   (stock_setup)
 //   stock_order {items, supplier?, note?} → {id, telegram}        (stock_order)
 //   stock_orders                  → {orders}                      (stock_view)
@@ -608,9 +610,10 @@ async function stockAll(staff: Staff, force: boolean) {
     cached('stock_catalog', 6 * 3600, loadCatalog),
     cached('stock_balance', 60, loadBalance, force),
     cached('stock_supply', 6 * 3600, loadSupply, force).catch((e) => ({ _error: (e as Error).message } as any)),
-    db.from('stock_items').select('product_id, section').eq('active', true),
+    db.from('stock_items').select('*').eq('active', true),
   ]);
   const supplyError = (supply as any)._error || null;
+  const settings = new Map((items || []).map((x: any) => [x.product_id, x]));
   const watched = new Map((items || []).map((x: any) => [x.product_id, x.section]));
   const stores = new Map(cat.stores.map((x) => [x.id, x.name]));
   const ms = mySections(staff);
@@ -623,19 +626,42 @@ async function stockAll(staff: Staff, force: boolean) {
       .filter((x) => Math.abs(x.qty) > 1e-9 && (ms === null || (x.section && ms.includes(x.section))));
     if (ms !== null && !by.length && !(watched.get(id) && ms.includes(watched.get(id)))) continue;
     const main = by.slice().sort((a, b2) => b2.qty - a.qty)[0];
-    list.push({
-      id, name: p.name, unit: p.unit, group: p.group || 'Без группы', type: p.type,
+    const it: any = settings.get(id);
+    const row: any = {
+      id, productId: id, name: p.name, unit: p.unit, group: p.group || 'Без группы', type: p.type,
       qty: round(by.reduce((a, x) => a + x.qty, 0)), byStore: by.map(({ name, qty }) => ({ name, qty })),
       storeId: main?.id || null, section: watched.get(id) || main?.section || null,
-      supplier: (supply as any)[id]?.supplier || '', lastAt: (supply as any)[id]?.at || null, watched: watched.has(id),
-    });
+      supplier: (supply as any)[id]?.supplier || '', lastAt: (supply as any)[id]?.at || null, watched: !!it,
+    };
+    if (it) {
+      Object.assign(row, stockState(it, bal[id] || {}), {
+        storeId: it.store_id, store: it.store_id ? stores.get(it.store_id) || 'склад' : null, section: it.section,
+        portion: it.portion ? Number(it.portion) : null, portionName: it.portion_name, packName: it.pack_name,
+        supplier: it.supplier || row.supplier,
+      });
+    }
+    list.push(row);
   }
   list.sort((a, b2) => a.group.localeCompare(b2.group, 'ru') || a.name.localeCompare(b2.name, 'ru'));
   const { data: at } = await db.from('waiter_cache').select('updated_at').eq('key', 'stock_balance').maybeSingle();
-  return { items: list, supplyError, at: at?.updated_at || null };
+  return { items: list, supplyError, at: at?.updated_at || null, stores: cat.stores, perms: effPerms(staff), sections: ms || Object.values(SECTIONS) };
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+// остаток позиции (по выбранному складу или по всем) и сколько заказать: до «заказывать до»,
+// иначе до двух минимумов; округляем вверх до упаковки
+function stockState(it: any, by: Record<string, number>) {
+  const qty = round(it.store_id ? (by[it.store_id] || 0) : Object.values(by).reduce((a, b) => a + b, 0));
+  const min = Number(it.min_qty || 0), max = it.max_qty != null ? Number(it.max_qty) : null, pack = it.pack ? Number(it.pack) : null;
+  let suggest = 0;
+  if (qty <= min) {
+    const target = max != null && max > min ? max : Math.max(min * 2, min + (pack || 0));
+    suggest = Math.max(target - qty, pack || 0);
+    if (pack) suggest = Math.ceil(suggest / pack - 1e-9) * pack;
+    suggest = round(suggest);
+  }
+  return { qty, min, max, pack, suggest, low: qty <= min };
+}
 async function stockView(staff: Staff, force: boolean) {
   const [cat, bal, { data: items }] = await Promise.all([
     cached('stock_catalog', 6 * 3600, loadCatalog, force),
@@ -706,6 +732,45 @@ async function stockItemSave(staff: Staff, b: any) {
 }
 
 const fmt = (n: number) => String(round(n)).replace('.', ',');
+
+// фоновая проверка (pg_cron каждые 5 минут): позиция опустилась до минимума — одно сообщение в Telegram
+// раздела; снова уведомим, только когда остаток поднимется выше минимума (привезли) и опять упадёт
+async function tgChat(section: string) {
+  const key = section === 'Бар' ? 'stock_bar' : section === 'Кухня' ? 'stock_kitchen' : 'stock';
+  return (await secret('telegram_chat_id:' + key)) || (await secret('telegram_chat_id:stock')) || (await secret('telegram_chat_id:' + await venue())) || (await secret('telegram_chat_id'));
+}
+async function stockCheck() {
+  const { data: items } = await db.from('stock_items').select('*').eq('active', true);
+  if (!items?.length) return { checked: 0, notified: 0 };
+  const [cat, bal] = await Promise.all([cached('stock_catalog', 6 * 3600, loadCatalog), cached('stock_balance', 60, loadBalance, true)]);
+  const now = new Date().toISOString();
+  const fresh = new Map<string, string[]>();
+  for (const it of items as any[]) {
+    const st = stockState(it, bal[it.product_id] || {});
+    if (st.low && !it.low_notified_at) {
+      const name = cat.products[it.product_id]?.name || it.name;
+      const left = it.portion ? `${fmt(st.qty)} ${it.unit || ''} ≈ ${Math.max(0, Math.floor(st.qty / Number(it.portion) + 1e-9))} ${it.portion_name || 'порц.'}` : `${fmt(st.qty)} ${it.unit || ''}`;
+      const need = it.pack ? `${fmt(st.suggest / Number(it.pack))} ${it.pack_name || 'уп.'}` : `${fmt(st.suggest)} ${it.unit || ''}`;
+      const sec = it.section || 'Без раздела';
+      if (!fresh.has(sec)) fresh.set(sec, []);
+      fresh.get(sec)!.push(`• ${name} — осталось ${left}, заказать ${need}${it.supplier ? ` (${it.supplier})` : ''}`);
+      await db.from('stock_items').update({ low_notified_at: now }).eq('product_id', it.product_id);
+    } else if (!st.low && it.low_notified_at) {
+      await db.from('stock_items').update({ low_notified_at: null }).eq('product_id', it.product_id);
+    }
+  }
+  const tok = await secret('telegram_bot_token');
+  let notified = 0;
+  for (const [sec, lines] of fresh) {
+    const chat = await tgChat(sec);
+    if (!tok || !chat) continue;
+    const esc = (x: string) => x.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!));
+    const text = `📦 <b>Пора заказать · ${esc(sec)}</b>\n${lines.map(esc).join('\n')}\n\nОформить заказ: приложение официантов → 📦 Склад`;
+    const r = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML' }) });
+    if (r.ok) notified += lines.length;
+  }
+  return { checked: items.length, notified };
+}
 async function stockOrder(staff: Staff, b: any) {
   const raw = (Array.isArray(b.items) ? b.items : []).map((i: any) => ({
     productId: i.productId, name: String(i.name || '').slice(0, 120), qty: Number(i.qty), unit: String(i.unit || '').slice(0, 20),
@@ -757,6 +822,11 @@ Deno.serve(async (req) => {
     const a = b.action;
     if (a === 'login') return json(await login(req, String(b.pin || '')));
     if (a === 'pos_poll' || a === 'pos_result') return json(await pos(req, a, b));
+    if (a === 'stock_check') {
+      const key = req.headers.get('x-pos-key') || '', want = await secret('pos_api_key');
+      if (!key || !want || key !== want) return json({ error: 'Неверный ключ' }, 403);
+      return json(await stockCheck());
+    }
     const staff = await session(req);
     switch (a) {
       case 'me': return json({ staff: { ...staff, perms: effPerms(staff) } });

@@ -58,3 +58,18 @@ create index if not exists stock_orders_created on public.stock_orders (created_
 -- закрыто для приложения: читать и писать может только серверная функция waiter
 alter table public.stock_items  enable row level security;
 alter table public.stock_orders enable row level security;
+
+-- ---------- 025: уведомление «пора заказать» ----------
+-- Каждые 5 минут функция waiter сверяет остатки iiko с минимумами и пишет в Telegram раздела
+-- (telegram_chat_id:stock_bar / :stock_kitchen → :stock → чат заведения). Одно сообщение на падение:
+-- повторно — только после того, как остаток поднимется выше минимума.
+alter table public.stock_items add column if not exists low_notified_at timestamptz;
+select cron.unschedule('stock-check') where exists (select 1 from cron.job where jobname = 'stock-check');
+select cron.schedule('stock-check', '*/5 * * * *', $$
+  select net.http_post(
+    url := 'https://ozbdmczmpejyctezxrdk.supabase.co/functions/v1/waiter',
+    headers := jsonb_build_object('Content-Type','application/json','x-pos-key',(select value from public.app_secrets where key = 'pos_api_key')),
+    body := '{"action":"stock_check"}'::jsonb,
+    timeout_milliseconds := 60000
+  );
+$$);

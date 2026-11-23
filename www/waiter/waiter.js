@@ -286,7 +286,7 @@ function openMainMenu() {
   });
 }
 
-function openStock() { S.view = 'stock'; stockTab = 'low'; render(); loadStock(); }
+function openStock() { S.view = 'stock'; stockTab = 'iiko'; render(); if (!stockAll || stockAll.error) loadStockAll(); else loadStockAll(); }
 
 /* ---------- стол ---------- */
 function openTable(id) {
@@ -691,7 +691,7 @@ function editStaff(s, pre = null) {
 const can = (p) => (S.staff?.perms || []).includes(p) || S.staff?.role === 'manager';
 const fmtN = (n) => (Math.round(Number(n) * 1000) / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 });
 let stock = null, stockTab = 'low', stockSec = '', stockOrders = null;
-let stockAll = null, allQ = '', allBy = 'group'; // вкладка «Склад iiko»: все закупаемые товары
+let stockAll = null, allQ = '', allBy = 'group', allFilter = 'all'; // «Склад iiko»: все закупаемые товары
 function qtyText(q, it) {
   let s = `${fmtN(q)} ${esc(it.unit || '')}`;
   if (it.pack && it.packName && Math.abs(q) >= it.pack) s = `${fmtN(q / it.pack)} ${esc(it.packName)} · ` + s;
@@ -711,22 +711,26 @@ async function loadStock(force = false) {
 }
 async function loadStockAll(force = false) {
   if (!stockAll || force) { stockAll = null; render(); }
-  try { stockAll = await api('stock_all', { force }, { timeout: 90000 }); } catch (e) { stockAll = { error: e.message }; }
+  try {
+    stockAll = await api('stock_all', { force }, { timeout: 90000 });
+    stock = { items: [], sections: stockAll.sections, stores: stockAll.stores }; // для карточки позиции
+    if (S.staff && stockAll.perms) { S.staff.perms = stockAll.perms; LS.set('staff', S.staff); }
+  } catch (e) { stockAll = { error: e.message }; }
   if (S.view === 'stock') render();
 }
 function allListHtml() {
   if (stockAll === null) return '<div class="empty"><span class="spin"></span><br><br>Загружаю склад из iiko…</div>';
   if (stockAll.error) return `<div class="banner">${esc(stockAll.error)}</div>`;
   const q = allQ.trim().toLowerCase();
-  const f = stockAll.items.filter((x) => (!stockSec || x.section === stockSec) && (!q || x.name.toLowerCase().includes(q) || (x.supplier || '').toLowerCase().includes(q) || x.group.toLowerCase().includes(q)));
-  if (!f.length) return '<div class="empty">Ничего не нашлось</div>';
+  const f = stockAll.items.filter((x) => (!stockSec || x.section === stockSec) && (allFilter !== 'low' || x.low) && (!q || x.name.toLowerCase().includes(q) || (x.supplier || '').toLowerCase().includes(q) || x.group.toLowerCase().includes(q)));
+  if (!f.length) return `<div class="empty">${allFilter === 'low' && !q ? '✓ Всего хватает — заказывать нечего' : 'Ничего не нашлось'}</div>`;
   const key = (x) => (allBy === 'supplier' ? x.supplier || 'Поставщик не известен' : x.group);
   const groups = new Map();
   for (const x of f) { const k = key(x); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
   const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, 'ru'));
   return keys.map((k) => `<div class="gh">${esc(k)} <small>· ${groups.get(k).length}</small></div>` + groups.get(k).map((x) => `<button class="it" data-all="${x.id}">
-      <span class="n">${esc(x.name)}<small>${x.qty < 0 ? '<b style="color:var(--danger)">минус</b> ' : ''}${fmtN(x.qty)} ${esc(x.unit)}${x.byStore.length > 1 ? ' · ' + x.byStore.map((s) => `${esc(s.name)}: ${fmtN(s.qty)}`).join(', ') : x.byStore[0] ? ' · ' + esc(x.byStore[0].name) : ''}${allBy !== 'supplier' && x.supplier ? ' · ' + esc(x.supplier) : ''}</small></span>
-      ${x.watched ? '<span class="badge ok">следим</span>' : can('stock_setup') ? '<span class="badge">＋ мин.</span>' : ''}</button>`).join('')).join('');
+      <span class="n">${esc(x.name)}<small>${x.qty < 0 ? '<b style="color:var(--danger)">минус</b> ' : ''}${x.watched ? qtyText(x.qty, x) : `${fmtN(x.qty)} ${esc(x.unit)}`}${x.watched ? ` · мин. ${minText(x)}` : ''}${x.byStore.length > 1 ? ' · ' + x.byStore.map((s) => `${esc(s.name)}: ${fmtN(s.qty)}`).join(', ') : x.byStore[0] ? ' · ' + esc(x.byStore[0].name) : ''}${allBy !== 'supplier' && x.supplier ? ' · ' + esc(x.supplier) : ''}</small></span>
+      ${x.low ? `<span class="badge err">заказать ${orderText(x.suggest, x)}</span>` : x.watched ? '<span class="badge ok">хватает</span>' : can('stock_setup') ? '<span class="badge">＋ мин.</span>' : ''}</button>`).join('')).join('');
 }
 async function loadStockOrders() {
   stockOrders = null; render();
@@ -735,64 +739,56 @@ async function loadStockOrders() {
 }
 
 function renderStock() {
-  const items = stock?.items || [];
-  const secs = stock?.sections || [];
-  const inSec = items.filter((i) => !stockSec || i.section === stockSec);
-  const low = inSec.filter((i) => i.low);
-  const shown = stockTab === 'low' ? low : inSec;
-  const ago = stock?.at ? Math.round((Date.now() - new Date(stock.at).getTime()) / 60000) : null;
-  const row = (it) => `<button class="it ${it.low ? 'low' : ''}" data-item="${it.productId}">
-      <span class="n">${esc(it.name)}<small>осталось ${qtyText(it.qty, it)} · мин. ${minText(it)}${it.byStore.length > 1 ? ' · ' + it.byStore.map((s) => `${esc(s.name)}: ${fmtN(s.qty)}`).join(', ') : ''}${it.missing ? ' · нет в iiko' : ''}</small></span>
-      ${it.low ? `<span class="badge err">заказать ${orderText(it.suggest, it)}</span>` : '<span class="badge ok">хватает</span>'}</button>`;
+  const all = Array.isArray(stockAll?.items) ? stockAll.items : [];
+  const secs = stockAll?.sections || [];
+  const low = all.filter((i) => i.low && (!stockSec || i.section === stockSec));
+  const ago = stockAll?.at ? Math.round((Date.now() - new Date(stockAll.at).getTime()) / 60000) : null;
   let body;
-  if (stockTab === 'iiko') {
-    body = `<div class="search"><input id="aq" placeholder="Поиск: товар, поставщик, группа" value="${esc(allQ)}" autocomplete="off"></div>
-      <div class="tabs" style="padding-top:8px"><button class="chip ${allBy === 'group' ? 'on' : ''}" data-by="group">По группам</button><button class="chip ${allBy === 'supplier' ? 'on' : ''}" data-by="supplier">По поставщикам</button></div>
-      ${stockAll?.supplyError ? `<div class="banner warn">Поставщики не подтянулись: ${esc(stockAll.supplyError)}</div>` : ''}
-      <div class="list" id="alllist" style="padding-top:0">${allListHtml()}</div>`;
-  } else if (stockTab === 'orders') {
+  if (stockTab === 'orders') {
     body = stockOrders === null ? '<div class="empty"><span class="spin"></span></div>' : stockOrders.error ? `<div class="empty">${esc(stockOrders.error)}</div>` :
       stockOrders.length ? `<div class="hist">${stockOrders.map((o) => `<div class="hi"><span class="n">${esc(o.supplier || 'Заказ')} · ${o.items.length} поз.<small>${new Date(o.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${o.waiter_staff?.name ? ' · ' + esc(o.waiter_staff.name) : ''}${o.telegram ? ' · в Telegram' : ''}<br>${o.items.map((i) => esc(i.name)).join(', ')}</small></span>
         ${o.status === 'new' ? `<span class="badge q">ждём</span>${can('stock_order') ? `<button class="badge ok" data-recv="${o.id}">Пришло</button>` : ''}` : o.status === 'received' ? '<span class="badge ok">получен</span>' : '<span class="badge">отменён</span>'}</div>`).join('')}</div>`
       : '<div class="empty">Заказов пока не было</div>';
-  } else if (stock === null) body = '<div class="empty"><span class="spin"></span><br><br>Загружаю остатки из iiko…</div>';
-  else if (stock.error) body = `<div class="banner">${esc(stock.error)}</div>`;
-  else if (!items.length) body = `<div class="empty">Пока не выбрано ни одной позиции.${can('stock_setup') ? '<br><br><button class="btn" style="max-width:280px;margin:0 auto" data-a="add">＋ Добавить позицию из iiko</button>' : '<br>Позиции и минимумы настраивает управляющий.'}</div>`;
-  else body = `<div class="list" style="padding-top:0">${shown.map(row).join('') || `<div class="empty">${stockTab === 'low' ? '✓ Всего хватает — заказывать нечего' : 'Нет позиций'}</div>`}</div>`;
+  } else {
+    body = `<div class="search"><input id="aq" placeholder="Поиск: товар, поставщик, группа" value="${esc(allQ)}" autocomplete="off"></div>
+      <div class="tabs" style="padding-top:8px"><button class="chip ${allBy === 'group' ? 'on' : ''}" data-by="group">По группам</button><button class="chip ${allBy === 'supplier' ? 'on' : ''}" data-by="supplier">По поставщикам</button></div>
+      ${stockAll?.supplyError ? `<div class="banner warn">Поставщики не подтянулись: ${esc(stockAll.supplyError)}</div>` : ''}
+      <div class="list" id="alllist" style="padding-top:0">${allListHtml()}</div>`;
+  }
   $app.innerHTML = `
   <div class="top"><button class="ib" data-a="back">←</button><h1>Склад<small>${ago == null ? 'остатки из iiko' : `остатки из iiko · ${ago < 1 ? 'только что' : ago + ' мин назад'}`}</small></h1>
-    <button class="ib" data-a="refresh" aria-label="Обновить">↻</button>${can('stock_setup') ? '<button class="ib" data-a="add" aria-label="Добавить">＋</button>' : ''}</div>
+    <button class="ib" data-a="refresh" aria-label="Обновить">↻</button></div>
   <div class="tabs">
-    <button class="chip ${stockTab === 'low' ? 'on' : ''}" data-tab="low">Надо заказать${stock?.items ? ` · ${low.length}` : ''}</button>
-    <button class="chip ${stockTab === 'all' ? 'on' : ''}" data-tab="all">Мои позиции</button>
     <button class="chip ${stockTab === 'iiko' ? 'on' : ''}" data-tab="iiko">Склад iiko</button>
     <button class="chip ${stockTab === 'orders' ? 'on' : ''}" data-tab="orders">Заказы</button>
   </div>
-  ${secs.length > 1 && stockTab !== 'orders' ? `<div class="tabs" style="padding-top:4px"><button class="chip ${!stockSec ? 'on' : ''}" data-sec="">Все</button>${secs.map((s) => `<button class="chip ${stockSec === s ? 'on' : ''}" data-sec="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
+  ${stockTab === 'iiko' ? `<div class="tabs" style="padding-top:4px">
+    <button class="chip ${allFilter === 'all' ? 'on' : ''}" data-filter="all">Все</button>
+    <button class="chip ${allFilter === 'low' ? 'on' : ''}" data-filter="low">Надо заказать${stockAll?.items ? ` · ${low.length}` : ''}</button>
+    ${secs.length > 1 ? `<span style="width:8px;flex:none"></span><button class="chip ${!stockSec ? 'on' : ''}" data-sec="">Бар и кухня</button>${secs.map((x) => `<button class="chip ${stockSec === x ? 'on' : ''}" data-sec="${esc(x)}">${esc(x)}</button>`).join('')}` : ''}
+  </div>` : ''}
   ${body}
-  ${!['orders', 'iiko'].includes(stockTab) && low.length && can('stock_order') ? `<div class="bar"><div class="in"><button class="btn" data-a="order">Оформить заказ <span class="cnt">${low.length}</span></button></div></div>` : ''}`;
+  ${stockTab === 'iiko' && low.length && can('stock_order') ? `<div class="bar"><div class="in"><button class="btn" data-a="order">Оформить заказ <span class="cnt">${low.length}</span></button></div></div>` : ''}`;
   const aq = $app.querySelector('#aq');
   if (aq) aq.oninput = () => { allQ = aq.value; $app.querySelector('#alllist').innerHTML = allListHtml(); };
   $app.onclick = async (e) => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.a === 'back') { S.view = 'tables'; return render(); }
-    if (b.dataset.a === 'refresh') return stockTab === 'orders' ? loadStockOrders() : stockTab === 'iiko' ? loadStockAll(true) : loadStock(true);
-    if (b.dataset.a === 'add') return pickStockProduct();
+    if (b.dataset.a === 'refresh') return stockTab === 'orders' ? loadStockOrders() : loadStockAll(true);
+    if (b.dataset.filter) { allFilter = b.dataset.filter; return render(); }
     if (b.dataset.a === 'order') return openStockOrder(low);
     if (b.dataset.tab) { stockTab = b.dataset.tab; if (stockTab === 'orders') loadStockOrders(); if (stockTab === 'iiko' && !stockAll) loadStockAll(); return render(); }
     if (b.dataset.by) { allBy = b.dataset.by; return render(); }
     if (b.dataset.all) {
       const x = stockAll.items.find((y) => y.id === b.dataset.all);
-      const have = stock?.items?.find((i) => i.productId === x.id);
       if (!can('stock_setup')) return;
-      return editStockItem(have || { productId: x.id, name: x.name, unit: x.unit, qty: x.qty, min: 0, isNew: true, section: x.section, storeId: x.storeId, supplier: x.supplier });
+      return editStockItem(x.watched ? x : { productId: x.id, name: x.name, unit: x.unit, qty: x.qty, min: 0, isNew: true, section: x.section, storeId: x.storeId, supplier: x.supplier });
     }
     if (b.dataset.sec !== undefined) { stockSec = b.dataset.sec; return render(); }
     if (b.dataset.recv) {
-      try { await api('stock_order_status', { id: b.dataset.recv, status: 'received' }); toast('Отмечено: пришло', 'ok'); loadStockOrders(); loadStock(true); } catch (er) { toast(er.message, 'err'); }
+      try { await api('stock_order_status', { id: b.dataset.recv, status: 'received' }); toast('Отмечено: пришло', 'ok'); loadStockOrders(); loadStockAll(true); } catch (er) { toast(er.message, 'err'); }
       return;
     }
-    if (b.dataset.item && can('stock_setup')) editStockItem(items.find((x) => x.productId === b.dataset.item));
   };
 }
 
@@ -857,12 +853,12 @@ function editStockItem(it, stores = stock?.stores || []) {
       ${stores.length > 1 ? `<div class="mg">Склад</div><select class="field" id="s_store"><option value="">Все склады вместе</option>${stores.map((s) => `<option value="${s.id}" ${f.storeId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
       <div class="mg">Поставщик <small>необяз.</small></div><input class="field" id="s_supplier" placeholder="Например, «Пивоварня»" value="${esc(f.supplier)}">
       <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>
-      ${it.isNew ? '' : '<div style="height:8px"></div><button class="btn danger" data-a="del">Убрать из списка</button>'}`, async (a, b) => {
+      ${it.isNew ? '' : '<div style="height:8px"></div><button class="btn danger" data-a="del">Снять минимум</button>'}`, async (a, b) => {
       if (b.dataset.mode) { grab(); const was = k(); unitMode = b.dataset.mode; const now = k(); if (min !== '') min = fmtN(Number(min) * was / now).replace(/\s/g, ''); if (max !== '') max = fmtN(Number(max) * was / now).replace(/\s/g, ''); return draw(); }
       if (b.dataset.section !== undefined) { grab(); f.section = b.dataset.section; return draw(); }
       if (a === 'del') {
         if (!confirm(`Убрать «${it.name}» из списка?`)) return;
-        try { await api('stock_item_delete', { productId: it.productId }); closeSheet(); toast('Убрано', 'ok'); loadStock(); } catch (er) { toast(er.message, 'err'); }
+        try { await api('stock_item_delete', { productId: it.productId }); closeSheet(); toast('Минимум снят', 'ok'); loadStockAll(); } catch (er) { toast(er.message, 'err'); }
         return;
       }
       if (a !== 'save') return;
@@ -877,8 +873,7 @@ function editStockItem(it, stores = stock?.stores || []) {
           portion: f.portion, portionName: f.portionName, pack: f.pack, packName: f.packName,
           supplier: f.supplier, section: f.section, storeId: f.storeId || null,
         });
-        closeSheet(); toast('Сохранено', 'ok'); loadStock();
-        const ai = stockAll?.items?.find((y) => y.id === it.productId); if (ai) { ai.watched = true; ai.section = f.section; }
+        closeSheet(); toast('Сохранено — уведомим, когда остаток дойдёт до минимума', 'ok'); loadStockAll();
       } catch (er) { toast(er.message, 'err'); }
     });
     // при вводе порции/упаковки обновить переключатель «считать в»
@@ -917,7 +912,7 @@ function openStockOrder(low) {
           if (a2 === 'share') {
             try { if (navigator.share) await navigator.share({ text }); else { await navigator.clipboard.writeText(text); toast('Скопировано — вставьте в мессенджер', 'ok'); } } catch { /* закрыл окно */ }
           }
-          if (a2 === 'close') { closeSheet(); stockTab = 'orders'; loadStockOrders(); }
+          if (a2 === 'close') { closeSheet(); stockTab = 'orders'; loadStockOrders(); loadStockAll(); }
         });
       } catch (er) { b.disabled = false; toast(er.message, 'err'); }
     });
