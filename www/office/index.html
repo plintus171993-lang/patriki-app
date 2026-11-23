@@ -189,7 +189,7 @@ async function start(){
   $('#whoName').textContent=(me.name||'')+(me.owner?' · владелец':' · управляющий');
   $('#login').classList.add('hidden');$('#app').classList.remove('hidden');
   await loadRefs();buildNav();
-  const h=location.hash.slice(1);if(PAGES.find(p=>p.id===h))S.page=h;
+  const h=location.hash.slice(1);if(pageOk(h))S.page=h;
   render();
 }
 async function loadRefs(){
@@ -206,22 +206,26 @@ const IC={
  pay:'<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" fill="none" stroke="currentColor" stroke-width="2"/>',
  mot:'<path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z" fill="none" stroke="currentColor" stroke-width="2"/>',
  log:'<path d="M4 4h16v16H4zM8 9h8M8 13h8M8 17h5" fill="none" stroke="currentColor" stroke-width="2"/>',
+ acc:'<path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6zM9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2"/>',
  loy:'<path d="M3 7h18v12H3zM3 11h18M7 15h4" fill="none" stroke="currentColor" stroke-width="2"/>'
 };
 const PAGES=[
- {id:'dash',t:'Сводка',ic:'dash'},{id:'cash',t:'Кассы и деньги',ic:'cash'},{id:'ts',t:'Табель',ic:'ts'},
- {id:'staff',t:'Сотрудники',ic:'staff'},{id:'pay',t:'Зарплата',ic:'pay'},{id:'loy',t:'Система лояльности',ic:'loy',owner:1},{id:'mot',t:'Мотивация',ic:'mot',owner:1},{id:'log',t:'Журнал действий',ic:'log',owner:1}];
+ {id:'dash',t:'Сводка',ic:'dash',perm:'revenue.view'},{id:'cash',t:'Кассы и деньги',ic:'cash',perm:'cash.view'},{id:'ts',t:'Табель',ic:'ts'},
+ {id:'staff',t:'Сотрудники',ic:'staff',perm:'staff.edit'},{id:'pay',t:'Зарплата',ic:'pay',owner:1},{id:'loy',t:'Система лояльности',ic:'loy',owner:1},{id:'mot',t:'Мотивация',ic:'mot',owner:1},{id:'acc',t:'Доступы',ic:'acc',owner:1},{id:'log',t:'Журнал действий',ic:'log',owner:1}];
+const can=p=>S.me.owner||S.me.perms.includes(p);
+const pageOk=id=>{const p=PAGES.find(x=>x.id===id);return !!p&&(S.me.owner||(!p.owner&&(!p.perm||can(p.perm))))};
 function buildNav(){
-  $('#nav').innerHTML=PAGES.filter(p=>!p.owner||S.me.owner).map(p=>`<a data-p="${p.id}"><svg viewBox="0 0 24 24" fill="currentColor">${IC[p.ic]}</svg><span>${p.t}</span></a>`).join('');
+  if(!pageOk(S.page))S.page=PAGES.find(p=>pageOk(p.id)).id;
+  $('#nav').innerHTML=PAGES.filter(p=>pageOk(p.id)).map(p=>`<a data-p="${p.id}"><svg viewBox="0 0 24 24" fill="currentColor">${IC[p.ic]}</svg><span>${p.t}</span></a>`).join('');
   $('#nav').querySelectorAll('a').forEach(a=>a.onclick=()=>{S.page=a.dataset.p;location.hash=S.page;render()});
 }
-window.addEventListener('hashchange',()=>{const h=location.hash.slice(1);if(h&&h!==S.page&&PAGES.find(p=>p.id===h)){S.page=h;render()}});
+window.addEventListener('hashchange',()=>{const h=location.hash.slice(1);if(h&&h!==S.page&&pageOk(h)){S.page=h;render()}});
 function render(){
   closeModal();
   $('#nav').querySelectorAll('a').forEach(a=>a.classList.toggle('on',a.dataset.p===S.page));
   const p=PAGES.find(p=>p.id===S.page);$('#title').textContent=p.t;
   $('#view').innerHTML='<div class="empty">Загрузка…</div>';
-  ({dash:vDash,cash:vCash,ts:vTs,staff:vStaff,pay:vPay,loy:vLoy,mot:vMot,log:vLog})[S.page]().catch(e=>{console.error(e);$('#view').innerHTML='<div class="empty">Не удалось загрузить данные</div>'});
+  ({dash:vDash,cash:vCash,ts:vTs,staff:vStaff,pay:vPay,loy:vLoy,mot:vMot,log:vLog,acc:vAcc})[S.page]().catch(e=>{console.error(e);$('#view').innerHTML='<div class="empty">Не удалось загрузить данные</div>'});
 }
 function monthPicker(id){return `<input type="month" id="${id}" value="${S.month}">`}
 function bindMonth(id){$('#'+id).onchange=e=>{S.month=e.target.value;render()}}
@@ -232,7 +236,7 @@ async function vDash(){
   const rev=await q(vFilter(sb.from('crm_daily_revenue').select('*')).gte('day',from).lte('day',to).order('day'));
   const cbIds=S.cashboxes.filter(c=>S.venue==='all'||c.venue_id===S.venue||!c.venue_id).map(c=>c.id);
   const ops=cbIds.length?await all(()=>sb.from('crm_cash_ops').select('amount,direction,category,transfer_id').in('cashbox_id',cbIds).gte('op_date',from).lte('op_date',to)):[];
-  const pay=await q(vFilter(sb.from('crm_payroll').select('total')).eq('month',from));
+  const pay=S.me.owner?await q(vFilter(sb.from('crm_payroll').select('total')).eq('month',from)):[];
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
   const cashless=sum(rev,r=>r.cashless),cash=sum(rev,r=>r.cash),total=cashless+cash;
   const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id&&!['Корректировка остатка','Перемещение'].includes(o.category));
@@ -247,14 +251,14 @@ async function vDash(){
     ${kpi('Безнал',rub(cashless),total?Math.round(cashless/total*100)+'% выручки':'')}
     ${kpi('Наличные по кассе',rub(cash),total?Math.round(cash/total*100)+'% выручки':'')}
     ${kpi('Кухня / бар',rub(kitchen)+'<br><span style="font-size:16px">'+rub(bar)+'</span>','оборот по iiko')}
-    ${kpi('Расходы из касс',rub(expSum),exp.length+' операций')}
-    ${kpi('Фонд оплаты труда',rub(fot),pay.length?pay.length+' в ведомости':'ведомость не закрыта')}
+    ${can('cash.view')?kpi('Расходы из касс',rub(expSum),exp.length+' операций'):''}
+    ${S.me.owner?kpi('Фонд оплаты труда',rub(fot),pay.length?pay.length+' в ведомости':'ведомость не закрыта'):''}
   </div>
-  <div class="grid" style="grid-template-columns:2fr 1fr;margin-top:14px">
+  <div class="grid" style="grid-template-columns:${can('cash.view')?'2fr 1fr':'1fr'};margin-top:14px">
     <div class="card"><h3>Выручка по дням</h3>${revChart(rev,m)}<div class="muted" style="font-size:12px;margin-top:6px"><span style="color:var(--accent)">■</span> безнал &nbsp; <span style="color:#7fb3f0">■</span> наличные по кассе${fee?` &nbsp;·&nbsp; сервисный сбор за месяц: ${rub(fee)}`:''}</div></div>
-    <div class="card"><h3>Расходы по категориям</h3>${cats.length?cats.map(([c,v])=>`<div class="hbar"><span class="t" title="${esc(c)}">${esc(c)}</span><span class="b"><i style="width:${v/maxC*100}%"></i></span><span class="n">${rub(v)}</span></div>`).join(''):'<div class="empty">Нет расходов</div>'}</div>
+    ${can('cash.view')?`<div class="card"><h3>Расходы по категориям</h3>${cats.length?cats.map(([c,v])=>`<div class="hbar"><span class="t" title="${esc(c)}">${esc(c)}</span><span class="b"><i style="width:${v/maxC*100}%"></i></span><span class="n">${rub(v)}</span></div>`).join(''):'<div class="empty">Нет расходов</div>'}</div>`:''}
   </div>
-  <div class="card" style="margin-top:14px"><h3>Остатки касс</h3><div class="grid k4">${cbCards()}</div></div>`;
+  ${can('cash.view')?`<div class="card" style="margin-top:14px"><h3>Остатки касс</h3><div class="grid k4">${cbCards()}</div></div>`:''}`;
   bindMonth('dm');
   if(S.me.owner)$('#bIiko').onclick=iikoForm;
   document.querySelectorAll('.cb').forEach(c=>c.onclick=()=>{S.cbSel=c.dataset.id;S.page='cash';location.hash='cash';render()});
@@ -538,10 +542,10 @@ async function vTs(){
         else cells+=`<td class="c" data-e="${e.id}" data-d="${d}"></td>`}
       rows+=`<tr><td class="nm" data-emp="${e.id}" style="cursor:pointer" title="Открыть карточку"><span style="color:var(--accent)">${esc(e.name)}</span> <span class="muted" style="font-size:11px">${esc(e.position||'')}</span></td>${cells}<td class="n" style="padding:4px 10px;min-width:90px"><b>${g==='dish'?rub(tot):num(tot)+' ч'}</b></td><td class="n muted" style="padding:4px 10px;min-width:60px">${cnt} см.</td></tr>`}}
   $('#view').innerHTML=`<div class="bar">${monthPicker('tm')}<span class="muted">${esc(venueName(venue))}${S.venue==='all'?' (выберите заведение вверху)':''} · нажмите на клетку, чтобы отметить смену</span><span class="sp"></span>
-    <span class="pill g">смена здесь</span><span class="pill y">работал на другой точке</span>${S.me.owner?'<button class="btn pri" id="tsAdd">+ Сотрудник</button>':''}</div>
+    <span class="pill g">смена здесь</span><span class="pill y">работал на другой точке</span>${can('staff.edit')?'<button class="btn pri" id="tsAdd">+ Сотрудник</button>':''}</div>
     ${rows?`<div class="tw" style="max-height:72vh"><table class="ts"><thead><tr><th class="nm">Сотрудник</th>${dayHdr}<th>Итого</th><th>Смен</th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">Нет сотрудников</div>'}`;
   bindMonth('tm');
-  if(S.me.owner){$('#tsAdd').onclick=()=>empForm(null,vTs);document.querySelectorAll('.ts td[data-emp]').forEach(td=>td.onclick=()=>empCard(S.employees.find(e=>e.id===td.dataset.emp),vTs))}
+  if(can('staff.edit')){$('#tsAdd').onclick=()=>empForm(null,vTs);document.querySelectorAll('.ts td[data-emp]').forEach(td=>td.onclick=()=>{const e=S.employees.find(e=>e.id===td.dataset.emp);S.me.owner?empCard(e,vTs):can_edit_emp(e)&&empForm(e,vTs)})}
   document.querySelectorAll('.ts td.c').forEach(td=>td.onclick=()=>shiftForm(td.dataset.e,m+'-'+String(td.dataset.d).padStart(2,'0'),(map[td.dataset.e]||{})[+td.dataset.d],venue));
 }
 function shiftForm(eid,day,s,venue){
@@ -560,18 +564,19 @@ function shiftForm(eid,day,s,venue){
 }
 
 /* ---------- Сотрудники ---------- */
+const can_edit_emp=e=>S.me.owner||(can('staff.edit')&&S.venues.some(v=>v.id===e.home_venue));
 async function vStaff(){
   await loadRefs();
   const list=S.employees.filter(e=>S.venue==='all'||e.home_venue===S.venue||!e.home_venue);
   const showOff=S.cache.showOff;
   const rows=list.filter(e=>showOff||e.active);
   const mot={};if(S.me.owner)(await q(sb.from('crm_employee_motivation_current').select('*'))).forEach(m=>mot[m.employee_id]=m);
-  $('#view').innerHTML=`<div class="bar"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sOff" ${showOff?'checked':''}> показать уволенных</label><span class="sp"></span>${S.me.owner?'<button class="btn pri" id="sAdd">+ Сотрудник</button>':''}</div>
-  <div class="tw"><table><thead><tr><th>Имя</th><th>Должность</th><th>Отдел</th><th>Основная точка</th><th>Мотивация</th><th>iiko</th><th>Статус</th></tr></thead><tbody>
-  ${rows.map(e=>`<tr data-id="${e.id}" style="cursor:${S.me.owner?'pointer':'default'}"><td><b>${esc(e.name)}</b></td><td>${esc(e.position||'')}</td><td>${DEPT[e.dept]||''}</td><td>${esc(venueName(e.home_venue))}</td><td class="muted">${mot[e.id]?motShort(mot[e.id]):'—'}</td><td>${e.iiko_employee_id?'<span class="pill b">связан</span>':'<span class="muted">—</span>'}</td><td>${e.active?'<span class="pill g">работает</span>':'<span class="pill r">уволен</span>'}</td></tr>`).join('')}
+  $('#view').innerHTML=`<div class="bar"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="sOff" ${showOff?'checked':''}> показать уволенных</label><span class="sp"></span>${can('staff.edit')?'<button class="btn pri" id="sAdd">+ Сотрудник</button>':''}</div>
+  <div class="tw"><table><thead><tr><th>Имя</th><th>Должность</th><th>Отдел</th><th>Основная точка</th>${S.me.owner?'<th>Мотивация</th>':''}<th>iiko</th><th>Статус</th></tr></thead><tbody>
+  ${rows.map(e=>`<tr data-id="${e.id}" style="cursor:${S.me.owner||can_edit_emp(e)?'pointer':'default'}"><td><b>${esc(e.name)}</b></td><td>${esc(e.position||'')}</td><td>${DEPT[e.dept]||''}</td><td>${esc(venueName(e.home_venue))}</td>${S.me.owner?`<td class="muted">${mot[e.id]?motShort(mot[e.id]):'—'}</td>`:''}<td>${e.iiko_employee_id?'<span class="pill b">связан</span>':'<span class="muted">—</span>'}</td><td>${e.active?'<span class="pill g">работает</span>':'<span class="pill r">уволен</span>'}</td></tr>`).join('')}
   </tbody></table></div>`;
   $('#sOff').onchange=e=>{S.cache.showOff=e.target.checked;vStaff()};
-  if(S.me.owner){$('#sAdd').onclick=()=>empForm(null,vStaff);document.querySelectorAll('tr[data-id]').forEach(r=>r.onclick=()=>empCard(S.employees.find(e=>e.id===r.dataset.id),vStaff))}
+  if(can('staff.edit')){$('#sAdd').onclick=()=>empForm(null,vStaff);document.querySelectorAll('tr[data-id]').forEach(r=>r.onclick=()=>{const e=S.employees.find(e=>e.id===r.dataset.id);S.me.owner?empCard(e,vStaff):can_edit_emp(e)&&empForm(e,vStaff)})}
 }
 function empForm(e,after){
   modal(e?'Сотрудник':'Новый сотрудник',`
@@ -586,7 +591,7 @@ function empForm(e,after){
       if(!row.name){$('#eErr').textContent='Укажите имя';return}
       let saved;if(e){await q(sb.from('crm_employees').update(row).eq('id',e.id));saved={...e,...row}}else saved=(await q(sb.from('crm_employees').insert(row).select()))[0];
       await loadRefs();toast('Сохранено');
-      if(!e){empCard(saved,after||vStaff)}else{closeModal();(after||vStaff)()}})]);
+      if(!e&&S.me.owner){empCard(saved,after||vStaff)}else{closeModal();(after||vStaff)()}})]);
 }
 
 /* ---------- Карточка сотрудника и мотивация ---------- */
@@ -945,16 +950,67 @@ function posForm(venue,cur,name,emps){
      closeModal();toast('Сохранено');vMot()})],true);
 }
 
+
+/* ---------- Доступы ---------- */
+const PERM_LIST=[
+ ['revenue.view','Сводка','выручка своего заведения по дням, безнал/наличные, кухня/бар'],
+ ['cash.view','Кассы — смотреть','остатки и операции касс своего заведения'],
+ ['cash.add','Кассы — приход и расход','вносить операции вручную (включает «смотреть»)'],
+ ['cash.transfer','Кассы — перемещения','отправлять деньги между кассами (включает «смотреть»)'],
+ ['staff.edit','Сотрудники','добавлять и редактировать своих сотрудников — без зарплат и мотивации']];
+async function callUsers(body){
+  const {data:{session}}=await sb.auth.getSession();
+  const r=await fetch(SB_URL+'/functions/v1/crm-users',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({error:'нет ответа'}));if(!r.ok||d.error)throw new Error(d.error||r.status);return d}
+async function vAcc(){
+  const {users}=await callUsers({action:'list'});
+  const mg=users.filter(u=>!u.owner).sort((a,b)=>(a.venue||'').localeCompare(b.venue||'')||(a.name||'').localeCompare(b.name||''));
+  const pn=Object.fromEntries(PERM_LIST.map(([k,t])=>[k,t]));
+  $('#view').innerHTML=`<div class="bar"><span class="muted">Управляющий видит только своё заведение. Табель ведёт всегда, остальные вкладки — по галочкам. Зарплата, мотивация, лояльность и журнал — только у владельца.</span><span class="sp"></span><button class="btn pri" id="aAdd">+ Управляющий</button></div>
+  <div class="tw"><table><thead><tr><th>Имя</th><th>Вход (email)</th><th>Заведение</th><th>Что доступно</th><th>Последний вход</th></tr></thead><tbody>
+  ${users.filter(u=>u.owner).map(u=>`<tr><td><b>${esc(u.name||'')}</b></td><td>${esc(u.email||'')}</td><td>все</td><td><span class="pill g">владелец — всё</span></td><td class="muted">${u.last_sign_in?new Date(u.last_sign_in).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'}):'—'}</td></tr>`).join('')}
+  ${mg.map(u=>`<tr data-u="${u.user_id}" style="cursor:pointer"><td><b style="color:var(--accent)">${esc(u.name||'')}</b></td><td>${esc(u.email||'')}</td><td>${esc(venueName(u.venue))}</td><td><span class="pill">Табель</span> ${u.perms.filter(p=>pn[p]).map(p=>`<span class="pill b">${esc(pn[p])}</span>`).join(' ')}</td><td class="muted">${u.last_sign_in?new Date(u.last_sign_in).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'}):'ещё не входил'}</td></tr>`).join('')}
+  </tbody></table></div>${mg.length?'':'<div class="empty">Управляющих пока нет. Нажмите «+ Управляющий», задайте email и пароль и передайте их человеку — он войдёт на patrikipab.ru/office.</div>'}`;
+  $('#aAdd').onclick=()=>accForm(null);
+  document.querySelectorAll('tr[data-u]').forEach(r=>r.onclick=()=>accForm(mg.find(u=>u.user_id===r.dataset.u)));
+}
+function accForm(u){
+  const gen=()=>{const a='abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';const b=crypto.getRandomValues(new Uint8Array(10));b.forEach(x=>s+=a[x%a.length]);return s};
+  const P=new Set(u?.perms||[]);
+  modal(u?'Управляющий: '+u.name:'Новый управляющий',`
+   <div class="row2"><label class="f">Имя<input id="aN" value="${esc(u?.name||'')}" placeholder="Например: Дания"></label>
+   <label class="f">Заведение<select id="aV">${S.venues.map(v=>`<option value="${v.id}" ${u?.venue===v.id?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label></div>
+   <div class="row2"><label class="f">Email для входа<input id="aE" type="email" value="${esc(u?.email||'')}" ${u?'disabled':''}></label>
+   <label class="f">${u?'Новый пароль (если нужно сменить)':'Пароль'}<div style="display:flex;gap:6px"><input id="aP" value="${u?'':gen()}" style="flex:1"><button class="btn sm" id="aG" type="button">↻</button></div></label></div>
+   <div style="margin:6px 0 4px"><b>Что доступно</b></div>
+   <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;opacity:.7"><input type="checkbox" checked disabled> <span><b>Табель</b> — отмечать смены сотрудников на своей точке (всегда)</span></label>
+   ${PERM_LIST.map(([k,t,d])=>`<label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px"><input type="checkbox" data-perm="${k}" ${P.has(k)?'checked':''}> <span><b>${t}</b> — <span class="muted">${d}</span></span></label>`).join('')}
+   <div class="muted" style="font-size:12px">${u?'Изменения прав действуют при следующем открытии панели.':'Передайте человеку email и пароль: вход на patrikipab.ru/office.'}</div>
+   <div class="err" id="aErr"></div>`,
+   [...(u?[btn('Закрыть доступ','red',async()=>{if(!confirm('Закрыть доступ «'+u.name+'» к офису?'))return;try{await callUsers({action:'remove',user_id:u.user_id});closeModal();toast('Доступ закрыт');vAcc()}catch(e){$('#aErr').textContent=e.message}})]:[]),
+    btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
+     const perms=[...document.querySelectorAll('[data-perm]:checked')].map(x=>x.dataset.perm);
+     const body={action:'save',user_id:u?.user_id,name:$('#aN').value.trim(),venue:$('#aV').value,email:$('#aE').value.trim(),password:$('#aP').value.trim(),perms};
+     try{await callUsers(body);closeModal();
+       if(!u)modal('Учётка создана',`<div>Передайте управляющему:</div><div class="card" style="margin-top:10px;font-family:monospace">patrikipab.ru/office<br>${esc(body.email)}<br>${esc(body.password)}</div>`,[btn('Готово','pri',()=>{closeModal();vAcc()})]);
+       else{toast('Сохранено');vAcc()}}
+     catch(e){$('#aErr').textContent=e.message}})],true);
+  $('#aG').onclick=()=>$('#aP').value=gen();
+  document.querySelectorAll('[data-perm="cash.add"],[data-perm="cash.transfer"]').forEach(x=>x.addEventListener('change',()=>{if(x.checked)document.querySelector('[data-perm="cash.view"]').checked=true}));
+  document.querySelector('[data-perm="cash.view"]').addEventListener('change',e=>{if(!e.target.checked)document.querySelectorAll('[data-perm="cash.add"],[data-perm="cash.transfer"]').forEach(x=>x.checked=false)});
+}
+
 /* ---------- Журнал ---------- */
 async function vLog(){
   const rows=await q(sb.from('crm_audit').select('*').order('at',{ascending:false}).limit(300));
+  const who={};try{(await callUsers({action:'list'})).users.forEach(u=>who[u.user_id]=u.name||u.email)}catch(e){}
   const T={crm_cash_ops:'Касса',crm_transfers:'Перемещение',crm_shifts:'Табель',crm_payroll:'Зарплата',crm_employees:'Сотрудник'};
   const O={INSERT:'<span class="pill g">создано</span>',UPDATE:'<span class="pill y">изменено</span>',DELETE:'<span class="pill r">удалено</span>'};
   const sumr=(t,d)=>{if(!d)return'';if(t==='crm_cash_ops')return `${d.direction==='in'?'приход':'расход'} ${rub(d.amount)} · ${esc(d.category||'')} · ${esc(d.comment||'')}`;
     if(t==='crm_transfers')return `${rub(d.amount)} · ${d.status}`;if(t==='crm_shifts')return `${esc((S.employees.find(e=>e.id===d.employee_id)||{}).name||'')} · ${fd(d.day)} · ${d.hours??''}${d.amount?rub(d.amount):''}`;
     if(t==='crm_employees')return esc(d.name);return ''};
   const manual=rows.filter(r=>!(r.data&&String(r.data.source||'').startsWith('import'))&&!(r.data&&r.data.note==='импорт 2026'&&r.op==='INSERT'));
-  $('#view').innerHTML=manual.length?`<div class="tw"><table><thead><tr><th>Когда</th><th>Раздел</th><th>Действие</th><th>Что</th></tr></thead><tbody>${manual.map(r=>`<tr><td class="muted">${new Date(r.at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}</td><td>${T[r.tbl]||r.tbl}</td><td>${O[r.op]||r.op}</td><td>${sumr(r.tbl,r.data)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Ручных действий пока не было — здесь появятся все изменения касс, табеля и сотрудников</div>';
+  $('#view').innerHTML=manual.length?`<div class="tw"><table><thead><tr><th>Когда</th><th>Кто</th><th>Раздел</th><th>Действие</th><th>Что</th></tr></thead><tbody>${manual.map(r=>`<tr><td class="muted">${new Date(r.at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}</td><td>${esc(who[r.user_id]||(r.user_id?'—':'система'))}</td><td>${T[r.tbl]||r.tbl}</td><td>${O[r.op]||r.op}</td><td>${sumr(r.tbl,r.data)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Ручных действий пока не было — здесь появятся все изменения касс, табеля и сотрудников</div>';
 }
 
 start();
