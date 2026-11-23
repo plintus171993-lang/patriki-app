@@ -598,7 +598,9 @@ function motShort(m){const p=[];p.push(m.pay_type==='monthly'?'оклад '+rub(
   if(m.fixed_bonus)p.push('+'+rub(m.fixed_bonus)+'/мес');return p.join(' · ')}
 async function empCard(e,after){
   const vers=await q(sb.from('crm_employee_motivation').select('*').eq('employee_id',e.id).order('valid_from',{ascending:false}));
-  const td=today(),cur=vers.find(v=>v.valid_from<=td)||vers[vers.length-1];const m=cur||{pay_type:e.dept==='dish'?'per_shift':e.dept==='admin'?'monthly':'hourly'};
+  const td=today(),cur=vers.find(v=>v.valid_from<=td)||vers[vers.length-1];
+  let pd=null;if(!cur){const pr=await q(sb.from('crm_motivation_rules').select('params,valid_from').eq('kind','position_defaults').eq('active',true).lte('valid_from',td).order('valid_from',{ascending:false}).limit(1));pd=pr[0]?.params?.positions?.[e.position]}
+  const m=cur||pd||{pay_type:e.dept==='dish'?'per_shift':e.dept==='admin'?'monthly':'hourly'};
   const m1=today().slice(0,8)+'01';
   modal(e.name,`
    <div class="muted" style="font-size:12px;margin-bottom:12px">${esc(e.position||'')} · ${DEPT[e.dept]||''} · ${esc(venueName(e.home_venue))}${e.iiko_employee_id?' · <span class="pill b">связан с iiko</span>':''} · <a style="color:var(--accent);cursor:pointer" id="ecEdit">изменить данные</a></div>
@@ -851,19 +853,96 @@ async function loyForm(x){
 }
 
 /* ---------- Мотивация ---------- */
+const GRP={sun_wed:'Вс–Ср',thu:'Чт',fri_sat:'Пт–Сб'};
+const curRule=(rules,kind,venue,day)=>rules.filter(r=>r.kind===kind&&r.active&&(r.venue_id===venue||!r.venue_id)&&r.valid_from<=day&&(!r.valid_to||r.valid_to>=day)).sort((a,b)=>b.valid_from.localeCompare(a.valid_from))[0];
 async function vMot(){
-  const rules=await q(sb.from('crm_motivation_rules').select('*').order('kind').order('valid_from'));
-  const per=r=>`с ${fd(r.valid_from)}${r.valid_to?' по '+fd(r.valid_to):''}`;
-  const T={sun_wed:'Вс–Ср',thu:'Чт',fri_sat:'Пт–Сб'};
-  const desc=r=>{const p=r.params||{};
-    if(r.kind==='revenue_tiers')return `<table style="width:auto;margin-top:6px"><tr><th></th><th class="n">Порог 1</th><th class="n">Порог 2</th><th class="n">Порог 3</th></tr>${Object.entries(p.tiers||{}).map(([k,t])=>`<tr><td>${T[k]||k}</td>${t.map(([a,b])=>`<td class="n">${rub(a)} → <b>${rub(b)}</b></td>`).join('')}</tr>`).join('')}</table><div class="muted" style="font-size:12px;margin-top:6px">Считается от официальной выручки дня (безнал + наличные по кассе), делится поровну между барменами на смене.</div>`;
-    if(r.kind==='service_fee')return `Удерживается ${p.withhold_pct}%, остаток поровну между барменами на смене.`;
-    if(r.kind==='chef_kitchen_pct')return `${p.pct}% с оборота кухни за месяц сверх ${rub(p.threshold)}.`;
-    if(r.kind==='hourly')return Object.entries(p.by_position||{}).map(([k,v])=>`${esc(k)}: <b>${v} ₽/ч</b>`).join(' · ');
-    if(r.kind==='daily_amount')return `По умолчанию <b>${rub(p.default)}</b> за смену.`;
-    if(r.kind==='monthly_salary')return 'Оклад задаётся в ведомости по каждому сотруднику.';
-    return '<code>'+esc(JSON.stringify(p))+'</code>'};
-  $('#view').innerHTML=`<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(380px,1fr))">${rules.map(r=>`<div class="card"><div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><h3 style="margin:0;flex:1">${esc(r.name)}</h3>${r.valid_to&&r.valid_to<today()?'<span class="pill">архив</span>':'<span class="pill g">действует</span>'}</div><div class="muted" style="font-size:12px;margin-bottom:8px">${esc(venueName(r.venue_id))} · ${per(r)}</div>${desc(r)}</div>`).join('')}</div>`;
+  const venue=S.venue==='all'?(S.venues[0]||{}).id:S.venue,td=today();
+  const [rules,mots,rev]=await Promise.all([
+    q(sb.from('crm_motivation_rules').select('*').or(`venue_id.eq.${venue},venue_id.is.null`).order('valid_from',{ascending:false})),
+    q(sb.from('crm_employee_motivation_current').select('*')),
+    q(sb.from('crm_daily_revenue').select('day,total').eq('venue_id',venue).order('day',{ascending:false}).limit(7))]);
+  const tiers=curRule(rules,'revenue_tiers',venue,td),svc=curRule(rules,'service_fee',venue,td),pos=curRule(rules,'position_defaults',venue,td);
+  const fut=rules.filter(r=>r.active&&r.valid_from>td);
+  const motOf={};mots.forEach(m=>motOf[m.employee_id]=m);
+  const T=tiers?.params?.tiers||{};
+  const bonusFor=(d,tot)=>{const t=(curRule(rules,'revenue_tiers',venue,d)?.params?.tiers||{})[dayGroup(d)]||[];let b=0;t.forEach(([th,x])=>{if(+tot>=th)b=x});return b};
+  const ord=['bar','hall','kitchen','dish','admin'];
+  const emps=S.employees.filter(e=>e.active&&(e.home_venue===venue||!e.home_venue)).sort((a,b)=>ord.indexOf(a.dept)-ord.indexOf(b.dept)||a.name.localeCompare(b.name));
+  const P=pos?.params?.positions||{};
+  $('#view').innerHTML=`<div class="muted" style="margin-bottom:12px">${esc(venueName(venue))}${S.venue==='all'?' (заведение выбирается вверху)':''} · любое изменение вступает в силу с выбранной даты, прошлые месяцы не пересчитываются</div>
+  ${fut.length?`<div class="card" style="margin-bottom:14px;background:var(--accentSoft);border-color:#c9dcf6">Запланированы изменения: ${fut.map(r=>`<b>${esc(r.name)}</b> с ${fd(r.valid_from)}`).join(', ')}</div>`:''}
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(420px,1fr))">
+   <div class="card"><div style="display:flex;align-items:center;margin-bottom:8px"><h3 style="margin:0;flex:1">Премия за дневную выручку</h3><button class="btn sm pri" id="mEdTiers">Изменить</button></div>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">Выручка дня (безнал + наличные по кассе) ≥ порога → премия на смену, поровну между сотрудниками с галочкой «премия за выручку».${tiers?' Действует с '+fd(tiers.valid_from)+'.':''}</div>
+    ${tiers?`<table style="width:auto"><tr><th></th>${[0,1,2,3].filter(i=>Object.values(T).some(t=>t[i])).map(i=>`<th class="n">Порог ${i+1}</th>`).join('')}</tr>${Object.keys(GRP).map(k=>`<tr><td><b>${GRP[k]}</b></td>${(T[k]||[]).map(([a,b])=>`<td class="n">от ${rub(a)}<br><b class="in">+${rub(b)}</b></td>`).join('')}</tr>`).join('')}</table>`:'<div class="muted">Не задано</div>'}
+    ${rev.length?`<div style="margin-top:12px;font-size:12px"><b>Проверка на последних днях:</b>${rev.slice().reverse().map(r=>`<div style="display:flex;gap:8px"><span class="muted" style="width:70px">${fd(r.day)} ${GRP[dayGroup(r.day)]}</span><span style="width:110px">${rub(r.total)}</span><span class="${bonusFor(r.day,r.total)?'in':'muted'}">${bonusFor(r.day,r.total)?'премия '+rub(bonusFor(r.day,r.total)):'без премии'}</span></div>`).join('')}</div>`:''}
+   </div>
+   <div class="card"><div style="display:flex;align-items:center;margin-bottom:8px"><h3 style="margin:0;flex:1">Сервисный сбор</h3><button class="btn sm pri" id="mEdSvc">Изменить</button></div>
+    <div style="font-size:15px">Удерживается <b>${svc?.params?.withhold_pct??0}%</b>, остаток поровну между сотрудниками с галочкой «сервисный сбор» на смене.</div>
+    <div class="muted" style="font-size:12px;margin-top:6px">${svc?'Действует с '+fd(svc.valid_from):''}</div>
+    <h3 style="margin:18px 0 8px">Индивидуальные проценты</h3>
+    <div class="muted" style="font-size:12px">% с оборота кухни или выручки, доплаты — задаются в карточке сотрудника (раздел «Кто на какой мотивации» ниже).</div>
+   </div>
+  </div>
+  <div class="card" style="margin-top:14px"><div style="display:flex;align-items:center;margin-bottom:8px"><h3 style="margin:0;flex:1">Ставки по должностям</h3><button class="btn sm" id="mAddPos">+ Должность</button></div>
+   <div class="muted" style="font-size:12px;margin-bottom:10px">Подставляются новым сотрудникам автоматически. «Применить ко всем» — поменять ставку сразу всем сотрудникам этой должности с выбранной даты (например, повышение барменам).</div>
+   <div class="tw"><table><thead><tr><th>Должность</th><th>Как платим</th><th class="n">Ставка</th><th>Премия за выручку</th><th>Сервисный сбор</th><th class="n">Сотрудников</th><th></th></tr></thead><tbody>
+   ${Object.entries(P).sort().map(([n,d])=>`<tr><td><b>${esc(n)}</b></td><td>${PAYT[d.pay_type]||''}</td><td class="n">${rub(d.rate)}</td><td>${d.revenue_bonus?'✓':''}</td><td>${d.service_fee?'✓':''}</td><td class="n">${emps.filter(e=>e.position===n).length}</td><td style="white-space:nowrap"><button class="btn sm" data-pos="${esc(n)}">Изменить</button></td></tr>`).join('')||'<tr><td colspan="7" class="muted">Нет</td></tr>'}
+   </tbody></table></div></div>
+  <div class="card" style="margin-top:14px"><h3>Кто на какой мотивации</h3>
+   <div class="tw"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th>Мотивация сейчас</th><th>С</th><th></th></tr></thead><tbody>
+   ${emps.map(e=>{const m=motOf[e.id],d=P[e.position];const diff=m&&d&&(m.pay_type!==d.pay_type||+m.rate!==+d.rate||m.revenue_bonus!==!!d.revenue_bonus||m.service_fee!==!!d.service_fee);
+     return `<tr data-emp="${e.id}" style="cursor:pointer"><td><b style="color:var(--accent)">${esc(e.name)}</b></td><td class="muted">${esc(e.position||'')}</td><td>${m?motShort(m):'<span style="color:var(--out)">не задана</span>'}${diff?' <span class="pill y" title="Отличается от ставки по должности">своя ставка</span>':''}</td><td class="muted">${m?fd(m.valid_from):''}</td><td class="muted">›</td></tr>`}).join('')}
+   </tbody></table></div></div>
+  <div class="card" style="margin-top:14px"><h3>История изменений правил</h3>
+   <div class="tw"><table><tbody>${rules.filter(r=>r.active&&['revenue_tiers','service_fee','position_defaults'].includes(r.kind)).map(r=>`<tr><td style="white-space:nowrap">${fd(r.valid_from)} — ${r.valid_to?fd(r.valid_to):'сейчас'}</td><td>${esc(r.name)}</td><td>${r.valid_to&&r.valid_to<td?'<span class="pill">архив</span>':r.valid_from>td?'<span class="pill b">запланировано</span>':'<span class="pill g">действует</span>'}</td></tr>`).join('')}</tbody></table></div></div>`;
+  $('#mEdTiers').onclick=()=>tiersForm(venue,tiers);
+  $('#mEdSvc').onclick=()=>svcForm(venue,svc);
+  $('#mAddPos').onclick=()=>posForm(venue,pos,null,emps);
+  document.querySelectorAll('[data-pos]').forEach(b=>b.onclick=()=>posForm(venue,pos,b.dataset.pos,emps));
+  document.querySelectorAll('tr[data-emp]').forEach(r=>r.onclick=()=>empCard(S.employees.find(e=>e.id===r.dataset.emp),vMot));
+}
+const fromField=()=>`<label class="f">Действует с<input type="date" id="rFrom" value="${today()}"></label>`;
+function tiersForm(venue,cur){
+  const T=JSON.parse(JSON.stringify(cur?.params?.tiers||{sun_wed:[],thu:[],fri_sat:[]}));
+  const draw=()=>{$('#tG').innerHTML=Object.keys(GRP).map(k=>`<div style="margin-bottom:10px"><b>${GRP[k]}</b>
+    ${(T[k]||[]).map(([a,b],i)=>`<div class="row2" style="grid-template-columns:1fr 1fr auto;margin-top:4px"><input type="number" step="1000" data-k="${k}" data-i="${i}" data-f="0" value="${a}" placeholder="выручка от, ₽"><input type="number" step="500" data-k="${k}" data-i="${i}" data-f="1" value="${b}" placeholder="премия, ₽"><a data-del="${k}|${i}" style="cursor:pointer;color:var(--muted);align-self:center">✕</a></div>`).join('')}
+    <a data-add="${k}" style="cursor:pointer;color:var(--accent);font-size:13px">+ порог</a></div>`).join('');
+    document.querySelectorAll('#tG input').forEach(x=>x.oninput=()=>T[x.dataset.k][+x.dataset.i][+x.dataset.f]=+x.value);
+    document.querySelectorAll('#tG [data-add]').forEach(x=>x.onclick=()=>{(T[x.dataset.add]=T[x.dataset.add]||[]).push([0,0]);draw()});
+    document.querySelectorAll('#tG [data-del]').forEach(x=>x.onclick=()=>{const [k,i]=x.dataset.del.split('|');T[k].splice(+i,1);draw()})};
+  modal('Премия за дневную выручку',`<div class="muted" style="font-size:12px;margin-bottom:10px">Для каждой группы дней: «выручка от» и сколько премии на смену. Берётся самый высокий достигнутый порог.</div><div id="tG"></div>${fromField()}<div class="err" id="rErr"></div>`,
+   [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
+     for(const k in T)T[k]=T[k].filter(([a,b])=>a>0&&b>0).sort((x,y)=>x[0]-y[0]);
+     await q(sb.rpc('crm_rule_new_version',{p_venue:venue,p_kind:'revenue_tiers',p_name:'Премия за дневную выручку',p_params:{base:'official_total',split:'bartenders_on_shift',...(cur?.params||{}),tiers:T},p_from:$('#rFrom').value}));
+     closeModal();toast('Пороги сохранены');vMot()})],true);draw();
+}
+function svcForm(venue,cur){
+  modal('Сервисный сбор',`<label class="f">Удерживать, %<input type="number" id="sP" min="0" max="100" step="1" value="${cur?.params?.withhold_pct??15}"></label>${fromField()}`,
+   [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
+     await q(sb.rpc('crm_rule_new_version',{p_venue:venue,p_kind:'service_fee',p_name:'Сервисный сбор',p_params:{split:'bartenders_on_shift',...(cur?.params||{}),withhold_pct:+$('#sP').value},p_from:$('#rFrom').value}));
+     closeModal();toast('Сохранено');vMot()})]);
+}
+function posForm(venue,cur,name,emps){
+  const P=JSON.parse(JSON.stringify(cur?.params?.positions||{}));const d=name?P[name]:{pay_type:'hourly',rate:'',revenue_bonus:false,service_fee:false};
+  const list=name?emps.filter(e=>e.position===name):[];
+  modal(name?'Ставка: '+name:'Новая должность',`
+   ${name?'':`<label class="f">Должность<input id="pN" placeholder="Например: Хостес"></label>`}
+   <div class="row2"><label class="f">Как платим<select id="pT">${Object.entries(PAYT).map(([k,v])=>`<option value="${k}" ${d.pay_type===k?'selected':''}>${v}</option>`).join('')}</select></label><label class="f">Ставка, ₽<input type="number" id="pR" value="${d.rate}"></label></div>
+   <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><input type="checkbox" id="pB" ${d.revenue_bonus?'checked':''}> Доля премии за дневную выручку</label>
+   <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px"><input type="checkbox" id="pS" ${d.service_fee?'checked':''}> Доля сервисного сбора</label>
+   ${fromField()}
+   ${list.length?`<label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px"><input type="checkbox" id="pAll"> <span>Применить ко всем сотрудникам должности с этой даты (${list.length}: ${list.map(e=>esc(e.name)).join(', ')}). Их проценты кухни/выручки и доплаты сохранятся.</span></label>`:''}
+   <div class="err" id="pErr"></div>`,
+   [...(name?[btn('Удалить должность','red',async()=>{delete P[name];await q(sb.rpc('crm_rule_new_version',{p_venue:venue,p_kind:'position_defaults',p_name:'Ставки по должностям',p_params:{positions:P},p_from:today()}));closeModal();vMot()})]:[]),
+    btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{
+     const n=name||$('#pN').value.trim();const r=+$('#pR').value;if(!n){$('#pErr').textContent='Укажите должность';return}if(!(r>=0)||$('#pR').value===''){$('#pErr').textContent='Укажите ставку';return}
+     const nd={pay_type:$('#pT').value,rate:r,revenue_bonus:$('#pB').checked,service_fee:$('#pS').checked};P[n]=nd;const from=$('#rFrom').value;
+     await q(sb.rpc('crm_rule_new_version',{p_venue:venue,p_kind:'position_defaults',p_name:'Ставки по должностям',p_params:{positions:P},p_from:from}));
+     if($('#pAll')?.checked){const cur=await q(sb.from('crm_employee_motivation_current').select('*').in('employee_id',list.map(e=>e.id)));
+       const rows=list.map(e=>{const m=cur.find(x=>x.employee_id===e.id)||{};return {employee_id:e.id,valid_from:from,...nd,kitchen_pct:m.kitchen_pct??null,kitchen_threshold:m.kitchen_threshold??null,revenue_pct:m.revenue_pct??null,revenue_base:m.revenue_base??null,fixed_bonus:m.fixed_bonus??null,note:'Изменение ставки по должности «'+n+'»'}});
+       await q(sb.from('crm_employee_motivation').upsert(rows,{onConflict:'employee_id,valid_from'}))}
+     closeModal();toast('Сохранено');vMot()})],true);
 }
 
 /* ---------- Журнал ---------- */
