@@ -977,20 +977,22 @@ async function vCost(){
   const run=runs[0];
   const vis=all_.filter(i=>(costMuted||!i.muted)&&(costSec==='all'||i.section===costSec));
   const cnt=k=>vis.filter(i=>i.kind===k).length;
-  if(!COST_KIND[costTab]&&costTab!=='cards')costTab='no_chart';
+  if(!COST_KIND[costTab]&&costTab!=='cards'&&costTab!=='inv')costTab='no_chart';
   const rows=vis.filter(i=>i.kind===costTab);
+  const inv=costTab==='inv'?await all(()=>{const b=sb.from('cost_inventory').select('*').order('at',{ascending:false});return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
   const cards=costTab==='cards'?await all(()=>{const b=sb.from('cost_cards').select('*').order('created_at',{ascending:false});return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
   const runTxt=!run?'проверок ещё не было':run.ok===false?`<span style="color:var(--out)">последняя проверка ${new Date(run.started_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})} не прошла: ${esc(run.error||'')}</span>`:!run.finished_at?'идёт проверка…':`проверено ${new Date(run.finished_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}${run.stats&&run.stats.sales_error?' <span class="pill y" title="'+esc(run.stats.sales_error)+'">без продаж</span>':''}`;
   $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь · нажмите на позицию, чтобы открыть её техкарту · ${runTxt}</span><span class="sp"></span>
     <select id="cSec"><option value="all">Кухня и бар</option><option value="Кухня" ${costSec==='Кухня'?'selected':''}>Кухня</option><option value="Бар" ${costSec==='Бар'?'selected':''}>Бар</option></select>
     <label style="display:flex;gap:6px;align-items:center" class="muted"><input type="checkbox" id="cMut" ${costMuted?'checked':''}> скрытые</label>
     ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn" id="cNew">＋ Техкарта с листочка</button><button class="btn pri" id="cRun">Проверить сейчас</button></div>
-  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a></div>
-  ${costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
+  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a><a data-t="inv">Инвентаризации</a></div>
+  ${costTab==='inv'?invTable(inv,run):costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
   ${rows.length?`<div class="tw" style="max-height:66vh"><table><thead><tr><th></th><th>Позиция</th><th>Раздел</th><th>Что не так</th><th>С</th><th></th></tr></thead><tbody>
    ${rows.map(i=>`<tr data-open="${i.id}" style="cursor:pointer;${i.muted?'opacity:.5':''}"><td>${i.severity==='crit'?'<span class="pill r">срочно</span>':'<span class="pill y">внимание</span>'}</td><td><b style="color:var(--accent)">${esc(i.product_name)}</b>${i.note?`<div class="muted" style="font-size:12px">${esc(i.note)}</div>`:''}</td><td>${esc(i.section||'—')}</td><td>${costDetails(i)}</td><td class="muted" style="white-space:nowrap">${fd(i.first_seen.slice(0,10))}</td>
    <td><button class="btn sm" data-mute="${i.id}">${i.muted?'Вернуть':'Не проблема'}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${run?'Здесь всё в порядке':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`}`}`;
   $('#cNew').onclick=()=>cardNew();
+  if(costTab==='inv')document.querySelectorAll('tr[data-inv]').forEach(r=>r.onclick=()=>invDoc(inv,r.dataset.inv,all_));
   document.querySelectorAll('tr[data-card]').forEach(r=>r.onclick=()=>cardEdit(cards.find(c=>c.id===r.dataset.card)));
   document.querySelectorAll('.tabs a').forEach(a=>{a.classList.toggle('on',a.dataset.t===costTab);a.onclick=()=>{costTab=a.dataset.t;vCost()}});
   $('#cSec').onchange=e=>{costSec=e.target.value;vCost()};
@@ -1006,6 +1008,37 @@ async function vCost(){
     modal('Не проблема: '+i.product_name,`<div class="muted" style="margin-bottom:8px">Строка скроется из списка и из утренней сводки. Если проблема уйдёт и появится снова — снова будет скрыта; вернуть можно галочкой «скрытые».</div><label class="f">Почему (необязательно)<input id="mN" placeholder="Например: подаём без списания по решению владельца"></label>`,
       [btn('Отмена','',closeModal),btn('Скрыть','pri',async()=>{await q(sb.from('cost_issues').update({muted:true,note:$('#mN').value.trim()||null,updated_by:S.me.uid}).eq('id',i.id));closeModal();vCost()})])});
 }
+/* ---- инвентаризации: недостачи и излишки по позициям (ночная проверка, cost_inventory) ---- */
+function invDocs(inv){const m=new Map();inv.forEach(r=>{const k=r.doc+'|'+r.store;const d=m.get(k)||{k,doc:r.doc,store:r.store,at:r.at,short:0,surp:0,n:0};
+  if(r.sum<0)d.short+=-r.sum;else d.surp+=+r.sum;d.n++;m.set(k,d)});return [...m.values()].sort((a,b)=>b.at.localeCompare(a.at)||a.store.localeCompare(b.store))}
+function invTable(inv,run){
+  if(!inv.length)return `<div class="empty">${run&&run.stats&&run.stats.inventory_error?'Не удалось получить инвентаризации из iiko: '+esc(run.stats.inventory_error):'Инвентаризаций за последние 120 дней нет — или ещё не было ночной проверки после включения. Нажмите «Проверить сейчас».'}</div>`;
+  const docs=invDocs(inv);
+  return `<div class="muted" style="margin:-4px 0 10px;font-size:13px">Результаты инвентаризаций из iiko за 120 дней. Когда недостача и излишки по складу почти равны — это обычно не кража, а пересорт или ошибки в техкартах. Нажмите на строку, чтобы увидеть позиции и подсказки.</div>
+  <div class="tw"><table><thead><tr><th>Дата</th><th>Склад</th><th>Документ</th><th class="n">Недостача</th><th class="n">Излишки</th><th class="n">Итог</th><th class="n">Позиций</th></tr></thead><tbody>
+  ${docs.map(d=>`<tr data-inv="${esc(d.k)}" style="cursor:pointer"><td>${fd(d.at)}</td><td><b style="color:var(--accent)">${esc(d.store)}</b></td><td class="muted">№ ${esc(d.doc)}</td><td class="n out">${rub(-d.short)}</td><td class="n in">${rub(d.surp)}</td><td class="n"><b style="color:${d.surp-d.short<0?'var(--out)':'var(--in)'}">${rub(d.surp-d.short)}</b>${d.short>3000&&d.surp>d.short*.6?' <span class="pill y" title="Недостача и излишки близки">пересорт?</span>':''}</td><td class="n">${d.n}</td></tr>`).join('')}</tbody></table></div>`;
+}
+const invWord=n=>(n||'').toLowerCase().replace(/[*«»"().,\/]/g,' ').replace(/\s+/g,' ').trim().split(' ').filter(w=>w.length>2&&!/^(жб|бут|стн|кега|асс|те|для|хаус)$/.test(w));
+const SPIRIT={ром:['куба','ром'],виски:['виски'],джин:['джин'],текил:['текил','мичелад'],водк:['водк','настоек','шот'],настойк:['настоек','настойк'],ликер:['б52','ликер'],пиво:['мичелад','пиво на ножки','ножки']};
+function invDoc(inv,key,issues){
+  const [doc,store]=key.split('|');const rows=inv.filter(r=>r.doc===doc&&r.store===store).sort((a,b)=>Math.abs(b.sum)-Math.abs(a.sum));
+  const noChart=issues.filter(i=>i.kind==='no_chart'&&!i.resolved_at).map(i=>i.product_name);
+  // сколько раз позиция была в недостаче по разным инвентаризациям
+  const shortCnt=new Map();inv.filter(r=>r.sum<0).forEach(r=>shortCnt.set(r.product_id,(shortCnt.get(r.product_id)||new Set()).add(r.doc)));
+  const hints=r=>{const h=[];const w=invWord(r.product_name);
+    if(r.sum<0){const c=(shortCnt.get(r.product_id)||new Set()).size;if(c>1)h.push(`недостача повторяется — ${c} инвентаризации подряд`);}
+    const opp=rows.filter(x=>Math.sign(x.sum)!==Math.sign(r.sum)&&x.product_id!==r.product_id&&x.unit===r.unit&&invWord(x.product_name).some(t=>w.includes(t))).sort((a,b)=>Math.abs(b.sum)-Math.abs(a.sum))[0];
+    if(opp)h.push(`возможен пересорт с «${opp.product_name}» (${opp.sum<0?'недостача':'излишек'} ${rub(Math.abs(opp.sum))})`);
+    if(r.sum<0){const n=(r.product_name||'').toLowerCase();for(const [k,keys] of Object.entries(SPIRIT)){if(n.includes(k)){const hit=noChart.filter(d=>keys.some(x=>d.toLowerCase().includes(x)));if(hit.length){h.push('продаётся без техкарты: '+hit.slice(0,4).join(', '));break}}}}
+    return h};
+  const short=rows.filter(r=>r.sum<0).reduce((s,r)=>s-r.sum,0),surp=rows.filter(r=>r.sum>0).reduce((s,r)=>s+r.sum,0);
+  modal(`Инвентаризация · ${store} · ${fd(rows[0]?.at)}`,`<div style="margin-bottom:10px">Недостача <b class="out">${rub(short)}</b> · излишки <b class="in">${rub(surp)}</b> · итог <b>${rub(surp-short)}</b></div>
+   <div class="tw" style="max-height:60vh"><table><thead><tr><th>Позиция</th><th class="n">Кол-во</th><th class="n">Сумма</th><th>Подсказка</th></tr></thead><tbody>
+   ${rows.map(r=>{const h=hints(r);return `<tr><td><b>${esc(r.product_name)}</b></td><td class="n">${num(Math.round(r.qty*1000)/1000)} ${esc(r.unit||'')}</td><td class="n ${r.sum<0?'out':'in'}">${rub(r.sum)}</td><td style="font-size:12px">${h.map(x=>`<div>${esc(x)}</div>`).join('')||'<span class="muted">—</span>'}</td></tr>`}).join('')}
+   </tbody></table></div><div class="muted" style="font-size:12px;margin-top:8px">Подсказки — автоматические догадки, а не вывод. Пересорт ищется по похожим названиям в той же инвентаризации.</div>`,[btn('Закрыть','',closeModal)],true);
+  document.querySelector('.mb').classList.add('xwide');
+}
+
 /* ---- карточка блюда: действующая техкарта из iiko ---- */
 const IIKOWEB='https://pab-patriki.iikoweb.ru';
 const iikoLink=id=>IIKOWEB+'/nomenclature/index.html#/list?item='+id;

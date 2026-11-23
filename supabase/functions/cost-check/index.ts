@@ -107,7 +107,20 @@ async function loadIiko(salesDays: number) {
         s.qty += Number(r.DishAmountInt || 0); s.sum += Number(r.DishSumInt || 0);
       }
     } catch (e) { salesError = String((e as Error).message || e); }
-    return { prods, groups, charts, sup, inv, sales, salesError };
+    // результаты инвентаризаций по позициям — проводки INVENTORY_CORRECTION на счёт склада (нужно право B_VOTR)
+    let inventory: any[] | null = null, inventoryError: string | null = null;
+    try {
+      inventory = (JSON.parse(await post('v2/reports/olap', {
+        reportType: 'TRANSACTIONS', buildSummary: false,
+        groupByRowFields: ['DateTime.DateTyped', 'Document', 'Account.Name', 'Account.Type', 'Product.Id', 'Product.Name', 'Product.MeasureUnit'],
+        aggregateFields: ['Sum.ResignedSum', 'Amount.StoreInOutTyped'],
+        filters: {
+          'DateTime.DateTyped': { filterType: 'DateRange', periodType: 'CUSTOM', from: invFrom, to: mskDate(1), includeLow: true, includeHigh: false },
+          'TransactionType': { filterType: 'IncludeValues', values: ['INVENTORY_CORRECTION'] },
+        },
+      })).data || []) as any[];
+    } catch (e) { inventoryError = String((e as Error).message || e); }
+    return { prods, groups, charts, sup, inv, sales, salesError, inventory, inventoryError };
   });
 }
 
@@ -294,10 +307,32 @@ async function check(venue: string, trigger: string) {
     const gone = (open || []).filter((o: any) => !seen.has(o.key)).map((o: any) => o.id);
     for (let i = 0; i < gone.length; i += 200) await db.from('cost_issues').update({ resolved_at: now }).in('id', gone.slice(i, i + 200));
 
+    // инвентаризации: заменяем строки за окно 120 дней целиком
+    let invRows = 0;
+    if (raw.inventory) {
+      const rows = new Map<string, any>();
+      for (const r of raw.inventory) {
+        if (r['Account.Type'] !== 'INVENTORY_ASSETS' || !r['Product.Id']) continue;
+        const sum = Number(r['Sum.ResignedSum'] || 0), qty = Number(r['Amount.StoreInOutTyped'] || 0);
+        if (Math.abs(sum) < 0.01 && Math.abs(qty) < 1e-6) continue;
+        const k = [r['Document'], r['Account.Name'], r['Product.Id']].join('|');
+        const x = rows.get(k) || { venue_id: venue, doc: String(r['Document'] || ''), at: String(r['DateTime.DateTyped']).slice(0, 10), store: String(r['Account.Name'] || ''),
+          product_id: r['Product.Id'], product_name: String(r['Product.Name'] || '').trim(), unit: String(r['Product.MeasureUnit'] || ''), qty: 0, sum: 0, updated_at: now };
+        x.qty += qty; x.sum += sum; rows.set(k, x);
+      }
+      const list = [...rows.values()].map((x) => ({ ...x, qty: round(x.qty, 4), sum: round(x.sum) }));
+      await db.from('cost_inventory').delete().eq('venue_id', venue).gte('at', mskDate(-120));
+      for (let i = 0; i < list.length; i += 500) {
+        const { error } = await db.from('cost_inventory').upsert(list.slice(i, i + 500), { onConflict: 'venue_id,doc,store,product_id' });
+        if (error) throw new Error(error.message);
+      }
+      invRows = list.length;
+    }
+
     const by: Record<string, number> = {};
     issues.forEach((x) => by[x.kind] = (by[x.kind] || 0) + 1);
     const stats = { issues: issues.length, by, resolved: gone.length, products: products.size, charts: charts.size, dishes: dishes.length,
-      priced_goods: deliveries.size, sales: sales ? Object.keys(sales).length : null, sales_error: raw.salesError };
+      priced_goods: deliveries.size, sales: sales ? Object.keys(sales).length : null, sales_error: raw.salesError, inventory_rows: invRows, inventory_error: raw.inventoryError };
     await db.from('cost_runs').update({ finished_at: new Date().toISOString(), ok: true, stats }).eq('id', run.id);
     return stats;
   } catch (e) {

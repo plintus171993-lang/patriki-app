@@ -130,3 +130,27 @@ create policy "cost cards" on public.cost_cards for all
   using (public.crm_can('cost.view') and (venue_id is null or public.can_manage(venue_id)))
   with check (public.crm_can('cost.view') and (venue_id is null or public.can_manage(venue_id)));
 grant select, insert, update, delete on public.cost_cards to authenticated;
+
+-- =====================================================================
+--  Инвентаризации: результат по позициям (iiko, OLAP по проводкам, тип INVENTORY_CORRECTION).
+--  Пишет ночная проверка за 120 дней. qty/sum < 0 — недостача, > 0 — излишек.
+--  Пользователю iiko нужно право B_VOTR «Просматривать OLAP-отчет по проводкам».
+-- =====================================================================
+create table if not exists public.cost_inventory (
+  venue_id     text not null references public.venues(id),
+  doc          text not null,                     -- номер документа инвентаризации iiko
+  at           date not null,
+  store        text not null,                     -- склад iiko
+  product_id   uuid not null,
+  product_name text,
+  unit         text,
+  qty          numeric not null default 0,
+  sum          numeric not null default 0,
+  updated_at   timestamptz not null default now(),
+  primary key (venue_id, doc, store, product_id)
+);
+create index if not exists cost_inventory_at on public.cost_inventory (venue_id, at desc);
+alter table public.cost_inventory enable row level security;
+drop policy if exists "cost inventory read" on public.cost_inventory;
+create policy "cost inventory read" on public.cost_inventory for select using (public.crm_can('cost.view') and public.can_manage(venue_id));
+grant select on public.cost_inventory to authenticated;
