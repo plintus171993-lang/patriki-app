@@ -801,7 +801,8 @@ function regMatch(R,unal,fname){
 
 /* ---------- Система лояльности ---------- */
 async function vLoy(){
-  const [list,st]=await Promise.all([q(sb.rpc('crm_loyalty_list')),q(sb.rpc('loyalty_stats'))]);
+  const [list,st,cfg]=await Promise.all([q(sb.rpc('crm_loyalty_list')),q(sb.rpc('loyalty_stats')),q(sb.from('loyalty_settings').select('fixed_levels').limit(1))]);
+  S.fixedLevels=(cfg[0]?.fixed_levels)||[];
   list.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
   const reg=x=>!!(x.phone&&x.phone.trim());
   const app=list.filter(x=>x.kind==='app'),imp=list.filter(x=>x.kind==='import'),appReg=app.filter(reg);
@@ -813,18 +814,19 @@ async function vLoy(){
     ${kpi('Зарегистрированы в приложении',appReg.length,appReg.filter(x=>x.verified).length+' с подтверждённым номером · '+(app.length-appReg.length)+' без регистрации')}
     ${kpi('Новых гостей',since(7)+' / '+since(30),'за 7 / 30 дней')}
     ${kpi('Перенесённые карты',imp.length,'ещё не привязаны к приложению'+(st?' · привязано '+st.imported_claimed:''))}
+    ${S.fixedLevels.map(f=>kpi(esc(f.name),list.filter(x=>x.fixed_level===f.name).length,f.pct+'% кэшбэка · особый статус')).join('')}
     ${st?kpi('Начислено за 30 дней',num(st.accrued_30),'списано '+num(st.redeemed_30)):''}
   </div>
-  <div class="bar" style="margin-top:14px"><select id="lSrc"><option value="main">Зарегистрированные + перенесённые</option><option value="reg">Приложение — зарегистрированы (с телефоном)</option><option value="unreg">Приложение — без регистрации</option><option value="import">Перенесённые карты (MACE)</option><option value="">Все карты</option></select>
+  <div class="bar" style="margin-top:14px"><select id="lSrc"><option value="main">Зарегистрированные + перенесённые</option><option value="reg">Приложение — зарегистрированы (с телефоном)</option><option value="unreg">Приложение — без регистрации</option><option value="import">Перенесённые карты (MACE)</option><option value="fixed">Сотрудники и директора</option>${S.fixedLevels.map(f=>`<option value="lv:${esc(f.name)}">Только: ${esc(f.name)}</option>`).join('')}<option value="">Все карты</option></select>
     <input id="lS" placeholder="Имя, телефон или номер карты" value="${esc(f.s)}" style="width:260px"><span class="sp"></span><span class="muted" id="lCnt"></span></div>
   <div id="lTbl"></div>`;
   $('#lSrc').value=f.src;
   const draw=()=>{f.src=$('#lSrc').value;f.s=$('#lS').value.trim().toLowerCase();
-    const pass=x=>f.src==='main'?(x.kind==='import'||reg(x)):f.src==='reg'?(x.kind==='app'&&reg(x)):f.src==='unreg'?(x.kind==='app'&&!reg(x)):f.src==='import'?x.kind==='import':true;
+    const pass=x=>f.src==='main'?(x.kind==='import'||reg(x)):f.src==='reg'?(x.kind==='app'&&reg(x)):f.src==='unreg'?(x.kind==='app'&&!reg(x)):f.src==='import'?x.kind==='import':f.src==='fixed'?!!x.fixed_level:f.src.startsWith('lv:')?x.fixed_level===f.src.slice(3):true;
     const rows=list.filter(x=>pass(x)&&(!f.s||[x.name,x.phone,x.card_no].some(v=>(v||'').toLowerCase().includes(f.s))));
     $('#lCnt').textContent=rows.length+' карт · '+num(sum(rows))+' баллов';
     $('#lTbl').innerHTML=rows.length?`<div class="tw" style="max-height:60vh"><table><thead><tr><th>Гость</th><th>Телефон</th><th>Карта</th><th>Откуда</th><th>Уровень</th><th class="n">Баланс</th><th class="n">Потрачено</th><th>Создана</th><th>Активность</th></tr></thead><tbody>
-    ${rows.map((x,i)=>`<tr data-i="${list.indexOf(x)}" style="cursor:pointer"><td><b>${esc(x.name||'—')}</b>${x.kind==='app'&&x.verified?' <span class="pill g">✓</span>':''}</td><td>${esc(x.phone||'')}</td><td class="muted">${esc(x.card_no||'')}</td><td>${x.kind==='app'?'<span class="pill b">приложение</span>':'<span class="pill">перенос</span>'}</td><td>${esc(x.level||'')}</td><td class="n"><b>${num(x.balance)}</b></td><td class="n">${rub(x.spent)}</td><td class="muted">${x.created_at?new Date(x.created_at).toLocaleDateString('ru-RU'):''}</td><td class="muted">${x.last_activity_at?new Date(x.last_activity_at).toLocaleDateString('ru-RU'):''}</td></tr>`).join('')}
+    ${rows.map((x,i)=>`<tr data-i="${list.indexOf(x)}" style="cursor:pointer"><td><b>${esc(x.name||'—')}</b>${x.kind==='app'&&x.verified?' <span class="pill g">✓</span>':''}</td><td>${esc(x.phone||'')}</td><td class="muted">${esc(x.card_no||'')}</td><td>${x.kind==='app'?'<span class="pill b">приложение</span>':'<span class="pill">перенос</span>'}</td><td>${x.fixed_level?`<span class="pill ${/директ/i.test(x.fixed_level)?'r':'y'}">${esc(x.fixed_level)}</span>`:esc(x.level||'')}</td><td class="n"><b>${num(x.balance)}</b></td><td class="n">${rub(x.spent)}</td><td class="muted">${x.created_at?new Date(x.created_at).toLocaleDateString('ru-RU'):''}</td><td class="muted">${x.last_activity_at?new Date(x.last_activity_at).toLocaleDateString('ru-RU'):''}</td></tr>`).join('')}
     </tbody></table></div>`:'<div class="empty">Ничего не найдено</div>';
     document.querySelectorAll('#lTbl tr[data-i]').forEach(r=>r.onclick=()=>loyForm(list[+r.dataset.i]))};
   $('#lSrc').onchange=draw;$('#lS').oninput=()=>{clearTimeout(S._t);S._t=setTimeout(draw,250)};draw();
@@ -832,6 +834,7 @@ async function vLoy(){
 async function loyForm(x){
   modal(x.name||'Карта гостя',`<div class="muted" style="font-size:12px;margin-bottom:10px">${x.kind==='app'?'Гость приложения':'Перенесённая карта (MACE), ещё не привязана к приложению'} · ${esc(x.phone||'')} · карта ${esc(x.card_no||'—')}</div>
     <div class="row2"><label class="f">Имя<input id="gN" value="${esc(x.name||'')}"></label><label class="f">День рождения<input type="date" id="gB" value="${x.birthday||''}"></label></div>
+    <label class="f">Статус карты<select id="gL"><option value="">Гость — уровень по сумме покупок</option>${(S.fixedLevels||[]).map(f=>`<option value="${esc(f.name)}" ${x.fixed_level===f.name?'selected':''}>${esc(f.name)} — ${f.pct}% кэшбэка</option>`).join('')}</select></label>
     <div class="row2"><label class="f">Баланс сейчас<input value="${num(x.balance)}" disabled></label><label class="f">Начислить (+) / списать (−)<input type="number" id="gD" step="1" placeholder="0"></label></div>
     <label class="f">Причина корректировки<input id="gC" placeholder="Например: компенсация за долгую доставку"></label>
     <div class="err" id="gErr"></div><h3 style="margin-top:14px">История</h3><div id="gH"><div class="empty">Загрузка…</div></div>`,
@@ -840,6 +843,7 @@ async function loyForm(x){
       if(d&&(+x.balance+d)<0){$('#gErr').textContent='Баланс не может стать меньше нуля';return}
       if(d&&!$('#gC').value.trim()){$('#gErr').textContent='Укажите причину корректировки';return}
       await q(sb.rpc('crm_loyalty_edit',{p_kind:x.kind,p_id:x.id,p_name:$('#gN').value,p_birthday:$('#gB').value||null,p_delta:d,p_note:$('#gC').value.trim()}));
+      if(($('#gL').value||null)!==(x.fixed_level||null))await q(sb.rpc('crm_loyalty_set_level',{p_kind:x.kind,p_id:x.id,p_level:$('#gL').value}));
       closeModal();toast('Сохранено');vLoy()})]);
   const KND={accrue:'начислено',pending:'начисление (ожидает)',redeem:'списано',refund:'возврат',bonus:'бонус',adjust:'корректировка',expire:'сгорание',reverse:'отмена',import:'перенос'};
   const h=await q(sb.rpc('crm_loyalty_history',{p_kind:x.kind,p_id:x.id}));
