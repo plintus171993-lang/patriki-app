@@ -371,12 +371,17 @@ function ordersHtml() {
   const stale = S.ordersAge === null || S.ordersAge > 120;
   setTimeout(() => {
     $app.querySelectorAll('[data-retry]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); const q = S.queue.find((x) => x.clientId === b.dataset.retry); if (q) { q.state = 'queued'; q.error = null; save(); flush(); } });
+    $app.querySelectorAll('[data-rep]').forEach((b) => b.onclick = (e) => {
+      e.stopPropagation();
+      const [oid, k] = b.dataset.rep.split(':'); const it = os.find((o) => String(o.id) === oid)?.items?.[Number(k)];
+      if (it) repeatItem(it);
+    });
     $app.querySelectorAll('[data-drop]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); S.queue = S.queue.filter((x) => x.clientId !== b.dataset.drop); save(); render(); });
   });
   return `${stale && S.ordersAge !== undefined ? `<div class="banner warn">${S.ordersAge === null ? 'Касса ещё не присылала заказы столов.' : 'Касса давно не на связи — список может быть неполным.'}</div>` : ''}${qHtml}${os.length ? os.map((o) => `<div class="ord">
       <h3><span>Заказ №${esc(o.number)}${o.status === 'Bill' ? ' · пречек' : ''}</span><span>${rub(o.sum)}</span></h3>
       <div class="mini" style="margin-bottom:6px">${esc([o.waiter, o.guests ? o.guests + ' гост.' : '', o.created ? 'с ' + esc(String(o.created).slice(11, 16)) : ''].filter(Boolean).join(' · '))}</div>
-      ${o.items.map((i) => `<div class="li"><span>${esc(i.name)} × ${i.amount}${i.mods?.length ? `<small>${esc(i.mods.join(', '))}</small>` : ''}${i.comment ? `<small>«${esc(i.comment)}»</small>` : ''}</span><span>${rub(i.sum)}</span></div>`).join('')}
+      ${o.items.map((i, k) => { const r = repeatable(i); return `<div class="li"><span>${esc(i.name)} × ${i.amount}${i.mods?.length ? `<small>${esc(i.mods.join(', '))}</small>` : ''}${i.comment ? `<small>«${esc(i.comment)}»</small>` : ''}</span><span class="r">${rub(i.sum)}${r ? `<button class="rep" data-rep="${esc(o.id)}:${k}" aria-label="Повторить ${esc(i.name)}">+</button>` : ''}</span></div>`; }).join('')}
     </div>`).join('') : (qs.length ? '' : '<div class="empty">На столе нет открытых заказов</div>')}
     <div class="empty" style="padding:16px"><button class="link" data-a="reloadOrders">${S.loadingOrders ? '<span class="spin"></span>' : 'Обновить'}</button></div>`;
 }
@@ -384,6 +389,45 @@ function ordersHtml() {
 function qLabel(q) {
   if (q.state === 'sent' && q.wait === 'queued' && Date.now() - (q.sentAt || 0) > 20000) return 'ждёт кассу';
   return { queued: 'отправляю…', offline: 'ждёт связи', sent: 'касса принимает…', slow: 'ждёт кассу', error: 'ошибка', ok: 'принят' }[q.state] || q.state;
+}
+
+/* ---------- повтор позиции со стола ---------- */
+// Позиция на столе → позиция меню: по id товара (плагин 1.9+), иначе по названию (как на кассе).
+const norm = (s) => String(s || '').replace(/^[-\s]+/, '').trim().replace(/\s+/g, ' ').toLowerCase();
+function menuProduct(i) {
+  const ps = products();
+  if (i.pid && ps.has(i.pid)) return ps.get(i.pid);
+  const n = norm(i.name); let hit = null;
+  for (const p of ps.values()) if (norm(p.name) === n) { if (hit) return null; hit = p; } // два товара с одним названием — не угадываем
+  return hit;
+}
+const repeatable = (i) => !!menuProduct(i);
+function repeatItem(i) {
+  const p = menuProduct(i); if (!p) return toast('Этой позиции нет в меню приложения', 'err');
+  if (isStop(p.id)) return toast('Позиция в стоп-листе', 'err');
+  const one = Number(i.amount) > 0 ? Math.round((Number(i.sum) / Number(i.amount)) * 100) / 100 : 0;
+  // модификаторы — те же, что у позиции на столе (по id, если касса прислала, иначе по названию)
+  const want = (i.modIds && i.modIds.length ? i.modIds : (i.mods || []).map(norm));
+  const byId = !!(i.modIds && i.modIds.length);
+  const mods = []; const left = [...want];
+  for (const g of p.mods || []) for (const m of g.items) {
+    const k = left.indexOf(byId ? m.id : norm(m.name));
+    if (k >= 0) { left.splice(k, 1); mods.push({ id: m.id, groupId: g.group ? g.id : null, name: m.name, price: m.price, amount: 1, _g: g.id }); }
+  }
+  const okMods = (p.mods || []).every((g) => mods.filter((m) => m._g === g.id).length >= g.min);
+  mods.forEach((m) => delete m._g);
+  const size = i.sizeId && p.sizes ? p.sizes.find((s) => s.id === i.sizeId) : null;
+  // не всё совпало (размер, обязательный модификатор, лишние модификаторы) — даём выбрать вручную
+  if (left.length || !okMods || (p.sizes?.length && !size)) {
+    toast('Выберите как в прошлый раз');
+    if (p.open) return openPrice({ ...p, price: one || p.price });
+    return openMods(p);
+  }
+  if (p.open) {
+    if (!(one > 0)) return openPrice(p);
+    pushItem({ productId: p.id, name: p.name, price: one - mods.reduce((s, m) => s + m.price, 0), sizeId: p.sizeId, amount: 1, mods, open: true });
+  } else pushItem({ productId: p.id, name: p.name + (size?.name ? ` (${size.name})` : ''), price: size ? size.price : p.price, sizeId: size ? size.id : p.sizeId, amount: 1, mods });
+  toast(`+1 ${p.name} — в заказе стола`, 'ok');
 }
 
 /* ---------- добавление позиции ---------- */
