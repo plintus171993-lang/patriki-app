@@ -734,7 +734,8 @@ function allListHtml() {
 }
 async function loadStockOrders() {
   stockOrders = null; render();
-  try { stockOrders = (await api('stock_orders')).orders || []; } catch (e) { stockOrders = { error: e.message }; }
+  // удалённые (отменённые) заказы не показываем — в базе они остаются для истории
+  try { stockOrders = ((await api('stock_orders')).orders || []).filter((o) => o.status !== 'cancelled'); } catch (e) { stockOrders = { error: e.message }; }
   if (S.view === 'stock') render();
 }
 
@@ -747,7 +748,7 @@ function renderStock() {
   if (stockTab === 'orders') {
     body = stockOrders === null ? '<div class="empty"><span class="spin"></span></div>' : stockOrders.error ? `<div class="empty">${esc(stockOrders.error)}</div>` :
       stockOrders.length ? `<div class="hist">${stockOrders.map((o) => `<div class="hi"><span class="n">${esc(o.supplier || 'Заказ')} · ${o.items.length} поз.<small>${new Date(o.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${o.waiter_staff?.name ? ' · ' + esc(o.waiter_staff.name) : ''}${o.telegram ? ' · в Telegram' : ''}<br>${o.items.map((i) => esc(i.name)).join(', ')}</small></span>
-        ${o.status === 'new' ? `<span class="badge q">ждём</span>${can('stock_order') ? `<button class="badge ok" data-recv="${o.id}">Пришло</button>` : ''}` : o.status === 'received' ? '<span class="badge ok">получен</span>' : '<span class="badge">отменён</span>'}</div>`).join('')}</div>`
+        ${o.status === 'new' ? `<span class="badge q">ждём</span>${can('stock_order') ? `<button class="badge ok" data-recv="${o.id}">Пришло</button>` : ''}` : '<span class="badge ok">получен</span>'}${can('stock_order') ? `<button class="badge err" data-del="${o.id}" aria-label="Удалить заказ">✕</button>` : ''}</div>`).join('')}</div>`
       : '<div class="empty">Заказов пока не было</div>';
     if (can('stock_order')) body = `<div style="padding:12px 16px 0"><button class="btn ghost" data-a="contacts">Контакты поставщиков</button></div>` + body;
   } else {
@@ -787,6 +788,12 @@ function renderStock() {
       return editStockItem(x.watched ? x : { productId: x.id, name: x.name, unit: x.unit, qty: x.qty, min: 0, isNew: true, section: x.section, storeId: x.storeId, supplier: x.supplier });
     }
     if (b.dataset.sec !== undefined) { stockSec = b.dataset.sec; return render(); }
+    if (b.dataset.del) {
+      const o = stockOrders.find((x) => x.id === b.dataset.del);
+      if (!confirm(`Удалить заказ${o?.supplier ? ' «' + o.supplier + '»' : ''} (${o?.items?.length || 0} поз.)?`)) return;
+      try { await api('stock_order_status', { id: b.dataset.del, status: 'cancelled' }); toast('Заказ удалён', 'ok'); loadStockOrders(); } catch (er) { toast(er.message, 'err'); }
+      return;
+    }
     if (b.dataset.recv) {
       try { await api('stock_order_status', { id: b.dataset.recv, status: 'received' }); toast('Отмечено: пришло', 'ok'); loadStockOrders(); loadStockAll(true); } catch (er) { toast(er.message, 'err'); }
       return;
