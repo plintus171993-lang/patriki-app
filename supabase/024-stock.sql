@@ -73,3 +73,14 @@ select cron.schedule('stock-check', '*/5 * * * *', $$
     timeout_milliseconds := 60000
   );
 $$);
+
+-- ---------- 026: контакты поставщиков ----------
+-- После оформления заказа приложение открывает чат поставщика (WhatsApp или Telegram) с готовым текстом.
+create table if not exists public.stock_suppliers (
+  name       text primary key,                 -- как поставщик назван в iiko
+  channel    text not null default 'whatsapp' check (channel in ('whatsapp', 'telegram')),
+  contact    text not null,                    -- телефон или @ник в Telegram
+  updated_by uuid references public.waiter_staff(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+alter table public.stock_suppliers enable row level security;

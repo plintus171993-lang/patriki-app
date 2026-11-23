@@ -749,6 +749,7 @@ function renderStock() {
       stockOrders.length ? `<div class="hist">${stockOrders.map((o) => `<div class="hi"><span class="n">${esc(o.supplier || 'Заказ')} · ${o.items.length} поз.<small>${new Date(o.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${o.waiter_staff?.name ? ' · ' + esc(o.waiter_staff.name) : ''}${o.telegram ? ' · в Telegram' : ''}<br>${o.items.map((i) => esc(i.name)).join(', ')}</small></span>
         ${o.status === 'new' ? `<span class="badge q">ждём</span>${can('stock_order') ? `<button class="badge ok" data-recv="${o.id}">Пришло</button>` : ''}` : o.status === 'received' ? '<span class="badge ok">получен</span>' : '<span class="badge">отменён</span>'}</div>`).join('')}</div>`
       : '<div class="empty">Заказов пока не было</div>';
+    if (can('stock_order')) body = `<div style="padding:12px 16px 0"><button class="btn ghost" data-a="contacts">Контакты поставщиков</button></div>` + body;
   } else {
     body = `<div class="search"><input id="aq" placeholder="Поиск: товар, поставщик, группа" value="${esc(allQ)}" autocomplete="off"></div>
       <div class="tabs" style="padding-top:8px"><button class="chip ${allBy === 'group' ? 'on' : ''}" data-by="group">По группам</button><button class="chip ${allBy === 'supplier' ? 'on' : ''}" data-by="supplier">По поставщикам</button></div>
@@ -776,6 +777,7 @@ function renderStock() {
     if (b.dataset.a === 'back') { S.view = 'tables'; return render(); }
     if (b.dataset.a === 'refresh') return stockTab === 'orders' ? loadStockOrders() : loadStockAll(true);
     if (b.dataset.filter) { allFilter = b.dataset.filter; return render(); }
+    if (b.dataset.a === 'contacts') return openContacts();
     if (b.dataset.a === 'order') return openStockOrder(low);
     if (b.dataset.tab) { stockTab = b.dataset.tab; if (stockTab === 'orders') loadStockOrders(); if (stockTab === 'iiko' && !stockAll) loadStockAll(); return render(); }
     if (b.dataset.by) { allBy = b.dataset.by; return render(); }
@@ -882,38 +884,118 @@ function editStockItem(it, stores = stock?.stores || []) {
   draw();
 }
 
+function openContacts() {
+  // поставщики — из накладных iiko (Склад iiko) и уже сохранённые контакты
+  const draw = async () => {
+    await loadSuppliers();
+    const names = [...new Set([...(stockAll?.items || []).map((x) => x.supplier).filter(Boolean), ...Object.keys(suppliers)])].sort((a, b) => a.localeCompare(b, 'ru'));
+    openSheet(`<h2>Контакты поставщиков</h2><div class="sub">Куда приложение отправляет заказ каждому поставщику</div>
+      <div class="menu-list">${names.map((n) => { const c = suppliers[n]; return `<button data-sup="${esc(n)}">${esc(n)}<br><span class="mini">${c ? `${c.channel === 'whatsapp' ? 'WhatsApp' : 'Telegram'}: ${esc(c.contact)}` : 'контакт не указан'}</span></button>`; }).join('') || '<div class="empty">Поставщики появятся из приходных накладных iiko</div>'}</div>`, (a, b) => {
+      if (b.dataset.sup) editSupplier(b.dataset.sup, draw);
+    });
+  };
+  draw();
+}
+
+// ---------- контакты поставщиков: заказ уходит в их WhatsApp / Telegram ----------
+let suppliers = null; // name → {channel, contact}
+async function loadSuppliers() {
+  try { suppliers = Object.fromEntries(((await api('suppliers')).suppliers || []).map((x) => [x.name, x])); } catch { suppliers = suppliers || {}; }
+  return suppliers;
+}
+const NO_SUP = 'Без поставщика';
+function orderMessage(items, note) {
+  return 'Здравствуйте! Заказ от «Патрики Паб»:\n' + items.map((i) => `• ${i.name.replace(/^\*+/, '')} — ${i.packs ? `${fmtN(i.packs)} ${i.packName || 'уп.'}` : `${fmtN(i.qty)} ${i.unit}`}`).join('\n') + (note ? `\n\n${note}` : '') + '\nСпасибо!';
+}
+function supplierLink(c, text) {
+  const t = encodeURIComponent(text);
+  if (!c?.contact) return null;
+  let d = c.contact.replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '8') d = '7' + d.slice(1);
+  if (d.length === 10) d = '7' + d;
+  if (c.channel === 'whatsapp') return `https://wa.me/${d}?text=${t}`;
+  const u = c.contact.trim().replace(/^https?:\/\/t\.me\//, '').replace(/^@/, '');
+  return /^[a-z][a-z0-9_]{3,}$/i.test(u) ? `https://t.me/${u}?text=${t}` : `https://t.me/+${d}?text=${t}`;
+}
+function editSupplier(name, back) {
+  const c = suppliers?.[name] || {};
+  let ch = c.channel || 'whatsapp';
+  const draw = () => openSheet(`<h2>${esc(name)}</h2><div class="sub">Куда отправлять заказы этому поставщику</div>
+    <div class="tabs" style="padding:0">${[['whatsapp', 'WhatsApp'], ['telegram', 'Telegram']].map(([k, n]) => `<button class="chip ${ch === k ? 'on' : ''}" data-ch="${k}">${n}</button>`).join('')}</div>
+    <input class="field" id="sc" placeholder="${ch === 'whatsapp' ? 'Телефон: +7 999 123-45-67' : '@ник или телефон'}" value="${esc(c.contact || '')}" ${ch === 'whatsapp' ? 'inputmode="tel"' : ''} autocomplete="off">
+    <div class="mini" style="margin-top:6px">${ch === 'whatsapp' ? 'Номер, на который у поставщика WhatsApp.' : 'Ник менеджера поставщика в Telegram (например @ivan_pivo) или его телефон.'}</div>
+    <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>
+    ${c.contact ? '<div style="height:8px"></div><button class="btn danger" data-a="del">Удалить контакт</button>' : ''}`, async (a, b) => {
+    if (b.dataset.ch) { c.contact = $sheet.querySelector('#sc').value; ch = b.dataset.ch; return draw(); }
+    if (a !== 'save' && a !== 'del') return;
+    const contact = a === 'del' ? '' : $sheet.querySelector('#sc').value.trim();
+    try {
+      await api('supplier_save', { name, channel: ch, contact });
+      if (contact) suppliers[name] = { name, channel: ch, contact }; else delete suppliers[name];
+      toast(contact ? 'Контакт сохранён' : 'Контакт удалён', 'ok'); back();
+    } catch (er) { toast(er.message, 'err'); }
+  });
+  draw();
+}
+function sendSheet(groups, note) {
+  // после оформления: у каждого поставщика своя кнопка — открывает его чат с готовым текстом
+  const draw = () => openSheet(`<h2>Заказ оформлен</h2><div class="sub">Сохранён в «Заказах» и отправлен в чат заведения. Осталось отправить поставщикам:</div>
+    ${groups.map((g, i) => {
+      const c = suppliers?.[g.supplier];
+      const label = c ? (c.channel === 'whatsapp' ? 'WhatsApp' : 'Telegram') : '';
+      return `<div class="card2"><div class="mg" style="margin-top:0">${esc(g.supplier)} <small>· ${g.items.length} поз.${g.sent ? ' · ✓ открыт чат' : ''}</small></div>
+        <div class="mini">${g.items.map((x) => esc(x.name.replace(/^\*+/, ''))).join(', ')}</div>
+        <div class="row" style="margin-top:8px">
+          ${c ? `<button class="btn ${g.sent ? 'ghost' : ''}" data-send="${i}">Отправить в ${label}</button>` : g.supplier !== NO_SUP ? `<button class="btn" data-contact="${i}">Указать WhatsApp / Telegram</button>` : ''}
+          <button class="btn ghost" data-copy="${i}" style="max-width:${c || g.supplier !== NO_SUP ? '120px' : 'none'}">Копировать</button>
+        </div>${c ? `<button class="link mini" data-contact="${i}" style="margin-top:6px">${esc(label)}: ${esc(c.contact)} · изменить</button>` : ''}</div>`;
+    }).join('')}
+    <div style="height:10px"></div><button class="btn ghost" data-a="close">Готово</button>`, async (a, b) => {
+    if (b.dataset.contact) return editSupplier(groups[+b.dataset.contact].supplier, draw);
+    if (b.dataset.copy) {
+      const g = groups[+b.dataset.copy];
+      try { await navigator.clipboard.writeText(orderMessage(g.items, note)); toast('Текст заказа скопирован', 'ok'); } catch { if (navigator.share) navigator.share({ text: orderMessage(g.items, note) }).catch(() => {}); }
+      return;
+    }
+    if (b.dataset.send) {
+      const g = groups[+b.dataset.send], text = orderMessage(g.items, note);
+      try { await navigator.clipboard.writeText(text); } catch { /* не страшно: текст и так в ссылке */ }
+      window.open(supplierLink(suppliers[g.supplier], text), '_blank');
+      g.sent = true; return draw();
+    }
+    if (a === 'close') { closeSheet(); stockTab = 'orders'; loadStockOrders(); loadStockAll(); }
+  });
+  draw();
+}
 function openStockOrder(low) {
-  // по умолчанию — все позиции «надо заказать» с предложенным количеством (в упаковках, если они заданы)
-  const lines = low.map((it) => ({ it, on: true, n: it.pack ? it.suggest / it.pack : it.suggest }));
-  const sups = [...new Set(low.map((i) => i.supplier).filter(Boolean))];
-  let supplier = sups.length === 1 ? sups[0] : '', note = '';
+  // по умолчанию — все позиции «надо заказать» с предложенным количеством (в упаковках, если они заданы),
+  // сгруппированные по поставщикам: каждому поставщику — свой заказ и своё сообщение
+  const lines = low.map((it) => ({ it, on: true, n: it.pack ? it.suggest / it.pack : it.suggest, sup: it.supplier || NO_SUP }));
+  const sups = [...new Set(lines.map((l) => l.sup))].sort((a, b) => (a === NO_SUP) - (b === NO_SUP) || a.localeCompare(b, 'ru'));
+  let note = '';
+  if (!suppliers) loadSuppliers();
   const draw = () => {
-    openSheet(`<h2>Заказ на закупку</h2><div class="sub">Проверьте количество — уйдёт в Telegram и сохранится в «Заказах»</div>
-      ${sups.length > 1 ? `<div class="tabs" style="padding:0 0 6px">${['', ...sups].map((s) => `<button class="chip ${supplier === s ? 'on' : ''}" data-sup="${esc(s)}">${esc(s || 'все поставщики')}</button>`).join('')}</div>` : ''}
-      ${lines.map((l, i) => (supplier && l.it.supplier !== supplier ? '' : `<div class="hi"><button class="opt ${l.on ? 'on' : ''}" data-on="${i}" style="flex:1;margin:0"><span class="n">${esc(l.it.name)}<br><span class="mini">осталось ${qtyText(l.it.qty, l.it)}</span></span></button>
-        <input class="field" data-n="${i}" inputmode="decimal" value="${fmtN(l.n).replace(/\s/g, '')}" style="width:74px;margin:0;text-align:center"><span class="mini" style="width:52px">${esc(l.it.pack ? l.it.packName || 'уп.' : l.it.unit)}</span></div>`)).join('')}
-      <input class="field" id="o_note" placeholder="Комментарий (необязательно)" value="${esc(note)}">
+    openSheet(`<h2>Заказ на закупку</h2><div class="sub">Проверьте количество. Каждому поставщику уйдёт своё сообщение.</div>
+      ${sups.map((sp) => `<div class="mg">${esc(sp)}</div>` + lines.map((l, i) => (l.sup !== sp ? '' : `<div class="hi"><button class="opt ${l.on ? 'on' : ''}" data-on="${i}" style="flex:1;margin:0"><span class="n">${esc(l.it.name)}<br><span class="mini">осталось ${qtyText(l.it.qty, l.it)}</span></span></button>
+        <input class="field" data-n="${i}" inputmode="decimal" value="${fmtN(l.n).replace(/\s/g, '')}" style="width:74px;margin:0;text-align:center"><span class="mini" style="width:52px">${esc(l.it.pack ? l.it.packName || 'уп.' : l.it.unit)}</span></div>`)).join('')).join('')}
+      <input class="field" id="o_note" placeholder="Комментарий поставщику (например: привезти до 12:00)" value="${esc(note)}">
       <div style="height:14px"></div><button class="btn" data-a="send">Оформить</button>`, async (a, b) => {
-      if (b.dataset.sup !== undefined) { sync(); supplier = b.dataset.sup; return draw(); }
       if (b.dataset.on) { sync(); lines[+b.dataset.on].on = !lines[+b.dataset.on].on; return draw(); }
       if (a !== 'send') return;
       sync();
-      const pick = lines.filter((l) => l.on && l.n > 0 && (!supplier || l.it.supplier === supplier));
+      const pick = lines.filter((l) => l.on && l.n > 0);
       if (!pick.length) return toast('Не выбрано ни одной позиции', 'err');
-      const items = pick.map((l) => ({ productId: l.it.productId, name: l.it.name, unit: l.it.unit, qty: l.it.pack ? l.n * l.it.pack : l.n, packs: l.it.pack ? l.n : null, packName: l.it.pack ? l.it.packName : null }));
       b.disabled = true;
       try {
-        const r = await api('stock_order', { items, supplier: supplier || null, note });
-        const text = `Заказ${supplier ? ' · ' + supplier : ''}:\n` + items.map((i) => `• ${i.name} — ${i.packs ? `${fmtN(i.packs)} ${i.packName || 'уп.'}` : `${fmtN(i.qty)} ${i.unit}`}`).join('\n') + (note ? `\n${note}` : '');
-        openSheet(`<h2>Заказ оформлен</h2><div class="sub">${r.telegram ? 'Отправлен в Telegram-чат заведения.' : 'Сохранён в «Заказах». Telegram не настроен — отправьте поставщику сами.'}</div>
-          <textarea class="field" rows="${Math.min(10, items.length + 2)}" readonly>${esc(text)}</textarea>
-          <div style="height:12px"></div><button class="btn" data-a="share">Отправить поставщику</button>
-          <div style="height:8px"></div><button class="btn ghost" data-a="close">Готово</button>`, async (a2) => {
-          if (a2 === 'share') {
-            try { if (navigator.share) await navigator.share({ text }); else { await navigator.clipboard.writeText(text); toast('Скопировано — вставьте в мессенджер', 'ok'); } } catch { /* закрыл окно */ }
-          }
-          if (a2 === 'close') { closeSheet(); stockTab = 'orders'; loadStockOrders(); loadStockAll(); }
-        });
+        if (!suppliers) await loadSuppliers();
+        const groups = [];
+        for (const sp of sups) {
+          const items = pick.filter((l) => l.sup === sp).map((l) => ({ productId: l.it.productId, name: l.it.name, unit: l.it.unit, qty: l.it.pack ? l.n * l.it.pack : l.n, packs: l.it.pack ? l.n : null, packName: l.it.pack ? l.it.packName : null }));
+          if (!items.length) continue;
+          await api('stock_order', { items, supplier: sp === NO_SUP ? null : sp, note });
+          groups.push({ supplier: sp, items, sent: false });
+        }
+        sendSheet(groups, note);
       } catch (er) { b.disabled = false; toast(er.message, 'err'); }
     });
   };

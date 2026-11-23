@@ -31,6 +31,8 @@
 //   stock_item_save {productId, …} / stock_item_delete {productId}   (stock_setup)
 //   stock_order {items, supplier?, note?} → {id, telegram}        (stock_order)
 //   stock_orders                  → {orders}                      (stock_view)
+//   suppliers → {suppliers: [{name, channel, contact}]} (stock_view) / supplier_save {name, channel, contact} (stock_order)
+//     контакт поставщика: заказ открывается в его WhatsApp / Telegram с готовым текстом
 //   stock_order_status {id, status}                               (stock_order)
 //
 // Как заказ попадает на кассу (app_secrets.waiter_mode):
@@ -917,6 +919,23 @@ Deno.serve(async (req) => {
         return json({ ok: true });
       }
       case 'stock_order': need(staff, 'stock_order'); return json(await stockOrder(staff, b));
+      case 'suppliers': {
+        need(staff, 'stock_view');
+        const { data } = await db.from('stock_suppliers').select('name, channel, contact').order('name');
+        return json({ suppliers: data || [] });
+      }
+      case 'supplier_save': {
+        need(staff, 'stock_order');
+        const name = String(b.name || '').trim().slice(0, 80);
+        if (!name) throw new HttpError(400, 'Нет поставщика');
+        const channel = b.channel === 'telegram' ? 'telegram' : 'whatsapp';
+        const contact = String(b.contact || '').trim().slice(0, 64);
+        if (!contact) { await db.from('stock_suppliers').delete().eq('name', name); return json({ ok: true }); }
+        if (channel === 'whatsapp' && contact.replace(/\D/g, '').length < 10) throw new HttpError(400, 'Для WhatsApp нужен номер телефона');
+        const { error } = await db.from('stock_suppliers').upsert({ name, channel, contact, updated_by: staff.id, updated_at: new Date().toISOString() });
+        if (error) throw new HttpError(400, error.message);
+        return json({ ok: true });
+      }
       case 'stock_orders': {
         need(staff, 'stock_view');
         let q = db.from('stock_orders').select('id, supplier, items, note, status, telegram, sections, created_at, waiter_staff(name)')
