@@ -437,6 +437,9 @@ namespace Resto.Front.Api.Patriki
                 var items = o.Items.OfType<IOrderProductItem>().Where(i => !i.Deleted).Select(i => (object)new Dictionary<string, object>
                 {
                     ["name"] = i.Product?.Name ?? "Позиция",
+                    ["pid"] = i.Product?.Id.ToString(), // для кнопки «повторить» в приложении
+                    ["sizeId"] = i.Size?.Id.ToString(),
+                    ["modIds"] = i.AssignedModifiers.Where(m => !m.Deleted && m.Product != null).Select(m => m.Product.Id.ToString()).ToList(),
                     ["amount"] = i.Amount,
                     ["sum"] = i.ResultSum,
                     ["mods"] = i.AssignedModifiers.Where(m => !m.Deleted).Select(m => m.Product?.Name).Where(n => !string.IsNullOrEmpty(n)).ToList(),
