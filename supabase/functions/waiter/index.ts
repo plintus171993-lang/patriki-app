@@ -24,7 +24,8 @@
 //   plugin (по умолчанию) — заказ встаёт в очередь waiter_orders, плагин «Карта Патрики» на главной
 //     кассе забирает его, создаёт на столе в iikoFront от имени официанта и печатает на кухню.
 //     Облако iiko (iikoTransport) для этого не нужно. Плагин ходит сюда с ключом кассы (x-pos-key):
-//       pos_poll {venue, tables?}  → {orders}   — пульс кассы + снимок открытых заказов столов
+//       pos_poll {venue, tables?, menu?}  → {orders}   — пульс кассы + снимок открытых заказов столов
+//         + меню кассы (плагин 1.8+): все блюда, как их видит кассир в iikoFront, — приложение показывает именно его
 //       pos_result {id, ok, error?, iikoOrderId?, number?}
 //   cloud — напрямую через iikoCloud API (нужна касса, подключённая к iikoTransport).
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -167,6 +168,16 @@ async function loadMenu(c: Ctx) {
   return { id: String(m.id), name: m.name, groups };
 }
 
+// меню с кассы (плагин 1.8+) — один в один как на кассе, включая «свободные» блюда; облачное меню — запасной вариант
+async function posMenu() {
+  if ((await mode()) !== 'plugin') return null;
+  const { data } = await db.from('waiter_cache').select('data, updated_at').eq('key', 'pos_menu:' + await venue()).maybeSingle();
+  const m = data?.data as any;
+  if (!m || !Array.isArray(m.groups) || !m.groups.length) return null;
+  if (Date.now() - new Date(data!.updated_at).getTime() > 3 * 24 * 3600 * 1000) return null; // касса давно не присылала
+  return m;
+}
+
 async function loadStop(c: Ctx) {
   const s = await iiko('1/stop_lists', { organizationIds: [c.org], terminalGroupsIds: [c.tg] });
   const out: Record<string, number> = {};
@@ -284,6 +295,7 @@ async function send(staff: Staff, b: any) {
     orderItems(b.items); // проверка
     const items = b.items.map((i: any) => ({
       productId: i.productId, name: String(i.name || '').slice(0, 120), amount: Number(i.amount), price: Number(i.price || 0),
+      open: i.open ? true : undefined, // свободная цена — касса ставит цену, введённую официантом
       sizeId: i.sizeId || null, comment: i.comment ? String(i.comment).slice(0, 200) : null,
       mods: (i.mods || []).map((m: any) => ({ id: m.id, groupId: m.groupId || null, name: String(m.name || '').slice(0, 120), amount: Number(m.amount || 1), price: Number(m.price || 0) })),
     }));
@@ -420,6 +432,9 @@ async function pos(req: Request, a: string, b: any) {
     if (Array.isArray(layout) && layout.length) await db.from('waiter_cache').upsert({ key: 'pos_layout:' + v, data: layout, updated_at: now });
     await db.from('waiter_cache').upsert({ key: 'pos_tables:' + v, data: b.tables, updated_at: now });
   }
+  if (b.menu && typeof b.menu === 'object' && Array.isArray(b.menu.groups) && b.menu.groups.length) {
+    await db.from('waiter_cache').upsert({ key: 'pos_menu:' + v, data: b.menu, updated_at: now });
+  }
   // забрать новые заказы (и зависшие «взятые» больше 3 минут назад — касса могла перезапуститься)
   const stale = new Date(Date.now() - 3 * 60 * 1000).toISOString();
   const { data } = await db.from('waiter_orders')
@@ -455,7 +470,7 @@ Deno.serve(async (req) => {
         const c = await ctx();
         const [tables, menu, stop, isAlive, occ] = await Promise.all([
           posLayout().then((l) => l || cached('tables', 600, () => loadTables(c), !!b.force)),
-          cached('menu', 600, () => loadMenu(c), !!b.force),
+          posMenu().then((m) => m || cached('menu', 600, () => loadMenu(c), !!b.force)),
           cached('stop', 60, () => loadStop(c), !!b.force).catch(() => ({})),
           alive(c),
           occupied(),
