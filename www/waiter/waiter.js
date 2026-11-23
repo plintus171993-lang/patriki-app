@@ -935,6 +935,31 @@ function supplierLink(c, text) {
   const u = c.contact.trim().replace(/^https?:\/\/t\.me\//, '').replace(/^@/, '');
   return /^[a-z][a-z0-9_]{3,}$/i.test(u) ? `https://t.me/${u}?text=${t}` : `https://t.me/+${d}?text=${t}`;
 }
+// ссылка прямо в приложение мессенджера (телефон и ноутбук): tg:// и whatsapp://
+function supplierAppLink(c, text) {
+  const t = encodeURIComponent(text);
+  if (!c?.contact) return null;
+  let d = c.contact.replace(/\D/g, '');
+  if (d.length === 11 && d[0] === '8') d = '7' + d.slice(1);
+  if (d.length === 10) d = '7' + d;
+  if (c.channel === 'whatsapp') return `whatsapp://send?phone=${d}&text=${t}`;
+  const u = c.contact.trim().replace(/^https?:\/\/t\.me\//, '').replace(/^@/, '');
+  return /^[a-z][a-z0-9_]{3,}$/i.test(u) ? `tg://resolve?domain=${u}&text=${t}` : `tg://resolve?phone=${d}&text=${t}`;
+}
+// сначала приложение; если за 1,5 с страница не ушла в фон (приложения нет) — веб-версия
+function openMessenger(c, text) {
+  const app = supplierAppLink(c, text), web = supplierLink(c, text);
+  let left = false;
+  const onHide = (e) => { if (document.hidden || e?.type === 'blur') left = true; };
+  document.addEventListener('visibilitychange', onHide);
+  window.addEventListener('blur', onHide);
+  try { location.href = app; } catch { left = false; }
+  setTimeout(() => {
+    document.removeEventListener('visibilitychange', onHide);
+    window.removeEventListener('blur', onHide);
+    if (!left && !document.hidden) window.open(web, '_blank');
+  }, 1500);
+}
 function editSupplier(name, back) {
   const c = suppliers?.[name] || {};
   let ch = c.channel || 'whatsapp';
@@ -978,7 +1003,7 @@ function sendSheet(groups, note) {
     if (b.dataset.send) {
       const g = groups[+b.dataset.send], text = orderMessage(g.items, note);
       try { await navigator.clipboard.writeText(text); } catch { /* не страшно: текст и так в ссылке */ }
-      window.open(supplierLink(suppliers[g.supplier], text), '_blank');
+      openMessenger(suppliers[g.supplier], text);
       g.sent = true; return draw();
     }
     if (a === 'close') { closeSheet(); stockTab = 'orders'; loadStockOrders(); loadStockAll(); }
