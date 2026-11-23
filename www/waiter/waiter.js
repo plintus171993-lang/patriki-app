@@ -196,7 +196,7 @@ async function doLogin() {
   try {
     const r = await api('login', { pin: p });
     S.token = r.token; LS.set('token', r.token);
-    S.staff = { name: r.name, role: r.role }; LS.set('staff', S.staff);
+    S.staff = { name: r.name, role: r.role, perms: r.perms || [] }; LS.set('staff', S.staff);
     await start();
   } catch (e) { renderLogin(e.message); }
 }
@@ -212,6 +212,7 @@ function render() {
   if (S.view === 'table' && S.table) return renderTable();
   if (S.view === 'history') return renderHistory();
   if (S.view === 'staff') return renderStaff();
+  if (S.view === 'stock') return renderStock();
   return renderTables();
 }
 
@@ -231,6 +232,7 @@ function renderTables() {
   $app.innerHTML = `
   <div class="top">
     <h1>Столы${statusLine()}</h1>
+    ${can('stock_view') ? '<button class="ib" data-a="stock" aria-label="Склад">📦</button>' : ''}
     <button class="ib" data-a="reload" aria-label="Обновить">↻</button>
     <button class="ib" data-a="menu" aria-label="Меню">☰</button>
   </div>
@@ -254,6 +256,7 @@ function renderTables() {
     if (b.dataset.t) return openTable(b.dataset.t);
     if (b.dataset.a === 'reload') return reload();
     if (b.dataset.a === 'menu') return openMainMenu();
+    if (b.dataset.a === 'stock') return openStock();
   };
 }
 
@@ -269,6 +272,7 @@ function openMainMenu() {
     <div class="sub">${S.staff?.role === 'manager' ? 'Управляющий' : 'Официант'}</div>
     <div class="menu-list">
       <button data-a="history">Мои заказы за смену</button>
+      ${can('stock_view') ? '<button data-a="stock">Склад: остатки и заказ</button>' : ''}
       ${S.staff?.role === 'manager' ? '<button data-a="staff">Сотрудники и ПИН-коды</button>' : ''}
       <button data-a="reload">Обновить меню и столы</button>
       <button data-a="logout" style="color:var(--danger)">Выйти</button>
@@ -276,10 +280,13 @@ function openMainMenu() {
     closeSheet();
     if (a === 'history') { S.view = 'history'; render(); loadHistory(); }
     if (a === 'staff') { S.view = 'staff'; render(); loadStaff(); }
+    if (a === 'stock') openStock();
     if (a === 'reload') reload();
     if (a === 'logout') logout();
   });
 }
+
+function openStock() { S.view = 'stock'; stockTab = 'low'; render(); loadStock(); }
 
 /* ---------- стол ---------- */
 function openTable(id) {
@@ -579,8 +586,8 @@ async function loadStaff(force = false) {
 function renderStaff() {
   const act = Array.isArray(staffList) ? staffList.filter((s) => s.active) : [];
   const off = Array.isArray(staffList) ? staffList.filter((s) => !s.active) : [];
-  const row = (s) => `<div class="hi" style="${s.active ? '' : 'opacity:.45'}"><span class="n">${esc(s.name)}<small>${s.role === 'manager' ? 'управляющий' : 'официант'}${s.iiko_employee_id ? ' · из iiko' : ''}${s.active ? '' : ' · отключён'}</small></span>
-      <button class="badge" data-edit="${s.id}">${s.active ? 'ПИН' : 'Вернуть'}</button>${s.active ? `<button class="badge err" data-off="${s.id}">Откл.</button>` : ''}</div>`;
+  const row = (s) => `<div class="hi" style="${s.active ? '' : 'opacity:.45'}"><span class="n">${esc(s.name)}<small>${s.role === 'manager' ? 'управляющий' : 'официант'}${s.role !== 'manager' && (s.perms || []).length ? ' · склад: ' + permText(s.perms) : ''}${s.iiko_employee_id ? ' · из iiko' : ''}${s.active ? '' : ' · отключён'}</small></span>
+      <button class="badge" data-edit="${s.id}">${s.active ? 'Изменить' : 'Вернуть'}</button>${s.active ? `<button class="badge err" data-off="${s.id}">Откл.</button>` : ''}</div>`;
   $app.innerHTML = `
   <div class="top"><button class="ib" data-a="back">←</button><h1>Сотрудники</h1><button class="ib" data-a="sync" aria-label="Обновить из iiko">↻</button></div>
   <div style="padding:12px 16px 0" class="row"><button class="btn" data-a="fromIiko">＋ Из сотрудников iiko</button></div>
@@ -623,30 +630,262 @@ async function pickIiko() {
   };
   draw();
 }
+const PERM_OPTS = [
+  ['stock_view', 'Видит остатки по складу', 'список «надо заказать»'],
+  ['stock_order', 'Может оформлять заказ', 'поставщику, в Telegram'],
+  ['stock_setup', 'Настраивает минимумы', 'какие позиции и сколько держать'],
+];
+const permText = (p) => PERM_OPTS.filter(([k]) => p.includes(k)).map(([, n]) => n.split(' ').pop()).join(', ');
 function editStaff(s, pre = null) {
   const name = s?.name || pre?.name || '';
-  const role = s?.role || pre?.role || 'waiter';
+  let role = s?.role || pre?.role || 'waiter';
+  const perms = new Set(s?.perms || []);
   const iikoId = s?.iiko_employee_id || pre?.iikoEmployeeId || null;
-  openSheet(`
+  const existing = !!(s && s.active !== false);
+  let nm = name, pinv = '';
+  const draw = () => {
+    openSheet(`
     <h2>${s ? esc(s.name) : pre ? esc(pre.name) : 'Новый сотрудник'}</h2>
-    <div class="sub">${iikoId ? 'Сотрудник из iiko · ' : ''}${s ? 'задайте новый ПИН' : 'задайте ПИН для входа'}</div>
-    <input class="field" id="sn" placeholder="Имя в приложении" value="${esc(name)}" maxlength="60">
-    <input class="field" id="sp" placeholder="ПИН (4–6 цифр)" inputmode="numeric" maxlength="6" autocomplete="off">
+    <div class="sub">${iikoId ? 'Сотрудник из iiko · ' : ''}${existing ? 'ПИН можно не менять — оставьте поле пустым' : 'задайте ПИН для входа'}</div>
+    <input class="field" id="sn" placeholder="Имя в приложении" value="${esc(nm)}" maxlength="60">
+    <input class="field" id="sp" placeholder="${existing ? 'Новый ПИН (необязательно)' : 'ПИН (4–6 цифр)'}" inputmode="numeric" maxlength="6" autocomplete="off" value="${esc(pinv)}">
     <div class="mg">Роль</div>
-    <button class="opt ${role !== 'manager' ? 'on' : ''}" data-role="waiter"><span class="n">Официант</span></button>
-    <button class="opt ${role === 'manager' ? 'on' : ''}" data-role="manager"><span class="n">Управляющий</span><span class="mini">видит все заказы, выдаёт ПИН</span></button>
+    <button class="opt ${role !== 'manager' ? 'on' : ''}" data-role="waiter"><span class="n">Официант / бармен</span></button>
+    <button class="opt ${role === 'manager' ? 'on' : ''}" data-role="manager"><span class="n">Управляющий</span><span class="mini">всё, включая склад и ПИН-коды</span></button>
+    ${role === 'manager' ? '' : `<div class="mg">Склад <small>— бармены без галочек склад не видят</small></div>
+    ${PERM_OPTS.map(([k, n, d]) => `<button class="opt ${perms.has(k) ? 'on' : ''}" data-perm="${k}"><span class="n">${perms.has(k) ? '☑' : '☐'} ${n}<br><span class="mini">${d}</span></span></button>`).join('')}`}
     <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>`, async (a, b) => {
-    if (b.dataset.role) { $sheet.querySelectorAll('[data-role]').forEach((x) => x.classList.toggle('on', x === b)); return; }
-    if (a !== 'save') return;
-    const nm = $sheet.querySelector('#sn').value.trim(); const pinv = $sheet.querySelector('#sp').value.trim();
-    const rl = $sheet.querySelector('[data-role].on')?.dataset.role || 'waiter';
-    if (!nm) return toast('Введите имя', 'err');
-    if (!/^[0-9]{4,6}$/.test(pinv)) return toast('ПИН — от 4 до 6 цифр', 'err');
-    try {
-      await api('staff_save', { id: s?.id || null, name: nm, pin: pinv, role: rl, ...(iikoId ? { iikoEmployeeId: iikoId, iikoName: pre?.name || s?.iiko_name || nm } : {}) });
-      closeSheet(); toast(`Сохранено. ПИН ${nm}: ${pinv}`, 'ok'); loadStaff();
-    } catch (er) { toast(er.message, 'err'); }
-  });
+      nm = $sheet.querySelector('#sn').value; pinv = $sheet.querySelector('#sp').value;
+      if (b.dataset.role) { role = b.dataset.role; return draw(); }
+      if (b.dataset.perm) {
+        const k = b.dataset.perm;
+        if (perms.has(k)) { perms.delete(k); if (k === 'stock_view') { perms.delete('stock_order'); perms.delete('stock_setup'); } }
+        else { perms.add(k); if (k !== 'stock_view') perms.add('stock_view'); }
+        return draw();
+      }
+      if (a !== 'save') return;
+      const n2 = nm.trim(), p2 = pinv.trim(), pl = role === 'manager' ? [] : [...perms];
+      if (!n2) return toast('Введите имя', 'err');
+      if ((!existing || p2) && !/^[0-9]{4,6}$/.test(p2)) return toast('ПИН — от 4 до 6 цифр', 'err');
+      try {
+        if (existing && !p2) {
+          await api('staff_update', { id: s.id, name: n2, role, perms: pl });
+          closeSheet(); toast('Сохранено', 'ok');
+        } else {
+          await api('staff_save', { id: s?.id || null, name: n2, pin: p2, role, perms: pl, ...(iikoId ? { iikoEmployeeId: iikoId, iikoName: pre?.name || s?.iiko_name || n2 } : {}) });
+          closeSheet(); toast(`Сохранено. ПИН ${n2}: ${p2}`, 'ok');
+        }
+        loadStaff();
+      } catch (er) { toast(er.message, 'err'); }
+    });
+  };
+  draw();
+}
+
+/* ---------------- склад (управляющий, шеф и те, кому выданы права) ---------------- */
+// Остатки приходят с сервера iiko. Управляющий выбирает позиции и задаёт минимум — приложение
+// само показывает, что пора заказать, и предлагает сколько (до «заказывать до», с округлением до упаковки).
+const can = (p) => (S.staff?.perms || []).includes(p) || S.staff?.role === 'manager';
+const fmtN = (n) => (Math.round(Number(n) * 1000) / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 });
+let stock = null, stockTab = 'low', stockSec = '', stockOrders = null;
+function qtyText(q, it) {
+  let s = `${fmtN(q)} ${esc(it.unit || '')}`;
+  if (it.pack && it.packName && Math.abs(q) >= it.pack) s = `${fmtN(q / it.pack)} ${esc(it.packName)} · ` + s;
+  if (it.portion) s += ` ≈ ${Math.max(0, Math.floor(q / it.portion + 1e-9))} ${esc(it.portionName || 'порц.')}`;
+  return s;
+}
+function minText(it) { return it.portion ? `${fmtN(it.min / it.portion)} ${esc(it.portionName || 'порц.')}` : `${fmtN(it.min)} ${esc(it.unit || '')}`; }
+function orderText(q, it) { return it.pack ? `${fmtN(q / it.pack)} ${esc(it.packName || 'уп.')}` : `${fmtN(q)} ${esc(it.unit || '')}`; }
+
+async function loadStock(force = false) {
+  if (!stock || force) { stock = stock && !stock.error ? stock : null; render(); }
+  try {
+    stock = await api('stock', { force }, { timeout: 60000 });
+    if (S.staff && stock.perms) { S.staff.perms = stock.perms; LS.set('staff', S.staff); }
+  } catch (e) { stock = { error: e.message }; }
+  if (S.view === 'stock') render();
+}
+async function loadStockOrders() {
+  stockOrders = null; render();
+  try { stockOrders = (await api('stock_orders')).orders || []; } catch (e) { stockOrders = { error: e.message }; }
+  if (S.view === 'stock') render();
+}
+
+function renderStock() {
+  const items = stock?.items || [];
+  const secs = [...new Set(items.map((i) => i.section).filter(Boolean))];
+  const inSec = items.filter((i) => !stockSec || i.section === stockSec);
+  const low = inSec.filter((i) => i.low);
+  const shown = stockTab === 'low' ? low : inSec;
+  const ago = stock?.at ? Math.round((Date.now() - new Date(stock.at).getTime()) / 60000) : null;
+  const row = (it) => `<button class="it ${it.low ? 'low' : ''}" data-item="${it.productId}">
+      <span class="n">${esc(it.name)}<small>осталось ${qtyText(it.qty, it)} · мин. ${minText(it)}${it.byStore.length > 1 ? ' · ' + it.byStore.map((s) => `${esc(s.name)}: ${fmtN(s.qty)}`).join(', ') : ''}${it.missing ? ' · нет в iiko' : ''}</small></span>
+      ${it.low ? `<span class="badge err">заказать ${orderText(it.suggest, it)}</span>` : '<span class="badge ok">хватает</span>'}</button>`;
+  let body;
+  if (stockTab === 'orders') {
+    body = stockOrders === null ? '<div class="empty"><span class="spin"></span></div>' : stockOrders.error ? `<div class="empty">${esc(stockOrders.error)}</div>` :
+      stockOrders.length ? `<div class="hist">${stockOrders.map((o) => `<div class="hi"><span class="n">${esc(o.supplier || 'Заказ')} · ${o.items.length} поз.<small>${new Date(o.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${o.waiter_staff?.name ? ' · ' + esc(o.waiter_staff.name) : ''}${o.telegram ? ' · в Telegram' : ''}<br>${o.items.map((i) => esc(i.name)).join(', ')}</small></span>
+        ${o.status === 'new' ? `<span class="badge q">ждём</span>${can('stock_order') ? `<button class="badge ok" data-recv="${o.id}">Пришло</button>` : ''}` : o.status === 'received' ? '<span class="badge ok">получен</span>' : '<span class="badge">отменён</span>'}</div>`).join('')}</div>`
+      : '<div class="empty">Заказов пока не было</div>';
+  } else if (stock === null) body = '<div class="empty"><span class="spin"></span><br><br>Загружаю остатки из iiko…</div>';
+  else if (stock.error) body = `<div class="banner">${esc(stock.error)}</div>`;
+  else if (!items.length) body = `<div class="empty">Пока не выбрано ни одной позиции.${can('stock_setup') ? '<br><br><button class="btn" style="max-width:280px;margin:0 auto" data-a="add">＋ Добавить позицию из iiko</button>' : '<br>Позиции и минимумы настраивает управляющий.'}</div>`;
+  else body = `<div class="list" style="padding-top:0">${shown.map(row).join('') || `<div class="empty">${stockTab === 'low' ? '✓ Всего хватает — заказывать нечего' : 'Нет позиций'}</div>`}</div>`;
+  $app.innerHTML = `
+  <div class="top"><button class="ib" data-a="back">←</button><h1>Склад<small>${ago == null ? 'остатки из iiko' : `остатки из iiko · ${ago < 1 ? 'только что' : ago + ' мин назад'}`}</small></h1>
+    <button class="ib" data-a="refresh" aria-label="Обновить">↻</button>${can('stock_setup') ? '<button class="ib" data-a="add" aria-label="Добавить">＋</button>' : ''}</div>
+  <div class="tabs">
+    <button class="chip ${stockTab === 'low' ? 'on' : ''}" data-tab="low">Надо заказать${stock?.items ? ` · ${low.length}` : ''}</button>
+    <button class="chip ${stockTab === 'all' ? 'on' : ''}" data-tab="all">Все позиции</button>
+    <button class="chip ${stockTab === 'orders' ? 'on' : ''}" data-tab="orders">Заказы</button>
+  </div>
+  ${secs.length > 1 && stockTab !== 'orders' ? `<div class="tabs" style="padding-top:4px"><button class="chip ${!stockSec ? 'on' : ''}" data-sec="">Все</button>${secs.map((s) => `<button class="chip ${stockSec === s ? 'on' : ''}" data-sec="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
+  ${body}
+  ${stockTab !== 'orders' && low.length && can('stock_order') ? `<div class="bar"><div class="in"><button class="btn" data-a="order">Оформить заказ <span class="cnt">${low.length}</span></button></div></div>` : ''}`;
+  $app.onclick = async (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.a === 'back') { S.view = 'tables'; return render(); }
+    if (b.dataset.a === 'refresh') return stockTab === 'orders' ? loadStockOrders() : loadStock(true);
+    if (b.dataset.a === 'add') return pickStockProduct();
+    if (b.dataset.a === 'order') return openStockOrder(low);
+    if (b.dataset.tab) { stockTab = b.dataset.tab; if (stockTab === 'orders') loadStockOrders(); return render(); }
+    if (b.dataset.sec !== undefined) { stockSec = b.dataset.sec; return render(); }
+    if (b.dataset.recv) {
+      try { await api('stock_order_status', { id: b.dataset.recv, status: 'received' }); toast('Отмечено: пришло', 'ok'); loadStockOrders(); loadStock(true); } catch (er) { toast(er.message, 'err'); }
+      return;
+    }
+    if (b.dataset.item && can('stock_setup')) editStockItem(items.find((x) => x.productId === b.dataset.item));
+  };
+}
+
+async function pickStockProduct() {
+  let list = [], stores = stock?.stores || [], q = '', t;
+  const draw = (loading) => {
+    openSheet(`<h2>Позиция из iiko</h2><div class="sub">Товар или заготовка со склада (например «Хеллес кега»)</div>
+      <input class="field" id="pq" placeholder="Поиск по названию или группе" value="${esc(q)}" autocomplete="off">
+      <div class="menu-list">${loading ? '<div class="empty"><span class="spin"></span></div>' : list.map((x) => `<button data-p="${x.id}" ${x.watched ? 'style="opacity:.5"' : ''}>${esc(x.name)}<br><span class="mini">${esc(x.group || 'без группы')}${x.unit ? ' · ' + esc(x.unit) : ''}${x.watched ? ' · уже в списке' : ''}</span></button>`).join('') || '<div class="empty">Ничего не нашлось</div>'}</div>`, (a, b) => {
+      if (!b.dataset.p) return;
+      const x = list.find((y) => y.id === b.dataset.p);
+      const have = stock?.items?.find((i) => i.productId === x.id);
+      editStockItem(have || { productId: x.id, name: x.name, unit: x.unit, min: 0, isNew: true }, stores);
+    });
+    const inp = $sheet.querySelector('#pq');
+    inp.focus(); inp.setSelectionRange(q.length, q.length);
+    inp.oninput = () => { q = inp.value; clearTimeout(t); t = setTimeout(search, 300); };
+  };
+  const search = async () => {
+    draw(true);
+    try { const r = await api('stock_catalog', { q }, { timeout: 60000 }); list = r.products || []; stores = r.stores || stores; draw(false); }
+    catch (e) { openSheet(`<h2>Позиция из iiko</h2><div class="banner">${esc(e.message)}</div>`); }
+  };
+  search();
+}
+
+function editStockItem(it, stores = stock?.stores || []) {
+  // минимум и «заказывать до» можно вводить в литрах/кг, в порциях («бокалах») или в упаковках («кегах»)
+  let unitMode = it.portion ? 'portion' : 'base';
+  const f = {
+    portion: it.portion ?? '', portionName: it.portionName || '', pack: it.pack ?? '', packName: it.packName || '',
+    supplier: it.supplier || '', section: it.section || '', storeId: it.storeId || '',
+  };
+  const k = () => (unitMode === 'portion' ? Number(f.portion) || 1 : unitMode === 'pack' ? Number(f.pack) || 1 : 1);
+  let min = it.min ? it.min / k() : '', max = it.max != null ? it.max / k() : '';
+  const val = (id) => $sheet.querySelector('#' + id)?.value.trim().replace(',', '.') ?? '';
+  const grab = () => {
+    for (const x of ['portion', 'portionName', 'pack', 'packName', 'supplier']) f[x] = val('s_' + x);
+    f.storeId = $sheet.querySelector('#s_store')?.value || '';
+    min = val('s_min'); max = val('s_max');
+  };
+  const draw = () => {
+    const modes = [['base', it.unit || 'ед.']];
+    if (Number(f.portion) > 0) modes.push(['portion', f.portionName || 'порция']);
+    if (Number(f.pack) > 0) modes.push(['pack', f.packName || 'упаковка']);
+    if (!modes.some((m) => m[0] === unitMode)) unitMode = 'base';
+    openSheet(`
+      <h2>${esc(it.name)}</h2><div class="sub">Остаток в iiko считается в «${esc(it.unit || 'ед.')}»${it.qty != null && !it.isNew ? ` · сейчас ${qtyText(it.qty, it)}` : ''}</div>
+      <div class="mg">Порция <small>— необязательно, чтобы видеть «осталось 5 бокалов»</small></div>
+      <div class="row"><input class="field" id="s_portion" inputmode="decimal" placeholder="0,5" value="${esc(f.portion)}"><input class="field" id="s_portionName" placeholder="бокал" value="${esc(f.portionName)}"></div>
+      <div class="mg">Упаковка у поставщика <small>— заказ округлится до неё</small></div>
+      <div class="row"><input class="field" id="s_pack" inputmode="decimal" placeholder="20" value="${esc(f.pack)}"><input class="field" id="s_packName" placeholder="кега" value="${esc(f.packName)}"></div>
+      <div class="mg">Считать в</div>
+      <div class="tabs" style="padding:0">${modes.map(([m, n]) => `<button class="chip ${unitMode === m ? 'on' : ''}" data-mode="${m}">${esc(n)}</button>`).join('')}</div>
+      <div class="row">
+        <div style="flex:1"><div class="mg">Минимум</div><input class="field" id="s_min" inputmode="decimal" placeholder="5" value="${esc(min)}"></div>
+        <div style="flex:1"><div class="mg">Заказывать до <small>необяз.</small></div><input class="field" id="s_max" inputmode="decimal" placeholder="—" value="${esc(max)}"></div>
+      </div>
+      <div class="mg">Раздел</div>
+      <div class="tabs" style="padding:0">${['', 'Бар', 'Кухня'].map((s) => `<button class="chip ${f.section === s ? 'on' : ''}" data-section="${s}">${s || 'без раздела'}</button>`).join('')}</div>
+      ${stores.length > 1 ? `<div class="mg">Склад</div><select class="field" id="s_store"><option value="">Все склады вместе</option>${stores.map((s) => `<option value="${s.id}" ${f.storeId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
+      <div class="mg">Поставщик <small>необяз.</small></div><input class="field" id="s_supplier" placeholder="Например, «Пивоварня»" value="${esc(f.supplier)}">
+      <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>
+      ${it.isNew ? '' : '<div style="height:8px"></div><button class="btn danger" data-a="del">Убрать из списка</button>'}`, async (a, b) => {
+      if (b.dataset.mode) { grab(); const was = k(); unitMode = b.dataset.mode; const now = k(); if (min !== '') min = fmtN(Number(min) * was / now).replace(/\s/g, ''); if (max !== '') max = fmtN(Number(max) * was / now).replace(/\s/g, ''); return draw(); }
+      if (b.dataset.section !== undefined) { grab(); f.section = b.dataset.section; return draw(); }
+      if (a === 'del') {
+        if (!confirm(`Убрать «${it.name}» из списка?`)) return;
+        try { await api('stock_item_delete', { productId: it.productId }); closeSheet(); toast('Убрано', 'ok'); loadStock(); } catch (er) { toast(er.message, 'err'); }
+        return;
+      }
+      if (a !== 'save') return;
+      grab();
+      const m = Number(String(min).replace(/\s/g, '')), mx = max === '' ? null : Number(String(max).replace(/\s/g, ''));
+      if (min === '' || !(m >= 0)) return toast('Укажите минимальный остаток', 'err');
+      if (mx != null && !(mx > m)) return toast('«Заказывать до» должно быть больше минимума', 'err');
+      try {
+        await api('stock_item_save', {
+          productId: it.productId, name: it.name, unit: it.unit, min: m * k(), max: mx == null ? null : mx * k(),
+          portion: f.portion, portionName: f.portionName, pack: f.pack, packName: f.packName,
+          supplier: f.supplier, section: f.section, storeId: f.storeId || null,
+        });
+        closeSheet(); toast('Сохранено', 'ok'); loadStock();
+      } catch (er) { toast(er.message, 'err'); }
+    });
+    // при вводе порции/упаковки обновить переключатель «считать в»
+    for (const id of ['s_portion', 's_pack', 's_portionName', 's_packName']) $sheet.querySelector('#' + id).onchange = () => { grab(); draw(); };
+  };
+  draw();
+}
+
+function openStockOrder(low) {
+  // по умолчанию — все позиции «надо заказать» с предложенным количеством (в упаковках, если они заданы)
+  const lines = low.map((it) => ({ it, on: true, n: it.pack ? it.suggest / it.pack : it.suggest }));
+  const sups = [...new Set(low.map((i) => i.supplier).filter(Boolean))];
+  let supplier = sups.length === 1 ? sups[0] : '', note = '';
+  const draw = () => {
+    openSheet(`<h2>Заказ на закупку</h2><div class="sub">Проверьте количество — уйдёт в Telegram и сохранится в «Заказах»</div>
+      ${sups.length > 1 ? `<div class="tabs" style="padding:0 0 6px">${['', ...sups].map((s) => `<button class="chip ${supplier === s ? 'on' : ''}" data-sup="${esc(s)}">${esc(s || 'все поставщики')}</button>`).join('')}</div>` : ''}
+      ${lines.map((l, i) => (supplier && l.it.supplier !== supplier ? '' : `<div class="hi"><button class="opt ${l.on ? 'on' : ''}" data-on="${i}" style="flex:1;margin:0"><span class="n">${esc(l.it.name)}<br><span class="mini">осталось ${qtyText(l.it.qty, l.it)}</span></span></button>
+        <input class="field" data-n="${i}" inputmode="decimal" value="${fmtN(l.n).replace(/\s/g, '')}" style="width:74px;margin:0;text-align:center"><span class="mini" style="width:52px">${esc(l.it.pack ? l.it.packName || 'уп.' : l.it.unit)}</span></div>`)).join('')}
+      <input class="field" id="o_note" placeholder="Комментарий (необязательно)" value="${esc(note)}">
+      <div style="height:14px"></div><button class="btn" data-a="send">Оформить</button>`, async (a, b) => {
+      if (b.dataset.sup !== undefined) { sync(); supplier = b.dataset.sup; return draw(); }
+      if (b.dataset.on) { sync(); lines[+b.dataset.on].on = !lines[+b.dataset.on].on; return draw(); }
+      if (a !== 'send') return;
+      sync();
+      const pick = lines.filter((l) => l.on && l.n > 0 && (!supplier || l.it.supplier === supplier));
+      if (!pick.length) return toast('Не выбрано ни одной позиции', 'err');
+      const items = pick.map((l) => ({ productId: l.it.productId, name: l.it.name, unit: l.it.unit, qty: l.it.pack ? l.n * l.it.pack : l.n, packs: l.it.pack ? l.n : null, packName: l.it.pack ? l.it.packName : null }));
+      b.disabled = true;
+      try {
+        const r = await api('stock_order', { items, supplier: supplier || null, note });
+        const text = `Заказ${supplier ? ' · ' + supplier : ''}:\n` + items.map((i) => `• ${i.name} — ${i.packs ? `${fmtN(i.packs)} ${i.packName || 'уп.'}` : `${fmtN(i.qty)} ${i.unit}`}`).join('\n') + (note ? `\n${note}` : '');
+        openSheet(`<h2>Заказ оформлен</h2><div class="sub">${r.telegram ? 'Отправлен в Telegram-чат заведения.' : 'Сохранён в «Заказах». Telegram не настроен — отправьте поставщику сами.'}</div>
+          <textarea class="field" rows="${Math.min(10, items.length + 2)}" readonly>${esc(text)}</textarea>
+          <div style="height:12px"></div><button class="btn" data-a="share">Отправить поставщику</button>
+          <div style="height:8px"></div><button class="btn ghost" data-a="close">Готово</button>`, async (a2) => {
+          if (a2 === 'share') {
+            try { if (navigator.share) await navigator.share({ text }); else { await navigator.clipboard.writeText(text); toast('Скопировано — вставьте в мессенджер', 'ok'); } } catch { /* закрыл окно */ }
+          }
+          if (a2 === 'close') { closeSheet(); stockTab = 'orders'; loadStockOrders(); }
+        });
+      } catch (er) { b.disabled = false; toast(er.message, 'err'); }
+    });
+  };
+  const sync = () => {
+    $sheet.querySelectorAll('[data-n]').forEach((x) => { const v = Number(x.value.replace(',', '.').replace(/\s/g, '')); lines[+x.dataset.n].n = v > 0 ? v : 0; });
+    note = $sheet.querySelector('#o_note')?.value || '';
+  };
+  draw();
 }
 
 /* ---------------- лист ---------------- */
