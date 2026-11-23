@@ -824,12 +824,19 @@ function editStockItem(it, stores = stock?.stores || []) {
     portion: it.portion ?? '', portionName: it.portionName || '', pack: it.pack ?? '', packName: it.packName || '',
     supplier: it.supplier || '', storeId: it.storeId || '',
     section: it.section || ((stock?.sections || []).length === 1 ? stock.sections[0] : stockSec || ''),
+    ch: 'whatsapp', contact: '',
   };
+  // контакт хранится у поставщика (один на все его товары): подставляем из справочника
+  const fillContact = () => { const c = suppliers?.[f.supplier.trim()]; f.ch = c?.channel || 'whatsapp'; f.contact = c?.contact || ''; };
+  fillContact();
+  if (!suppliers) loadSuppliers().then(() => { if (!$sheet.hidden && $sheet.querySelector('#s_contact') && !f.contact) { grab(); fillContact(); draw(); } });
   const k = () => (unitMode === 'portion' ? Number(f.portion) || 1 : unitMode === 'pack' ? Number(f.pack) || 1 : 1);
   let min = it.min ? it.min / k() : '', max = it.max != null ? it.max / k() : '';
   const val = (id) => $sheet.querySelector('#' + id)?.value.trim().replace(',', '.') ?? '';
   const grab = () => {
-    for (const x of ['portion', 'portionName', 'pack', 'packName', 'supplier']) f[x] = val('s_' + x);
+    for (const x of ['portion', 'portionName', 'pack', 'packName']) f[x] = val('s_' + x);
+    f.supplier = $sheet.querySelector('#s_supplier')?.value.trim() ?? f.supplier;
+    f.contact = $sheet.querySelector('#s_contact')?.value.trim() ?? f.contact;
     f.storeId = $sheet.querySelector('#s_store')?.value || '';
     min = val('s_min'); max = val('s_max');
   };
@@ -854,10 +861,14 @@ function editStockItem(it, stores = stock?.stores || []) {
       <div class="tabs" style="padding:0">${(stock?.sections || ['Бар', 'Кухня']).map((s) => `<button class="chip ${f.section === s ? 'on' : ''}" data-section="${s}">${s}</button>`).join('')}</div>
       ${stores.length > 1 ? `<div class="mg">Склад</div><select class="field" id="s_store"><option value="">Все склады вместе</option>${stores.map((s) => `<option value="${s.id}" ${f.storeId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
       <div class="mg">Поставщик <small>необяз.</small></div><input class="field" id="s_supplier" placeholder="Например, «Пивоварня»" value="${esc(f.supplier)}">
+      <div class="mg">Куда отправлять заказ <small>— один контакт на поставщика, подхватится во всех его товарах</small></div>
+      <div class="tabs" style="padding:0">${[['whatsapp', 'WhatsApp'], ['telegram', 'Telegram']].map(([k2, n]) => `<button class="chip ${f.ch === k2 ? 'on' : ''}" data-ch="${k2}">${n}</button>`).join('')}</div>
+      <input class="field" id="s_contact" placeholder="${f.ch === 'whatsapp' ? 'Телефон: +7 999 123-45-67' : '@ник или телефон'}" value="${esc(f.contact)}" autocomplete="off" ${f.ch === 'whatsapp' ? 'inputmode="tel"' : ''}>
       <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>
       ${it.isNew ? '' : '<div style="height:8px"></div><button class="btn danger" data-a="del">Снять минимум</button>'}`, async (a, b) => {
       if (b.dataset.mode) { grab(); const was = k(); unitMode = b.dataset.mode; const now = k(); if (min !== '') min = fmtN(Number(min) * was / now).replace(/\s/g, ''); if (max !== '') max = fmtN(Number(max) * was / now).replace(/\s/g, ''); return draw(); }
       if (b.dataset.section !== undefined) { grab(); f.section = b.dataset.section; return draw(); }
+      if (b.dataset.ch) { grab(); f.ch = b.dataset.ch; return draw(); }
       if (a === 'del') {
         if (!confirm(`Убрать «${it.name}» из списка?`)) return;
         try { await api('stock_item_delete', { productId: it.productId }); closeSheet(); toast('Минимум снят', 'ok'); loadStockAll(); } catch (er) { toast(er.message, 'err'); }
@@ -875,11 +886,18 @@ function editStockItem(it, stores = stock?.stores || []) {
           portion: f.portion, portionName: f.portionName, pack: f.pack, packName: f.packName,
           supplier: f.supplier, section: f.section, storeId: f.storeId || null,
         });
+        const was = suppliers?.[f.supplier];
+        if (f.supplier && f.contact && (!was || was.contact !== f.contact || was.channel !== f.ch)) {
+          await api('supplier_save', { name: f.supplier, channel: f.ch, contact: f.contact });
+          (suppliers ||= {})[f.supplier] = { name: f.supplier, channel: f.ch, contact: f.contact };
+        }
         closeSheet(); toast('Сохранено — уведомим, когда остаток дойдёт до минимума', 'ok'); loadStockAll();
       } catch (er) { toast(er.message, 'err'); }
     });
     // при вводе порции/упаковки обновить переключатель «считать в»
     for (const id of ['s_portion', 's_pack', 's_portionName', 's_packName']) $sheet.querySelector('#' + id).onchange = () => { grab(); draw(); };
+    // сменили поставщика — подставить его контакт из справочника
+    $sheet.querySelector('#s_supplier').onchange = () => { grab(); if (suppliers?.[f.supplier]) fillContact(); draw(); };
   };
   draw();
 }
