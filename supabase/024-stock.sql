@@ -11,10 +11,11 @@
 --    stock_view  — видит остатки и список «надо заказать»
 --    stock_order — оформляет заказ поставщику (включает stock_view)
 --    stock_setup — выбирает позиции и задаёт минимальные остатки (включает stock_view)
+--    stock_bar / stock_kitchen — какие разделы видит (шеф — только кухню). Без раздела склад не виден.
 --  Бармен без прав не видит раздел вовсе, сервер ему тоже ничего не отдаёт.
 --
---  Telegram для заказов (необязательно): app_secrets.telegram_chat_id:stock,
---  иначе — чат заведения telegram_chat_id:<venue>, иначе telegram_chat_id.
+--  Telegram для заказов (необязательно): telegram_chat_id:stock_bar / :stock_kitchen,
+--  иначе telegram_chat_id:stock, иначе чат заведения telegram_chat_id:<venue>, иначе telegram_chat_id.
 --  Можно запускать повторно.
 -- =====================================================================
 
@@ -33,7 +34,7 @@ create table if not exists public.stock_items (
   pack         numeric,                      -- упаковка поставщика (20 л)…
   pack_name    text,                         -- …и её название («кега»)
   supplier     text,
-  section      text,                         -- бар / кухня — для фильтра
+  section      text,                         -- «Бар» / «Кухня» — кто видит позицию
   active       boolean not null default true,
   updated_by   uuid references public.waiter_staff(id) on delete set null,
   updated_at   timestamptz not null default now()
@@ -48,6 +49,7 @@ create table if not exists public.stock_orders (
   note       text,
   status     text not null default 'new' check (status in ('new', 'received', 'cancelled')),
   telegram   boolean not null default false, -- ушёл ли в Telegram
+  sections   text[] not null default '{}',   -- раздел заказа («Бар» / «Кухня»)
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

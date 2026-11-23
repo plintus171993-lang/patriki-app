@@ -22,7 +22,8 @@
 //   staff_update {id, role, perms} — роль и права без смены ПИН (только управляющий)
 //
 // Склад (024-stock.sql) — остатки с сервера iiko (iiko_server_url / _login / _password):
-//   stock {force?}                → {items, stores, at, perms}   — права stock_view / stock_order / stock_setup
+//   stock {force?}                → {items, stores, at, perms, sections} — права stock_view / stock_order / stock_setup,
+//                                    разделы stock_bar / stock_kitchen (шеф — только кухня; управляющий — всё)
 //   stock_catalog {q}             → {products}                    — товары iiko для добавления (stock_setup)
 //   stock_item_save {productId, …} / stock_item_delete {productId}   (stock_setup)
 //   stock_order {items, supplier?, note?} → {id, telegram}        (stock_order)
@@ -464,14 +465,23 @@ async function pos(req: Request, a: string, b: any) {
 
 /* ---------------- склад: остатки с сервера iiko ---------------- */
 // Права: управляющий — всё; остальным управляющий выдаёт в карточке сотрудника.
-// stock_order и stock_setup включают stock_view.
-const PERMS = ['stock_view', 'stock_order', 'stock_setup'];
+// stock_order и stock_setup включают stock_view. Разделы: stock_bar / stock_kitchen — шеф видит
+// только кухню, бар-менеджер только бар; без раздела склад не виден вовсе.
+const SECTIONS: Record<string, string> = { stock_bar: 'Бар', stock_kitchen: 'Кухня' };
+const PERMS = ['stock_view', 'stock_order', 'stock_setup', ...Object.keys(SECTIONS)];
 function effPerms(s: { role: string; perms?: string[] }) {
   if (s.role === 'manager') return [...PERMS];
   const p = new Set((s.perms || []).filter((x) => PERMS.includes(x)));
   if (p.has('stock_order') || p.has('stock_setup')) p.add('stock_view');
+  if (!Object.keys(SECTIONS).some((k) => p.has(k))) return []; // нет раздела — нет и склада
   return [...p];
 }
+// разделы, которые видит сотрудник; null — все (управляющий)
+function mySections(s: Staff): string[] | null {
+  if (s.role === 'manager') return null;
+  return Object.entries(SECTIONS).filter(([k]) => effPerms(s).includes(k)).map(([, v]) => v);
+}
+const inMine = (s: Staff, section: string | null) => { const m = mySections(s); return m === null || (!!section && m.includes(section)); };
 function need(s: Staff, perm: string) {
   if (!effPerms(s).includes(perm)) throw new HttpError(403, 'Нет доступа к складу. Права выдаёт управляющий');
 }
@@ -543,9 +553,10 @@ async function stockView(staff: Staff, force: boolean) {
     cached('stock_balance', 300, loadBalance, force),
     db.from('stock_items').select('*').eq('active', true).order('name'),
   ]);
+  const mine = (items || []).filter((it: any) => inMine(staff, it.section));
   const { data: at } = await db.from('waiter_cache').select('updated_at').eq('key', 'stock_balance').maybeSingle();
   const storeName = new Map(cat.stores.map((s) => [s.id, s.name]));
-  const list = (items || []).map((it: any) => {
+  const list = mine.map((it: any) => {
     const by = bal[it.product_id] || {};
     const qty = round(it.store_id ? (by[it.store_id] || 0) : Object.values(by).reduce((a, b) => a + b, 0));
     const min = Number(it.min_qty || 0), max = it.max_qty != null ? Number(it.max_qty) : null, pack = it.pack ? Number(it.pack) : null;
@@ -565,7 +576,7 @@ async function stockView(staff: Staff, force: boolean) {
       low: qty <= min, suggest, missing: !cat.products[it.product_id],
     };
   });
-  return { items: list, stores: cat.stores, at: at?.updated_at || null, perms: effPerms(staff) };
+  return { items: list, stores: cat.stores, at: at?.updated_at || null, perms: effPerms(staff), sections: mySections(staff) || Object.values(SECTIONS) };
 }
 
 async function stockCatalog(b: any) {
@@ -588,12 +599,16 @@ async function stockItemSave(staff: Staff, b: any) {
   if (!b.productId) throw new HttpError(400, 'Не выбран товар');
   const min = num(b.min);
   if (min == null || min < 0) throw new HttpError(400, 'Укажите минимальный остаток');
+  if (!Object.values(SECTIONS).includes(b.section)) throw new HttpError(400, 'Выберите раздел: бар или кухня');
+  if (!inMine(staff, b.section)) throw new HttpError(403, 'Нет доступа к разделу «' + b.section + '»');
+  const { data: was } = await db.from('stock_items').select('section, active').eq('product_id', b.productId).maybeSingle();
+  if (was?.active && !inMine(staff, was.section)) throw new HttpError(403, 'Эта позиция в разделе «' + (was.section || 'без раздела') + '»');
   const row = {
     product_id: b.productId, name: String(b.name || '').slice(0, 120) || 'Товар', unit: b.unit ? String(b.unit).slice(0, 20) : null,
     store_id: b.storeId || null, min_qty: min, max_qty: num(b.max),
     portion: num(b.portion) || null, portion_name: b.portionName ? String(b.portionName).slice(0, 30) : null,
     pack: num(b.pack) || null, pack_name: b.packName ? String(b.packName).slice(0, 30) : null,
-    supplier: b.supplier ? String(b.supplier).slice(0, 80) : null, section: b.section ? String(b.section).slice(0, 30) : null,
+    supplier: b.supplier ? String(b.supplier).slice(0, 80) : null, section: b.section,
     active: true, updated_by: staff.id, updated_at: new Date().toISOString(),
   };
   const { error } = await db.from('stock_items').upsert(row);
@@ -603,30 +618,43 @@ async function stockItemSave(staff: Staff, b: any) {
 
 const fmt = (n: number) => String(round(n)).replace('.', ',');
 async function stockOrder(staff: Staff, b: any) {
-  const items = (Array.isArray(b.items) ? b.items : []).map((i: any) => ({
+  const raw = (Array.isArray(b.items) ? b.items : []).map((i: any) => ({
     productId: i.productId, name: String(i.name || '').slice(0, 120), qty: Number(i.qty), unit: String(i.unit || '').slice(0, 20),
     packs: i.packs != null ? Number(i.packs) : null, packName: i.packName ? String(i.packName).slice(0, 30) : null,
   })).filter((i: any) => i.productId && i.qty > 0 && i.qty < 100000);
-  if (!items.length) throw new HttpError(400, 'В заказе нет позиций');
+  if (!raw.length) throw new HttpError(400, 'В заказе нет позиций');
+  // раздел позиции берём из базы, а не из запроса: шеф не закажет барные позиции
+  const { data: rows } = await db.from('stock_items').select('product_id, section').in('product_id', raw.map((i: any) => i.productId));
+  const sec = new Map((rows || []).map((r: any) => [r.product_id, r.section || 'Без раздела']));
+  const bySec = new Map<string, any[]>();
+  for (const i of raw) {
+    const s2 = sec.get(i.productId) || 'Без раздела';
+    if (!inMine(staff, s2 === 'Без раздела' ? null : s2)) throw new HttpError(403, `«${i.name}» — не ваш раздел`);
+    if (!bySec.has(s2)) bySec.set(s2, []);
+    bySec.get(s2)!.push(i);
+  }
   const supplier = b.supplier ? String(b.supplier).slice(0, 80) : null;
   const note = b.note ? String(b.note).slice(0, 500) : null;
-  const { data: saved, error } = await db.from('stock_orders').insert({ staff_id: staff.id, supplier, items, note }).select('id, created_at').single();
-  if (error) throw new Error(error.message);
-  // в Telegram: отдельный чат закупок, иначе чат заведения
-  let telegram = false;
-  try {
-    const tok = await secret('telegram_bot_token');
-    const chat = (await secret('telegram_chat_id:stock')) || (await secret('telegram_chat_id:' + await venue())) || (await secret('telegram_chat_id'));
-    if (tok && chat) {
-      const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!));
-      const lines = items.map((i: any) => `• ${esc(i.name)} — ${i.packs ? `${fmt(i.packs)} ${esc(i.packName || 'уп.')} (${fmt(i.qty)} ${esc(i.unit)})` : `${fmt(i.qty)} ${esc(i.unit)}`}`);
-      const text = `🧾 <b>Заказ на закупку</b>${supplier ? ' · ' + esc(supplier) : ''}\n${lines.join('\n')}${note ? '\n\n' + esc(note) : ''}\n\nОформил: ${esc(staff.name)}`;
-      const r = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML' }) });
-      telegram = r.ok;
-      if (telegram) await db.from('stock_orders').update({ telegram: true }).eq('id', saved.id);
-    }
-  } catch (e) { console.error('stock telegram', e); }
-  return { id: saved.id, telegram };
+  const tok = await secret('telegram_bot_token');
+  const ids: string[] = []; let telegram = false;
+  for (const [section, items] of bySec) {
+    const { data: saved, error } = await db.from('stock_orders').insert({ staff_id: staff.id, supplier, items, note, sections: [section] }).select('id').single();
+    if (error) throw new Error(error.message);
+    ids.push(saved.id);
+    // чат: закупки раздела → закупки вообще → чат заведения
+    try {
+      const key = section === 'Бар' ? 'stock_bar' : section === 'Кухня' ? 'stock_kitchen' : 'stock';
+      const chat = (await secret('telegram_chat_id:' + key)) || (await secret('telegram_chat_id:stock')) || (await secret('telegram_chat_id:' + await venue())) || (await secret('telegram_chat_id'));
+      if (tok && chat) {
+        const esc = (x: string) => x.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!));
+        const lines = items.map((i: any) => `• ${esc(i.name)} — ${i.packs ? `${fmt(i.packs)} ${esc(i.packName || 'уп.')} (${fmt(i.qty)} ${esc(i.unit)})` : `${fmt(i.qty)} ${esc(i.unit)}`}`);
+        const text = `🧾 <b>Заказ на закупку · ${esc(section)}</b>${supplier ? ' · ' + esc(supplier) : ''}\n${lines.join('\n')}${note ? '\n\n' + esc(note) : ''}\n\nОформил: ${esc(staff.name)}`;
+        const r = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML' }) });
+        if (r.ok) { telegram = true; await db.from('stock_orders').update({ telegram: true }).eq('id', saved.id); }
+      }
+    } catch (e) { console.error('stock telegram', e); }
+  }
+  return { id: ids[0], ids, telegram };
 }
 
 /* ---------------- официанты (управляющий) ---------------- */
@@ -723,19 +751,27 @@ Deno.serve(async (req) => {
       case 'stock_item_save': need(staff, 'stock_setup'); return json(await stockItemSave(staff, b));
       case 'stock_item_delete': {
         need(staff, 'stock_setup');
+        const { data: it } = await db.from('stock_items').select('section').eq('product_id', b.productId).maybeSingle();
+        if (it && !inMine(staff, it.section)) throw new HttpError(403, 'Это позиция другого раздела');
         await db.from('stock_items').update({ active: false, updated_by: staff.id, updated_at: new Date().toISOString() }).eq('product_id', b.productId);
         return json({ ok: true });
       }
       case 'stock_order': need(staff, 'stock_order'); return json(await stockOrder(staff, b));
       case 'stock_orders': {
         need(staff, 'stock_view');
-        const { data } = await db.from('stock_orders').select('id, supplier, items, note, status, telegram, created_at, waiter_staff(name)')
+        let q = db.from('stock_orders').select('id, supplier, items, note, status, telegram, sections, created_at, waiter_staff(name)')
           .gte('created_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()).order('created_at', { ascending: false }).limit(50);
+        const ms = mySections(staff);
+        if (ms) q = q.overlaps('sections', ms);
+        const { data } = await q;
         return json({ orders: data || [] });
       }
       case 'stock_order_status': {
         need(staff, 'stock_order');
         if (!['new', 'received', 'cancelled'].includes(b.status)) throw new HttpError(400, 'Неверный статус');
+        const { data: o } = await db.from('stock_orders').select('sections').eq('id', b.id).maybeSingle();
+        const ms = mySections(staff);
+        if (!o || (ms && !(o.sections || []).some((x: string) => ms.includes(x)))) throw new HttpError(403, 'Это заказ другого раздела');
         await db.from('stock_orders').update({ status: b.status, updated_at: new Date().toISOString() }).eq('id', b.id);
         return json({ ok: true });
       }

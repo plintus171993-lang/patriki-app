@@ -635,7 +635,8 @@ const PERM_OPTS = [
   ['stock_order', 'Может оформлять заказ', 'поставщику, в Telegram'],
   ['stock_setup', 'Настраивает минимумы', 'какие позиции и сколько держать'],
 ];
-const permText = (p) => PERM_OPTS.filter(([k]) => p.includes(k)).map(([, n]) => n.split(' ').pop()).join(', ');
+const SEC_OPTS = [['stock_bar', 'Бар'], ['stock_kitchen', 'Кухня']];
+const permText = (p) => SEC_OPTS.filter(([k]) => p.includes(k)).map(([, n]) => n.toLowerCase()).join(' и ') + (p.includes('stock_order') ? ', заказ' : '') + (p.includes('stock_setup') ? ', минимумы' : '');
 function editStaff(s, pre = null) {
   const name = s?.name || pre?.name || '';
   let role = s?.role || pre?.role || 'waiter';
@@ -652,20 +653,22 @@ function editStaff(s, pre = null) {
     <div class="mg">Роль</div>
     <button class="opt ${role !== 'manager' ? 'on' : ''}" data-role="waiter"><span class="n">Официант / бармен</span></button>
     <button class="opt ${role === 'manager' ? 'on' : ''}" data-role="manager"><span class="n">Управляющий</span><span class="mini">всё, включая склад и ПИН-коды</span></button>
-    ${role === 'manager' ? '' : `<div class="mg">Склад <small>— бармены без галочек склад не видят</small></div>
+    ${role === 'manager' ? '' : `<div class="mg">Склад <small>— какой раздел видит; без отметок склад не виден</small></div>
+    <div class="tabs" style="padding:0 0 4px">${SEC_OPTS.map(([k, n]) => `<button class="chip ${perms.has(k) ? 'on' : ''}" data-perm="${k}">${perms.has(k) ? '✓ ' : ''}${n}</button>`).join('')}</div>
     ${PERM_OPTS.map(([k, n, d]) => `<button class="opt ${perms.has(k) ? 'on' : ''}" data-perm="${k}"><span class="n">${perms.has(k) ? '☑' : '☐'} ${n}<br><span class="mini">${d}</span></span></button>`).join('')}`}
     <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>`, async (a, b) => {
       nm = $sheet.querySelector('#sn').value; pinv = $sheet.querySelector('#sp').value;
       if (b.dataset.role) { role = b.dataset.role; return draw(); }
       if (b.dataset.perm) {
         const k = b.dataset.perm;
-        if (perms.has(k)) { perms.delete(k); if (k === 'stock_view') { perms.delete('stock_order'); perms.delete('stock_setup'); } }
-        else { perms.add(k); if (k !== 'stock_view') perms.add('stock_view'); }
+        if (perms.has(k)) { perms.delete(k); if (k === 'stock_view') perms.clear(); }
+        else { perms.add(k); perms.add('stock_view'); }
         return draw();
       }
       if (a !== 'save') return;
       const n2 = nm.trim(), p2 = pinv.trim(), pl = role === 'manager' ? [] : [...perms];
       if (!n2) return toast('Введите имя', 'err');
+      if (pl.length && !SEC_OPTS.some(([k]) => pl.includes(k))) return toast('Отметьте раздел склада: бар или кухня', 'err');
       if ((!existing || p2) && !/^[0-9]{4,6}$/.test(p2)) return toast('ПИН — от 4 до 6 цифр', 'err');
       try {
         if (existing && !p2) {
@@ -713,7 +716,7 @@ async function loadStockOrders() {
 
 function renderStock() {
   const items = stock?.items || [];
-  const secs = [...new Set(items.map((i) => i.section).filter(Boolean))];
+  const secs = stock?.sections || [];
   const inSec = items.filter((i) => !stockSec || i.section === stockSec);
   const low = inSec.filter((i) => i.low);
   const shown = stockTab === 'low' ? low : inSec;
@@ -786,7 +789,8 @@ function editStockItem(it, stores = stock?.stores || []) {
   let unitMode = it.portion ? 'portion' : 'base';
   const f = {
     portion: it.portion ?? '', portionName: it.portionName || '', pack: it.pack ?? '', packName: it.packName || '',
-    supplier: it.supplier || '', section: it.section || '', storeId: it.storeId || '',
+    supplier: it.supplier || '', storeId: it.storeId || '',
+    section: it.section || ((stock?.sections || []).length === 1 ? stock.sections[0] : stockSec || ''),
   };
   const k = () => (unitMode === 'portion' ? Number(f.portion) || 1 : unitMode === 'pack' ? Number(f.pack) || 1 : 1);
   let min = it.min ? it.min / k() : '', max = it.max != null ? it.max / k() : '';
@@ -814,7 +818,7 @@ function editStockItem(it, stores = stock?.stores || []) {
         <div style="flex:1"><div class="mg">Заказывать до <small>необяз.</small></div><input class="field" id="s_max" inputmode="decimal" placeholder="—" value="${esc(max)}"></div>
       </div>
       <div class="mg">Раздел</div>
-      <div class="tabs" style="padding:0">${['', 'Бар', 'Кухня'].map((s) => `<button class="chip ${f.section === s ? 'on' : ''}" data-section="${s}">${s || 'без раздела'}</button>`).join('')}</div>
+      <div class="tabs" style="padding:0">${(stock?.sections || ['Бар', 'Кухня']).map((s) => `<button class="chip ${f.section === s ? 'on' : ''}" data-section="${s}">${s}</button>`).join('')}</div>
       ${stores.length > 1 ? `<div class="mg">Склад</div><select class="field" id="s_store"><option value="">Все склады вместе</option>${stores.map((s) => `<option value="${s.id}" ${f.storeId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>` : ''}
       <div class="mg">Поставщик <small>необяз.</small></div><input class="field" id="s_supplier" placeholder="Например, «Пивоварня»" value="${esc(f.supplier)}">
       <div style="height:14px"></div><button class="btn" data-a="save">Сохранить</button>
@@ -830,6 +834,7 @@ function editStockItem(it, stores = stock?.stores || []) {
       grab();
       const m = Number(String(min).replace(/\s/g, '')), mx = max === '' ? null : Number(String(max).replace(/\s/g, ''));
       if (min === '' || !(m >= 0)) return toast('Укажите минимальный остаток', 'err');
+      if (!f.section) return toast('Выберите раздел: бар или кухня', 'err');
       if (mx != null && !(mx > m)) return toast('«Заказывать до» должно быть больше минимума', 'err');
       try {
         await api('stock_item_save', {
