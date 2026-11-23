@@ -496,6 +496,10 @@ async function iikoServer<T>(work: (get: (path: string, q?: Record<string, strin
   const call = async (path: string, q: Record<string, string> = {}) => {
     const r = await fetch(base + path + '?' + new URLSearchParams(q), { signal: AbortSignal.timeout(30000) });
     const t = await r.text();
+    if (r.status === 403) {
+      const right = (t.match(/Permission denied:\s*([A-Z_0-9]+)/) || [])[1];
+      throw Object.assign(new Error(`У пользователя iiko «${login}» нет права${right ? ' ' + right : ''} (запрос ${path}). Выдайте его в iikoOffice: Сотрудники → ${login} → права`), { denied: true });
+    }
     if (!r.ok) throw new Error(`Сервер iiko ${path}: ${r.status} ${t.slice(0, 200)}`);
     return t;
   };
@@ -508,9 +512,11 @@ async function iikoServer<T>(work: (get: (path: string, q?: Record<string, strin
   }
 }
 
-// справочник: товары, единицы, склады (меняется редко — кэш 6 часов)
-type Catalog = { products: Record<string, { name: string; unit: string; type: string; group: string }>; stores: { id: string; name: string }[] };
-async function loadCatalog(): Promise<Catalog> {
+// справочник: товары, единицы, склады (меняется редко — кэш 6 часов).
+// Сначала с сервера iiko; если у пользователя нет права на номенклатуру — из облака iiko
+// (ключ официантов): id товаров там те же самые.
+type Catalog = { products: Record<string, { name: string; unit: string; type: string; group: string }>; stores: { id: string; name: string }[]; source?: string };
+async function loadCatalogServer(): Promise<Catalog> {
   return iikoServer(async (get) => {
     const [pr, un, gr, st] = await Promise.all([
       get('v2/entities/products/list', { includeDeleted: 'false' }),
@@ -525,13 +531,33 @@ async function loadCatalog(): Promise<Catalog> {
       if (p.deleted) continue;
       products[p.id] = { name: String(p.name || '').trim(), unit: units.get(p.mainUnit) || '', type: String(p.type || ''), group: groups.get(p.parent) || '' };
     }
-    // склады отдаются в XML: <corporateItemDto><id>…</id><name>…</name><type>STORE</type>
-    const stores = [...st.matchAll(/<corporateItemDto>([\s\S]*?)<\/corporateItemDto>/g)]
-      .map((m) => ({ id: (m[1].match(/<id>([^<]+)<\/id>/) || [])[1], name: (m[1].match(/<name>([^<]*)<\/name>/) || [])[1], type: (m[1].match(/<type>([^<]+)<\/type>/) || [])[1] }))
-      .filter((x) => x.id && (!x.type || x.type === 'STORE'))
-      .map((x) => ({ id: x.id!, name: (x.name || '').replace(/&quot;/g, '"').replace(/&amp;/g, '&') }));
-    return { products, stores };
+    return { products, stores: parseStores(st), source: 'server' };
   });
+}
+// склады отдаются в XML: <corporateItemDto><id>…</id><name>…</name><type>STORE</type>
+function parseStores(st: string) {
+  return [...st.matchAll(/<corporateItemDto>([\s\S]*?)<\/corporateItemDto>/g)]
+    .map((m) => ({ id: (m[1].match(/<id>([^<]+)<\/id>/) || [])[1], name: (m[1].match(/<name>([^<]*)<\/name>/) || [])[1], type: (m[1].match(/<type>([^<]+)<\/type>/) || [])[1] }))
+    .filter((x) => x.id && (!x.type || x.type === 'STORE'))
+    .map((x) => ({ id: x.id!, name: (x.name || '').replace(/&quot;/g, '"').replace(/&amp;/g, '&') }));
+}
+async function loadCatalogCloud(): Promise<Catalog> {
+  const c = await ctx();
+  const n = await iiko('1/nomenclature', { organizationId: c.org }, 60);
+  const groups = new Map<string, string>((n.groups || []).map((g: any) => [g.id, g.name]));
+  const products: Catalog['products'] = {};
+  for (const p of n.products || []) {
+    if (p.isDeleted) continue;
+    const t = String(p.type || '').toUpperCase();
+    products[p.id] = { name: String(p.name || '').trim(), unit: String(p.measureUnit || ''), type: t === 'GOOD' ? 'GOODS' : t, group: groups.get(p.parentGroup) || '' };
+  }
+  // склады — с сервера, если пустит; нет — считаем «все склады вместе»
+  const stores = await iikoServer((get) => get('corporation/stores')).then(parseStores).catch(() => []);
+  return { products, stores, source: 'cloud' };
+}
+async function loadCatalog(): Promise<Catalog> {
+  try { return await loadCatalogServer(); }
+  catch (e) { if (!(e as any).denied) throw e; return await loadCatalogCloud(); }
 }
 
 // остатки на сейчас: {productId: {storeId: amount}}
