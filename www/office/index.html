@@ -207,11 +207,12 @@ const IC={
  mot:'<path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z" fill="none" stroke="currentColor" stroke-width="2"/>',
  log:'<path d="M4 4h16v16H4zM8 9h8M8 13h8M8 17h5" fill="none" stroke="currentColor" stroke-width="2"/>',
  acc:'<path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6zM9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2"/>',
- loy:'<path d="M3 7h18v12H3zM3 11h18M7 15h4" fill="none" stroke="currentColor" stroke-width="2"/>'
+ loy:'<path d="M3 7h18v12H3zM3 11h18M7 15h4" fill="none" stroke="currentColor" stroke-width="2"/>',
+ cost:'<path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h3M14 15h2" fill="none" stroke="currentColor" stroke-width="2"/>'
 };
 const PAGES=[
  {id:'dash',t:'Сводка',ic:'dash',perm:'revenue.view'},{id:'cash',t:'Кассы и деньги',ic:'cash',perm:'cash.view'},{id:'ts',t:'Табель',ic:'ts'},
- {id:'staff',t:'Сотрудники',ic:'staff',perm:'staff.edit'},{id:'pay',t:'Зарплата',ic:'pay',owner:1},{id:'loy',t:'Система лояльности',ic:'loy',owner:1},{id:'mot',t:'Мотивация',ic:'mot',owner:1},{id:'acc',t:'Доступы',ic:'acc',owner:1},{id:'log',t:'Журнал действий',ic:'log',owner:1}];
+ {id:'staff',t:'Сотрудники',ic:'staff',perm:'staff.edit'},{id:'cost',t:'Себестоимость',ic:'cost',perm:'cost.view'},{id:'pay',t:'Зарплата',ic:'pay',owner:1},{id:'loy',t:'Система лояльности',ic:'loy',owner:1},{id:'mot',t:'Мотивация',ic:'mot',owner:1},{id:'acc',t:'Доступы',ic:'acc',owner:1},{id:'log',t:'Журнал действий',ic:'log',owner:1}];
 const can=p=>S.me.owner||S.me.perms.includes(p);
 const pageOk=id=>{const p=PAGES.find(x=>x.id===id);return !!p&&(S.me.owner||(!p.owner&&(!p.perm||can(p.perm))))};
 function buildNav(){
@@ -225,7 +226,7 @@ function render(){
   $('#nav').querySelectorAll('a').forEach(a=>a.classList.toggle('on',a.dataset.p===S.page));
   const p=PAGES.find(p=>p.id===S.page);$('#title').textContent=p.t;
   $('#view').innerHTML='<div class="empty">Загрузка…</div>';
-  ({dash:vDash,cash:vCash,ts:vTs,staff:vStaff,pay:vPay,loy:vLoy,mot:vMot,log:vLog,acc:vAcc})[S.page]().catch(e=>{console.error(e);$('#view').innerHTML='<div class="empty">Не удалось загрузить данные</div>'});
+  ({dash:vDash,cash:vCash,ts:vTs,staff:vStaff,cost:vCost,pay:vPay,loy:vLoy,mot:vMot,log:vLog,acc:vAcc})[S.page]().catch(e=>{console.error(e);$('#view').innerHTML='<div class="empty">Не удалось загрузить данные</div>'});
 }
 function monthPicker(id){return `<input type="month" id="${id}" value="${S.month}">`}
 function bindMonth(id){$('#'+id).onchange=e=>{S.month=e.target.value;render()}}
@@ -951,13 +952,71 @@ function posForm(venue,cur,name,emps){
 }
 
 
+/* ---------- Себестоимость (028-cost.sql, функция cost-check) ---------- */
+const COST_KIND={
+ no_chart:['Без техкарты','Блюдо продаётся, а техкарты нет — продажа ничего не списывает со склада, всё уходит в недостачу на инвентаризации'],
+ deleted_ingredient:['Удалённый товар','В техкарте товар, удалённый из номенклатуры — он не списывается'],
+ foodcost:['Фудкост','Себестоимость по последним ценам прихода выше нормы к средней цене продажи за 30 дней'],
+ price_jump:['Подорожания','Цена в последней накладной выше прошлой поставки'],
+ stale_ingredient:['Не закупается','Ингредиент техкарты давно не приходил — возможно, его заменили, а техкарту не поправили']};
+let costTab='no_chart',costSec='all',costMuted=false;
+async function callCost(body){
+  const {data:{session}}=await sb.auth.getSession();
+  const r=await fetch(SB_URL+'/functions/v1/cost-check',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({error:'нет ответа'}));if(!r.ok||d.error)throw new Error(d.error||r.status);return d}
+function costDetails(i){const d=i.details||{};switch(i.kind){
+  case 'no_chart':return `${d.sold_qty?`продано <b>${num(d.sold_qty)}</b> шт на ${rub(d.sold_sum)} за ${d.days} дн.`:'заготовка без техкарты'}${d.group?` <span class="muted">· ${esc(d.group)}</span>`:''}`;
+  case 'deleted_ingredient':return `в составе: <b>${esc(d.ingredient)}</b> (${num(d.amount)})`;
+  case 'stale_ingredient':return `<b>${esc(d.ingredient)}</b> — ${d.last_delivery?'последний приход '+fd(d.last_delivery)+` (${d.days} дн. назад)`:'приходов не было за '+d.window+' дн.'}`;
+  case 'price_jump':return `<b>${num(d.prev_price)} → ${num(d.price)} ₽</b> <span class="pill ${i.severity==='crit'?'r':'y'}">+${num(d.pct)}%</span> ${esc(d.supplier)}, ${fd(d.at)}${d.doc?' № '+esc(d.doc):''}<div class="muted" style="font-size:12px">прошлая поставка ${fd(d.prev_at)}${d.prev_supplier&&d.prev_supplier!==d.supplier?' · '+esc(d.prev_supplier):''}${d.used_in&&d.used_in.length?' · в техкартах: '+esc(d.used_in.join(', ')):''}</div>`;
+  case 'foodcost':return `<b>${num(d.pct)}%</b> при норме ${d.limit}% · себестоимость ${rub(d.cost)} / цена ${rub(d.price)}${d.bottle?' <span class="muted">(штучный товар)</span>':''}`;
+  default:return esc(JSON.stringify(d))}}
+async function vCost(){
+  const build=()=>{let qb=sb.from('cost_issues').select('*').is('resolved_at',null).order('severity').order('first_seen',{ascending:false});return S.venue==='all'?qb:qb.eq('venue_id',S.venue)};
+  const [all_,runs]=await Promise.all([all(build),q(sb.from('cost_runs').select('*').order('started_at',{ascending:false}).limit(1))]);
+  const run=runs[0];
+  const vis=all_.filter(i=>(costMuted||!i.muted)&&(costSec==='all'||i.section===costSec));
+  const cnt=k=>vis.filter(i=>i.kind===k).length;
+  if(!COST_KIND[costTab])costTab='no_chart';
+  const rows=vis.filter(i=>i.kind===costTab);
+  const runTxt=!run?'проверок ещё не было':run.ok===false?`<span style="color:var(--out)">последняя проверка ${new Date(run.started_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})} не прошла: ${esc(run.error||'')}</span>`:!run.finished_at?'идёт проверка…':`проверено ${new Date(run.finished_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}${run.stats&&run.stats.sales_error?' <span class="pill y" title="'+esc(run.stats.sales_error)+'">без продаж</span>':''}`;
+  $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь, сводка управляющему в Telegram утром · ${runTxt}</span><span class="sp"></span>
+    <select id="cSec"><option value="all">Кухня и бар</option><option value="Кухня" ${costSec==='Кухня'?'selected':''}>Кухня</option><option value="Бар" ${costSec==='Бар'?'selected':''}>Бар</option></select>
+    <label style="display:flex;gap:6px;align-items:center" class="muted"><input type="checkbox" id="cMut" ${costMuted?'checked':''}> скрытые</label>
+    ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn pri" id="cRun">Проверить сейчас</button></div>
+  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}</div>
+  <div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
+  ${rows.length?`<div class="tw" style="max-height:66vh"><table><thead><tr><th></th><th>Позиция</th><th>Раздел</th><th>Что не так</th><th>С</th><th></th></tr></thead><tbody>
+   ${rows.map(i=>`<tr style="${i.muted?'opacity:.5':''}"><td>${i.severity==='crit'?'<span class="pill r">срочно</span>':'<span class="pill y">внимание</span>'}</td><td><b>${esc(i.product_name)}</b>${i.note?`<div class="muted" style="font-size:12px">${esc(i.note)}</div>`:''}</td><td>${esc(i.section||'—')}</td><td>${costDetails(i)}</td><td class="muted" style="white-space:nowrap">${fd(i.first_seen.slice(0,10))}</td>
+   <td><button class="btn sm" data-mute="${i.id}">${i.muted?'Вернуть':'Не проблема'}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${run?'Здесь всё в порядке':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`}`;
+  document.querySelectorAll('.tabs a').forEach(a=>{a.classList.toggle('on',a.dataset.t===costTab);a.onclick=()=>{costTab=a.dataset.t;vCost()}});
+  $('#cSec').onchange=e=>{costSec=e.target.value;vCost()};
+  $('#cMut').onchange=e=>{costMuted=e.target.checked;vCost()};
+  $('#cRun').onclick=async e=>{e.target.disabled=true;e.target.textContent='Проверяю… ~1 мин';
+    try{const venue=S.venue==='all'?'petrogradka':S.venue;const d=await callCost({action:'check',venue});toast('Готово: проблем '+d.stats.issues+(d.stats.resolved?', закрыто '+d.stats.resolved:''))}
+    catch(err){toast('Не получилось: '+err.message)}vCost()};
+  if($('#cSet'))$('#cSet').onclick=costSettings;
+  document.querySelectorAll('[data-mute]').forEach(b=>b.onclick=()=>{const i=all_.find(x=>String(x.id)===b.dataset.mute);
+    if(i.muted){q(sb.from('cost_issues').update({muted:false,updated_by:S.me.uid}).eq('id',i.id)).then(vCost);return}
+    modal('Не проблема: '+i.product_name,`<div class="muted" style="margin-bottom:8px">Строка скроется из списка и из утренней сводки. Если проблема уйдёт и появится снова — снова будет скрыта; вернуть можно галочкой «скрытые».</div><label class="f">Почему (необязательно)<input id="mN" placeholder="Например: подаём без списания по решению владельца"></label>`,
+      [btn('Отмена','',closeModal),btn('Скрыть','pri',async()=>{await q(sb.from('cost_issues').update({muted:true,note:$('#mN').value.trim()||null,updated_by:S.me.uid}).eq('id',i.id));closeModal();vCost()})])});
+}
+async function costSettings(){
+  const st=(await q(sb.from('cost_settings').select('*').eq('id','main').maybeSingle()))||{params:{}};const P=st.params||{};
+  const F=[['price_jump_pct','Подорожание: сигнал, %'],['price_jump_crit_pct','Подорожание: срочно, %'],['price_window_days','Смотреть поставки за, дней'],['foodcost_kitchen_pct','Фудкост кухни, норма %'],['foodcost_bar_pct','Фудкост бара (разлив, коктейли), %'],['foodcost_bottle_pct','Фудкост штучного товара бара, %'],['stale_days','«Не закупается» — дольше, дней'],['sales_days','«Продаётся» — продажи за, дней']];
+  modal('Пороги проверок',`<div class="row2">${F.map(([k,t])=>`<label class="f">${t}<input type="number" min="1" step="1" data-k="${k}" value="${P[k]??''}"></label>`).join('')}</div><div class="muted" style="font-size:12px">Новые пороги применятся при следующей проверке.</div>`,
+    [btn('Отмена','',closeModal),btn('Сохранить','pri',async()=>{const np={...P};document.querySelectorAll('[data-k]').forEach(x=>{const v=+x.value;if(v>0)np[x.dataset.k]=v});
+      await q(sb.from('cost_settings').update({params:np,updated_at:new Date().toISOString(),updated_by:S.me.uid}).eq('id','main'));closeModal();toast('Сохранено')})]);
+}
+
 /* ---------- Доступы ---------- */
 const PERM_LIST=[
  ['revenue.view','Сводка','выручка своего заведения по дням, безнал/наличные, кухня/бар'],
  ['cash.view','Кассы — смотреть','остатки и операции касс своего заведения'],
  ['cash.add','Кассы — приход и расход','вносить операции вручную (включает «смотреть»)'],
  ['cash.transfer','Кассы — перемещения','отправлять деньги между кассами (включает «смотреть»)'],
- ['staff.edit','Сотрудники','добавлять и редактировать своих сотрудников — без зарплат и мотивации']];
+ ['staff.edit','Сотрудники','добавлять и редактировать своих сотрудников — без зарплат и мотивации'],
+ ['cost.view','Себестоимость','проблемы техкарт, подорожания у поставщиков и фудкост из iiko; отмечать «не проблема»']];
 async function callUsers(body){
   const {data:{session}}=await sb.auth.getSession();
   const r=await fetch(SB_URL+'/functions/v1/crm-users',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
