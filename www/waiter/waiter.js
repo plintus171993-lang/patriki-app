@@ -691,6 +691,7 @@ function editStaff(s, pre = null) {
 const can = (p) => (S.staff?.perms || []).includes(p) || S.staff?.role === 'manager';
 const fmtN = (n) => (Math.round(Number(n) * 1000) / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 });
 let stock = null, stockTab = 'low', stockSec = '', stockOrders = null;
+let stockAll = null, allQ = '', allBy = 'group'; // вкладка «Склад iiko»: все закупаемые товары
 function qtyText(q, it) {
   let s = `${fmtN(q)} ${esc(it.unit || '')}`;
   if (it.pack && it.packName && Math.abs(q) >= it.pack) s = `${fmtN(q / it.pack)} ${esc(it.packName)} · ` + s;
@@ -707,6 +708,25 @@ async function loadStock(force = false) {
     if (S.staff && stock.perms) { S.staff.perms = stock.perms; LS.set('staff', S.staff); }
   } catch (e) { stock = { error: e.message }; }
   if (S.view === 'stock') render();
+}
+async function loadStockAll(force = false) {
+  if (!stockAll || force) { stockAll = null; render(); }
+  try { stockAll = await api('stock_all', { force }, { timeout: 90000 }); } catch (e) { stockAll = { error: e.message }; }
+  if (S.view === 'stock') render();
+}
+function allListHtml() {
+  if (stockAll === null) return '<div class="empty"><span class="spin"></span><br><br>Загружаю склад из iiko…</div>';
+  if (stockAll.error) return `<div class="banner">${esc(stockAll.error)}</div>`;
+  const q = allQ.trim().toLowerCase();
+  const f = stockAll.items.filter((x) => (!stockSec || x.section === stockSec) && (!q || x.name.toLowerCase().includes(q) || (x.supplier || '').toLowerCase().includes(q) || x.group.toLowerCase().includes(q)));
+  if (!f.length) return '<div class="empty">Ничего не нашлось</div>';
+  const key = (x) => (allBy === 'supplier' ? x.supplier || 'Поставщик не известен' : x.group);
+  const groups = new Map();
+  for (const x of f) { const k = key(x); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+  const keys = [...groups.keys()].sort((a, b) => a.localeCompare(b, 'ru'));
+  return keys.map((k) => `<div class="gh">${esc(k)} <small>· ${groups.get(k).length}</small></div>` + groups.get(k).map((x) => `<button class="it" data-all="${x.id}">
+      <span class="n">${esc(x.name)}<small>${x.qty < 0 ? '<b style="color:var(--danger)">минус</b> ' : ''}${fmtN(x.qty)} ${esc(x.unit)}${x.byStore.length > 1 ? ' · ' + x.byStore.map((s) => `${esc(s.name)}: ${fmtN(s.qty)}`).join(', ') : x.byStore[0] ? ' · ' + esc(x.byStore[0].name) : ''}${allBy !== 'supplier' && x.supplier ? ' · ' + esc(x.supplier) : ''}</small></span>
+      ${x.watched ? '<span class="badge ok">следим</span>' : can('stock_setup') ? '<span class="badge">＋ мин.</span>' : ''}</button>`).join('')).join('');
 }
 async function loadStockOrders() {
   stockOrders = null; render();
@@ -725,7 +745,12 @@ function renderStock() {
       <span class="n">${esc(it.name)}<small>осталось ${qtyText(it.qty, it)} · мин. ${minText(it)}${it.byStore.length > 1 ? ' · ' + it.byStore.map((s) => `${esc(s.name)}: ${fmtN(s.qty)}`).join(', ') : ''}${it.missing ? ' · нет в iiko' : ''}</small></span>
       ${it.low ? `<span class="badge err">заказать ${orderText(it.suggest, it)}</span>` : '<span class="badge ok">хватает</span>'}</button>`;
   let body;
-  if (stockTab === 'orders') {
+  if (stockTab === 'iiko') {
+    body = `<div class="search"><input id="aq" placeholder="Поиск: товар, поставщик, группа" value="${esc(allQ)}" autocomplete="off"></div>
+      <div class="tabs" style="padding-top:8px"><button class="chip ${allBy === 'group' ? 'on' : ''}" data-by="group">По группам</button><button class="chip ${allBy === 'supplier' ? 'on' : ''}" data-by="supplier">По поставщикам</button></div>
+      ${stockAll?.supplyError ? `<div class="banner warn">Поставщики не подтянулись: ${esc(stockAll.supplyError)}</div>` : ''}
+      <div class="list" id="alllist" style="padding-top:0">${allListHtml()}</div>`;
+  } else if (stockTab === 'orders') {
     body = stockOrders === null ? '<div class="empty"><span class="spin"></span></div>' : stockOrders.error ? `<div class="empty">${esc(stockOrders.error)}</div>` :
       stockOrders.length ? `<div class="hist">${stockOrders.map((o) => `<div class="hi"><span class="n">${esc(o.supplier || 'Заказ')} · ${o.items.length} поз.<small>${new Date(o.created_at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${o.waiter_staff?.name ? ' · ' + esc(o.waiter_staff.name) : ''}${o.telegram ? ' · в Telegram' : ''}<br>${o.items.map((i) => esc(i.name)).join(', ')}</small></span>
         ${o.status === 'new' ? `<span class="badge q">ждём</span>${can('stock_order') ? `<button class="badge ok" data-recv="${o.id}">Пришло</button>` : ''}` : o.status === 'received' ? '<span class="badge ok">получен</span>' : '<span class="badge">отменён</span>'}</div>`).join('')}</div>`
@@ -739,19 +764,29 @@ function renderStock() {
     <button class="ib" data-a="refresh" aria-label="Обновить">↻</button>${can('stock_setup') ? '<button class="ib" data-a="add" aria-label="Добавить">＋</button>' : ''}</div>
   <div class="tabs">
     <button class="chip ${stockTab === 'low' ? 'on' : ''}" data-tab="low">Надо заказать${stock?.items ? ` · ${low.length}` : ''}</button>
-    <button class="chip ${stockTab === 'all' ? 'on' : ''}" data-tab="all">Все позиции</button>
+    <button class="chip ${stockTab === 'all' ? 'on' : ''}" data-tab="all">Мои позиции</button>
+    <button class="chip ${stockTab === 'iiko' ? 'on' : ''}" data-tab="iiko">Склад iiko</button>
     <button class="chip ${stockTab === 'orders' ? 'on' : ''}" data-tab="orders">Заказы</button>
   </div>
   ${secs.length > 1 && stockTab !== 'orders' ? `<div class="tabs" style="padding-top:4px"><button class="chip ${!stockSec ? 'on' : ''}" data-sec="">Все</button>${secs.map((s) => `<button class="chip ${stockSec === s ? 'on' : ''}" data-sec="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
   ${body}
-  ${stockTab !== 'orders' && low.length && can('stock_order') ? `<div class="bar"><div class="in"><button class="btn" data-a="order">Оформить заказ <span class="cnt">${low.length}</span></button></div></div>` : ''}`;
+  ${!['orders', 'iiko'].includes(stockTab) && low.length && can('stock_order') ? `<div class="bar"><div class="in"><button class="btn" data-a="order">Оформить заказ <span class="cnt">${low.length}</span></button></div></div>` : ''}`;
+  const aq = $app.querySelector('#aq');
+  if (aq) aq.oninput = () => { allQ = aq.value; $app.querySelector('#alllist').innerHTML = allListHtml(); };
   $app.onclick = async (e) => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.a === 'back') { S.view = 'tables'; return render(); }
-    if (b.dataset.a === 'refresh') return stockTab === 'orders' ? loadStockOrders() : loadStock(true);
+    if (b.dataset.a === 'refresh') return stockTab === 'orders' ? loadStockOrders() : stockTab === 'iiko' ? loadStockAll(true) : loadStock(true);
     if (b.dataset.a === 'add') return pickStockProduct();
     if (b.dataset.a === 'order') return openStockOrder(low);
-    if (b.dataset.tab) { stockTab = b.dataset.tab; if (stockTab === 'orders') loadStockOrders(); return render(); }
+    if (b.dataset.tab) { stockTab = b.dataset.tab; if (stockTab === 'orders') loadStockOrders(); if (stockTab === 'iiko' && !stockAll) loadStockAll(); return render(); }
+    if (b.dataset.by) { allBy = b.dataset.by; return render(); }
+    if (b.dataset.all) {
+      const x = stockAll.items.find((y) => y.id === b.dataset.all);
+      const have = stock?.items?.find((i) => i.productId === x.id);
+      if (!can('stock_setup')) return;
+      return editStockItem(have || { productId: x.id, name: x.name, unit: x.unit, qty: x.qty, min: 0, isNew: true, section: x.section, storeId: x.storeId, supplier: x.supplier });
+    }
     if (b.dataset.sec !== undefined) { stockSec = b.dataset.sec; return render(); }
     if (b.dataset.recv) {
       try { await api('stock_order_status', { id: b.dataset.recv, status: 'received' }); toast('Отмечено: пришло', 'ok'); loadStockOrders(); loadStock(true); } catch (er) { toast(er.message, 'err'); }
@@ -806,7 +841,7 @@ function editStockItem(it, stores = stock?.stores || []) {
     if (Number(f.pack) > 0) modes.push(['pack', f.packName || 'упаковка']);
     if (!modes.some((m) => m[0] === unitMode)) unitMode = 'base';
     openSheet(`
-      <h2>${esc(it.name)}</h2><div class="sub">Остаток в iiko считается в «${esc(it.unit || 'ед.')}»${it.qty != null && !it.isNew ? ` · сейчас ${qtyText(it.qty, it)}` : ''}</div>
+      <h2>${esc(it.name)}</h2><div class="sub">Остаток в iiko считается в «${esc(it.unit || 'ед.')}»${it.qty != null ? ` · сейчас ${qtyText(it.qty, it)}` : ''}</div>
       <div class="mg">Порция <small>— необязательно, чтобы видеть «осталось 5 бокалов»</small></div>
       <div class="row"><input class="field" id="s_portion" inputmode="decimal" placeholder="0,5" value="${esc(f.portion)}"><input class="field" id="s_portionName" placeholder="бокал" value="${esc(f.portionName)}"></div>
       <div class="mg">Упаковка у поставщика <small>— заказ округлится до неё</small></div>
@@ -843,6 +878,7 @@ function editStockItem(it, stores = stock?.stores || []) {
           supplier: f.supplier, section: f.section, storeId: f.storeId || null,
         });
         closeSheet(); toast('Сохранено', 'ok'); loadStock();
+        const ai = stockAll?.items?.find((y) => y.id === it.productId); if (ai) { ai.watched = true; ai.section = f.section; }
       } catch (er) { toast(er.message, 'err'); }
     });
     // при вводе порции/упаковки обновить переключатель «считать в»

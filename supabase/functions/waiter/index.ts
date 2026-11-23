@@ -25,6 +25,7 @@
 //   stock {force?}                → {items, stores, at, perms, sections} — права stock_view / stock_order / stock_setup,
 //                                    разделы stock_bar / stock_kitchen (шеф — только кухня; управляющий — всё)
 //   stock_catalog {q}             → {products}                    — товары iiko для добавления (stock_setup)
+//   stock_all {force?}            → {items, supplyError, at}      — все закупаемые товары с остатками и поставщиком
 //   stock_item_save {productId, …} / stock_item_delete {productId}   (stock_setup)
 //   stock_order {items, supplier?, note?} → {id, telegram}        (stock_order)
 //   stock_orders                  → {orders}                      (stock_view)
@@ -572,11 +573,73 @@ async function loadBalance(): Promise<Record<string, Record<string, number>>> {
   return out;
 }
 
+// поставщики: кто последним привозил товар (приходные накладные за 90 дней) — кэш 6 часов
+const xmlText = (x: string) => x.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'");
+async function loadSupply(): Promise<Record<string, { supplier: string; at: string }>> {
+  return iikoServer(async (get) => {
+    const to = new Date(Date.now() + 3 * 3600 * 1000), from = new Date(to.getTime() - 90 * 24 * 3600 * 1000);
+    const d = (x: Date) => x.toISOString().slice(0, 10);
+    const [sup, inv] = await Promise.all([get('suppliers').catch(() => ''), get('documents/export/incomingInvoice', { from: d(from), to: d(to) })]);
+    const names = new Map<string, string>();
+    for (const m of sup.matchAll(/<employee>([\s\S]*?)<\/employee>/g)) {
+      const id = (m[1].match(/<id>([^<]+)<\/id>/) || [])[1], nm = (m[1].match(/<name>([^<]*)<\/name>/) || [])[1];
+      if (id) names.set(id, xmlText(nm || ''));
+    }
+    const out: Record<string, { supplier: string; at: string }> = {};
+    for (const m of inv.matchAll(/<(document|incomingInvoiceDto)>([\s\S]*?)<\/\1>/g)) {
+      const doc = m[2];
+      if ((doc.match(/<status>([^<]+)<\/status>/) || [])[1] === 'DELETED') continue;
+      const sid = (doc.match(/<supplier>([^<]+)<\/supplier>/) || [])[1] || '';
+      const at = (doc.match(/<dateIncoming>([^<]+)<\/dateIncoming>/) || [])[1] || '';
+      for (const p of doc.matchAll(/<product(?:Id)?>([0-9a-f-]{36})<\/product(?:Id)?>/gi)) {
+        const prev = out[p[1]];
+        if (!prev || at > prev.at) out[p[1]] = { supplier: names.get(sid) || '', at };
+      }
+    }
+    return out;
+  });
+}
+// раздел склада по названию: «Склад бар» → Бар, «Склад кухня» → Кухня
+const storeSection = (name: string) => (/бар/i.test(name) ? 'Бар' : /кух/i.test(name) ? 'Кухня' : null);
+
+// все закупаемые товары с остатками (вкладка «Склад iiko»)
+async function stockAll(staff: Staff, force: boolean) {
+  const [cat, bal, supply, { data: items }] = await Promise.all([
+    cached('stock_catalog', 6 * 3600, loadCatalog),
+    cached('stock_balance', 60, loadBalance, force),
+    cached('stock_supply', 6 * 3600, loadSupply, force).catch((e) => ({ _error: (e as Error).message } as any)),
+    db.from('stock_items').select('product_id, section').eq('active', true),
+  ]);
+  const supplyError = (supply as any)._error || null;
+  const watched = new Map((items || []).map((x: any) => [x.product_id, x.section]));
+  const stores = new Map(cat.stores.map((x) => [x.id, x.name]));
+  const ms = mySections(staff);
+  const ids = new Set([...Object.keys(bal), ...(supplyError ? [] : Object.keys(supply)), ...watched.keys()]);
+  const list: any[] = [];
+  for (const id of ids) {
+    const p = cat.products[id];
+    if (!p || !['GOODS', 'PREPARED'].includes(p.type)) continue;
+    const by = Object.entries(bal[id] || {}).map(([sid, q]) => ({ id: sid, name: stores.get(sid) || 'склад', qty: round(q), section: storeSection(stores.get(sid) || '') }))
+      .filter((x) => Math.abs(x.qty) > 1e-9 && (ms === null || (x.section && ms.includes(x.section))));
+    if (ms !== null && !by.length && !(watched.get(id) && ms.includes(watched.get(id)))) continue;
+    const main = by.slice().sort((a, b2) => b2.qty - a.qty)[0];
+    list.push({
+      id, name: p.name, unit: p.unit, group: p.group || 'Без группы', type: p.type,
+      qty: round(by.reduce((a, x) => a + x.qty, 0)), byStore: by.map(({ name, qty }) => ({ name, qty })),
+      storeId: main?.id || null, section: watched.get(id) || main?.section || null,
+      supplier: (supply as any)[id]?.supplier || '', lastAt: (supply as any)[id]?.at || null, watched: watched.has(id),
+    });
+  }
+  list.sort((a, b2) => a.group.localeCompare(b2.group, 'ru') || a.name.localeCompare(b2.name, 'ru'));
+  const { data: at } = await db.from('waiter_cache').select('updated_at').eq('key', 'stock_balance').maybeSingle();
+  return { items: list, supplyError, at: at?.updated_at || null };
+}
+
 const round = (n: number) => Math.round(n * 1000) / 1000;
 async function stockView(staff: Staff, force: boolean) {
   const [cat, bal, { data: items }] = await Promise.all([
     cached('stock_catalog', 6 * 3600, loadCatalog, force),
-    cached('stock_balance', 300, loadBalance, force),
+    cached('stock_balance', 60, loadBalance, force),
     db.from('stock_items').select('*').eq('active', true).order('name'),
   ]);
   const mine = (items || []).filter((it: any) => inMine(staff, it.section));
@@ -774,6 +837,7 @@ Deno.serve(async (req) => {
       /* ---------- склад ---------- */
       case 'stock': need(staff, 'stock_view'); return json(await stockView(staff, !!b.force));
       case 'stock_catalog': need(staff, 'stock_setup'); return json(await stockCatalog(b));
+      case 'stock_all': need(staff, 'stock_view'); return json(await stockAll(staff, !!b.force));
       case 'stock_item_save': need(staff, 'stock_setup'); return json(await stockItemSave(staff, b));
       case 'stock_item_delete': {
         need(staff, 'stock_setup');
