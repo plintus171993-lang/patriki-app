@@ -89,7 +89,7 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tabs a.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
 /* modal */
 #modal{position:fixed;inset:0;background:rgba(20,28,40,.45);display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;z-index:50}
-.mb.wide{width:620px}.mb{background:#fff;border-radius:10px;width:440px;max-width:94vw;max-height:84vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.mb.wide{width:620px}.mb.xwide{width:1180px}.mb{background:#fff;border-radius:10px;width:440px;max-width:94vw;max-height:84vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
 .mh{padding:16px 20px;border-bottom:1px solid var(--line);font-weight:600;display:flex}
 .mh span{flex:1}.mh a{cursor:pointer;color:var(--muted)}
 .mc{padding:18px 20px}
@@ -159,7 +159,7 @@ const CATS_OUT=['Зарплата и авансы','Поставщики','Ар�
 const CATS_IN=['Выручка','Эквайринг','Яндекс Доставка','Поступление на счёт','Взносы учредителей и займы','Возврат с зарплаты','Итоги инвентаризации','Прочие приходы'];
 
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.add('hidden'),2600)}
-function modal(title,body,foot,wide){document.querySelector('.mb').classList.toggle('wide',!!wide);$('#mTitle').textContent=title;$('#mBody').innerHTML=body;$('#mFoot').innerHTML='';(foot||[]).forEach(b=>$('#mFoot').appendChild(b));$('#modal').classList.remove('hidden')}
+function modal(title,body,foot,wide){document.querySelector('.mb').classList.toggle('wide',!!wide);document.querySelector('.mb').classList.remove('xwide');$('#mTitle').textContent=title;$('#mBody').innerHTML=body;$('#mFoot').innerHTML='';(foot||[]).forEach(b=>$('#mFoot').appendChild(b));$('#modal').classList.remove('hidden')}
 function closeModal(){$('#modal').classList.add('hidden')}
 $('#mX').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
 function btn(t,cls,fn){const b=document.createElement('button');b.className='btn '+(cls||'');b.textContent=t;b.onclick=fn;return b}
@@ -977,18 +977,21 @@ async function vCost(){
   const run=runs[0];
   const vis=all_.filter(i=>(costMuted||!i.muted)&&(costSec==='all'||i.section===costSec));
   const cnt=k=>vis.filter(i=>i.kind===k).length;
-  if(!COST_KIND[costTab])costTab='no_chart';
+  if(!COST_KIND[costTab]&&costTab!=='cards')costTab='no_chart';
   const rows=vis.filter(i=>i.kind===costTab);
+  const cards=costTab==='cards'?await all(()=>{const b=sb.from('cost_cards').select('*').order('created_at',{ascending:false});return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
   const runTxt=!run?'проверок ещё не было':run.ok===false?`<span style="color:var(--out)">последняя проверка ${new Date(run.started_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})} не прошла: ${esc(run.error||'')}</span>`:!run.finished_at?'идёт проверка…':`проверено ${new Date(run.finished_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}${run.stats&&run.stats.sales_error?' <span class="pill y" title="'+esc(run.stats.sales_error)+'">без продаж</span>':''}`;
   $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь, сводка управляющему в Telegram утром · ${runTxt}</span><span class="sp"></span>
     <select id="cSec"><option value="all">Кухня и бар</option><option value="Кухня" ${costSec==='Кухня'?'selected':''}>Кухня</option><option value="Бар" ${costSec==='Бар'?'selected':''}>Бар</option></select>
     <label style="display:flex;gap:6px;align-items:center" class="muted"><input type="checkbox" id="cMut" ${costMuted?'checked':''}> скрытые</label>
-    ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn pri" id="cRun">Проверить сейчас</button></div>
-  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}</div>
-  <div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
+    ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn" id="cNew">＋ Техкарта с листочка</button><button class="btn pri" id="cRun">Проверить сейчас</button></div>
+  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a></div>
+  ${costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
   ${rows.length?`<div class="tw" style="max-height:66vh"><table><thead><tr><th></th><th>Позиция</th><th>Раздел</th><th>Что не так</th><th>С</th><th></th></tr></thead><tbody>
    ${rows.map(i=>`<tr style="${i.muted?'opacity:.5':''}"><td>${i.severity==='crit'?'<span class="pill r">срочно</span>':'<span class="pill y">внимание</span>'}</td><td><b>${esc(i.product_name)}</b>${i.note?`<div class="muted" style="font-size:12px">${esc(i.note)}</div>`:''}</td><td>${esc(i.section||'—')}</td><td>${costDetails(i)}</td><td class="muted" style="white-space:nowrap">${fd(i.first_seen.slice(0,10))}</td>
-   <td><button class="btn sm" data-mute="${i.id}">${i.muted?'Вернуть':'Не проблема'}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${run?'Здесь всё в порядке':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`}`;
+   <td><button class="btn sm" data-mute="${i.id}">${i.muted?'Вернуть':'Не проблема'}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${run?'Здесь всё в порядке':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`}`}`;
+  $('#cNew').onclick=()=>cardNew();
+  document.querySelectorAll('tr[data-card]').forEach(r=>r.onclick=()=>cardEdit(cards.find(c=>c.id===r.dataset.card)));
   document.querySelectorAll('.tabs a').forEach(a=>{a.classList.toggle('on',a.dataset.t===costTab);a.onclick=()=>{costTab=a.dataset.t;vCost()}});
   $('#cSec').onchange=e=>{costSec=e.target.value;vCost()};
   $('#cMut').onchange=e=>{costMuted=e.target.checked;vCost()};
@@ -1001,6 +1004,99 @@ async function vCost(){
     modal('Не проблема: '+i.product_name,`<div class="muted" style="margin-bottom:8px">Строка скроется из списка и из утренней сводки. Если проблема уйдёт и появится снова — снова будет скрыта; вернуть можно галочкой «скрытые».</div><label class="f">Почему (необязательно)<input id="mN" placeholder="Например: подаём без списания по решению владельца"></label>`,
       [btn('Отмена','',closeModal),btn('Скрыть','pri',async()=>{await q(sb.from('cost_issues').update({muted:true,note:$('#mN').value.trim()||null,updated_by:S.me.uid}).eq('id',i.id));closeModal();vCost()})])});
 }
+/* ---- техкарта «с листочка» ---- */
+const CARD_ST={draft:['черновик',''],approved:['утверждена — занести в iiko','y'],entered:['занесена в iiko','g']};
+function cardsTable(cards){
+  return `<div class="muted" style="margin:-4px 0 10px;font-size:13px">Шеф фотографирует листок — ИИ разбирает состав, подбирает товары iiko и потери при обработке, CRM считает брутто, себестоимость и фудкост. Утверждённую карту печатаете и заносите в iiko.</div>`+
+  (cards.length?`<div class="tw"><table><thead><tr><th>Блюдо</th><th>Статус</th><th class="n">Себестоимость</th><th class="n">Цена</th><th class="n">Фудкост</th><th>Создана</th></tr></thead><tbody>
+  ${cards.map(c=>`<tr data-card="${c.id}" style="cursor:pointer"><td><b style="color:var(--accent)">${esc(c.name)}</b>${(c.notes||[]).length&&c.status==='draft'?` <span class="pill y">вопросов: ${c.notes.length}</span>`:''}</td><td><span class="pill ${CARD_ST[c.status][1]}">${CARD_ST[c.status][0]}</span></td><td class="n">${rub(c.cost)}</td><td class="n">${c.price?rub(c.price):'—'}</td><td class="n">${c.cost&&c.price?num(Math.round(c.cost/c.price*1000)/10)+'%':'—'}</td><td class="muted">${new Date(c.created_at).toLocaleDateString('ru-RU')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Техкарт пока нет. Нажмите «＋ Техкарта с листочка»</div>');
+}
+async function costCatalog(){if(!S.cache.costCat)S.cache.costCat=(await callCost({action:'card_catalog'})).catalog;return S.cache.costCat}
+function shrinkImage(file){return new Promise((ok,bad)=>{const img=new Image();img.onload=()=>{const k=Math.min(1,1600/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);c.getContext('2d').drawImage(img,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',.85).split(',')[1])};img.onerror=()=>bad(new Error('не получилось открыть фото'));img.src=URL.createObjectURL(file)})}
+function cardNew(){
+  modal('Техкарта с листочка',`<label class="f">Фото листка<input type="file" id="nF" accept="image/*" capture="environment"></label>
+    <label class="f">…или текстом / дописать к фото<textarea id="nT" rows="5" style="width:100%" placeholder="Бургер Патрики: булка 1 шт, котлета говяжья 180 г (жарка), чеддер 2 ломтика, салат 15 г, соус BBQ 20 г"></textarea></label>
+    <div class="muted" style="font-size:12px">ИИ сверит состав с номенклатурой iiko и последними ценами прихода — около 30–60 секунд.</div><div class="err" id="nErr"></div>`,
+    [btn('Отмена','',closeModal),btn('Распознать','pri',async e=>{
+      const f=$('#nF').files[0],text=$('#nT').value.trim();if(!f&&!text){$('#nErr').textContent='Добавьте фото или текст';return}
+      e.target.disabled=true;e.target.textContent='Распознаю…';$('#nErr').textContent='';
+      try{const image=f?await shrinkImage(f):null;const d=await callCost({action:'card_parse',text,image,media:'image/jpeg'});S.cache.costCat=d.catalog;
+        cardEdit({...d.card,status:'draft',venue_id:S.venue==='all'?'petrogradka':S.venue})}
+      catch(err){$('#nErr').textContent='Не получилось: '+err.message;e.target.disabled=false;e.target.textContent='Распознать'}})]);
+}
+// пересчёт строки: количество с листка → в единицах iiko; нетто ↔ брутто через потери
+function cardCalc(it){
+  const u=(it.unit||'').toLowerCase(),qu=it.qty_unit,q=+it.qty||0;let k=null,warn=null;
+  if(/^кг|килогр/.test(u))k=qu==='г'?.001:qu==='кг'?1:qu==='мл'?(warn='мл→кг как 1:1',.001):qu==='л'?(warn='л→кг как 1:1',1):null;
+  else if(/^л|литр/.test(u))k=qu==='мл'?.001:qu==='л'?1:qu==='г'?(warn='г→л как 1:1',.001):qu==='кг'?(warn='кг→л как 1:1',1):null;
+  else if(/шт|порц|уп/.test(u))k=qu==='шт'?1:null;
+  else if(/^г/.test(u))k=qu==='г'?1:qu==='кг'?1000:null;
+  const f=(1-(+it.loss_cold||0)/100)*(1-(+it.loss_hot||0)/100)||1;
+  const base=k==null?null:q*k;
+  const brutto=base==null?null:(it.qty_is==='брутто'?base:base/f),netto=base==null?null:(it.qty_is==='брутто'?base*f:base);
+  const cost=brutto!=null&&it.price!=null?brutto*it.price:null;
+  const nettoG=netto==null?null:(/^кг|^л|килогр|литр/.test(u)?netto*1000:/^г/.test(u)?netto:null);
+  return {brutto,netto,cost,nettoG,warn:k==null&&it.product_id?`единицы не сходятся: ${qu} → ${it.unit||'?'}`:warn}}
+const r3=n=>n==null?'':Math.round(n*1000)/1000;
+async function cardEdit(c){
+  const card=JSON.parse(JSON.stringify(c));card.items=card.items||[];card.notes=card.notes||[];
+  let cat=[];try{cat=await costCatalog()}catch(e){toast('Каталог iiko недоступен: '+e.message)}
+  const byName=new Map(cat.map(g=>[g.name,g]));
+  const ro=card.status==='entered';
+  const draw=()=>{
+    let total=0,out=0,miss=0;const rows=card.items.map((it,i)=>{const r=cardCalc(it);if(r.cost!=null)total+=r.cost;else miss++;if(r.nettoG!=null)out+=r.nettoG;
+      return `<tr><td style="min-width:120px">${esc(it.raw||'')}${it.note?`<div class="muted" style="font-size:11px;color:var(--warn)">${esc(it.note)}</div>`:''}</td>
+      <td style="min-width:220px"><input list="cCat" data-i="${i}" data-f="product" value="${esc(it.product_name||'')}" placeholder="товар iiko" style="width:100%" ${ro?'disabled':''}>${it.product_id?'':'<div style="font-size:11px;color:var(--out)">не выбран товар iiko</div>'}${r.warn?`<div style="font-size:11px;color:var(--warn)">${esc(r.warn)}</div>`:''}</td>
+      <td style="white-space:nowrap"><input type="number" step="any" data-i="${i}" data-f="qty" value="${it.qty}" style="width:70px" ${ro?'disabled':''}> <select data-i="${i}" data-f="qty_unit" ${ro?'disabled':''}>${['г','кг','мл','л','шт'].map(u=>`<option ${u===it.qty_unit?'selected':''}>${u}</option>`).join('')}</select>
+        <select data-i="${i}" data-f="qty_is" ${ro?'disabled':''}>${['нетто','брутто'].map(u=>`<option ${u===it.qty_is?'selected':''}>${u}</option>`).join('')}</select></td>
+      <td><input data-i="${i}" data-f="process" value="${esc(it.process||'')}" style="width:100px" ${ro?'disabled':''}></td>
+      <td><input type="number" step="any" data-i="${i}" data-f="loss_cold" value="${it.loss_cold}" style="width:54px" ${ro?'disabled':''}></td>
+      <td><input type="number" step="any" data-i="${i}" data-f="loss_hot" value="${it.loss_hot}" style="width:54px" ${ro?'disabled':''}></td>
+      <td class="n">${r.brutto!=null?r3(r.brutto)+' '+esc(it.unit||''):'—'}<div class="muted" style="font-size:11px">нетто ${r.netto!=null?r3(r.netto):'—'}</div></td>
+      <td class="n">${it.price!=null?rub(it.price):'<span style="color:var(--out)">нет приходов</span>'}${it.price_at?`<div class="muted" style="font-size:11px">${it.price_at==='техкарта'?'по техкарте п/ф':fd(it.price_at)}</div>`:''}</td>
+      <td class="n"><b>${r.cost!=null?rub(r.cost):'—'}</b></td><td>${ro?'':`<a data-del="${i}" style="cursor:pointer;color:var(--muted)">✕</a>`}</td></tr>`}).join('');
+    const fc=card.price&&total?total/card.price*100:null;card.cost=Math.round(total*100)/100;card._out=Math.round(out);
+    $('#mBody').innerHTML=`<datalist id="cCat">${cat.map(g=>`<option value="${esc(g.name)}">`).join('')}</datalist>
+     <div class="row2"><label class="f">Блюдо<input id="kN" value="${esc(card.name)}" ${ro?'disabled':''}></label>
+      <div class="row2"><label class="f">Цена продажи, ₽<input type="number" id="kP" value="${card.price??''}" ${ro?'disabled':''}></label><label class="f">Выход, г<input type="number" id="kO" value="${card.output??''}" placeholder="${card._out||''}" ${ro?'disabled':''}></label></div></div>
+     ${card.notes.length?`<div class="card" style="background:var(--warnSoft);border-color:#f1d9a8;margin-bottom:10px"><b>Уточнить у шефа:</b><ul style="margin:6px 0 0 18px;padding:0">${card.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`:''}
+     <div class="tw" style="max-height:48vh"><table><thead><tr><th>На листке</th><th>Товар iiko</th><th>Количество</th><th>Обработка</th><th>Хол., %</th><th>Гор., %</th><th class="n">Брутто</th><th class="n">Цена за ед.</th><th class="n">Сумма</th><th></th></tr></thead><tbody>${rows}
+     <tr class="tot"><td colspan="6">${ro?'':'<a id="kAdd" style="cursor:pointer;color:var(--accent)">+ строка</a>'}${miss?` <span style="color:var(--out);font-weight:400">· ${miss} строк без цены — себестоимость неполная</span>`:''}</td><td class="n">${card._out?'≈ '+card._out+' г':''}</td><td></td><td class="n">${rub(total)}</td><td></td></tr></tbody></table></div>
+     <div style="margin-top:10px;font-size:15px">Себестоимость <b>${rub(total)}</b>${fc!=null?` · фудкост <b style="color:${fc>35?'var(--out)':'var(--in)'}">${Math.round(fc*10)/10}%</b>`:' · укажите цену продажи, чтобы посчитать фудкост'}</div>
+     ${card.source_text?`<details style="margin-top:8px"><summary class="muted">Что распознано с листка</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(card.source_text)}</pre></details>`:''}<div class="err" id="kErr"></div>`;
+    $('#mBody').querySelectorAll('[data-f]').forEach(el=>el.onchange=()=>{const it=card.items[+el.dataset.i],f=el.dataset.f;
+      if(f==='product'){const g=byName.get(el.value.trim());if(g){it.product_id=g.id;it.product_name=g.name;it.unit=g.unit;it.price=g.price;it.price_at=g.at;it.note=null}else{it.product_id=null;it.product_name=el.value.trim()}}
+      else it[f]=['qty','loss_cold','loss_hot'].includes(f)?+el.value:el.value;draw()});
+    $('#mBody').querySelectorAll('[data-del]').forEach(a=>a.onclick=()=>{card.items.splice(+a.dataset.del,1);draw()});
+    if($('#kAdd'))$('#kAdd').onclick=()=>{card.items.push({raw:'',product_id:null,qty:0,qty_unit:'г',qty_is:'нетто',process:'',loss_cold:0,loss_hot:0,price:null});draw()};
+    ['kN','kP','kO'].forEach(id=>$('#'+id).onchange=()=>{card.name=$('#kN').value.trim();card.price=$('#kP').value?+$('#kP').value:null;card.output=$('#kO').value?+$('#kO').value:null;if(id==='kP')draw()});
+  };
+  const save=async(status)=>{
+    card.name=$('#kN').value.trim();if(!card.name){$('#kErr').textContent='Укажите название блюда';return false}
+    if(status!=='draft'&&card.items.some(it=>!it.product_id)){$('#kErr').textContent='Чтобы утвердить, у каждой строки должен быть товар iiko';return false}
+    const items=card.items.map(it=>{const r=cardCalc(it);return {...it,brutto:r.brutto,netto:r.netto,cost:r.cost}});
+    const row={venue_id:card.venue_id||(S.venue==='all'?'petrogradka':S.venue),name:card.name,product_id:card.product_id||null,status,source_text:card.source_text||null,output:card.output??card._out??null,price:card.price??null,items,notes:card.notes,cost:card.cost,updated_at:new Date().toISOString()};
+    if(card.id)await q(sb.from('cost_cards').update(row).eq('id',card.id));else card.id=(await q(sb.from('cost_cards').insert(row).select('id').single())).id;
+    card.status=status;return true};
+  const foot=[...(card.id&&S.me.owner?[btn('Удалить','red',async()=>{if(!confirm('Удалить техкарту «'+card.name+'»?'))return;await q(sb.from('cost_cards').delete().eq('id',card.id));closeModal();vCost()})]:[]),
+    btn('Печать','',()=>cardPrint(card)),
+    ...(ro?[btn('Вернуть в черновик','',async()=>{await save('draft');closeModal();costTab='cards';vCost()})]:[
+      btn('Сохранить черновик','',async()=>{if(await save('draft')){toast('Сохранено');closeModal();costTab='cards';vCost()}}),
+      card.status==='approved'?btn('Занесено в iiko','green',async()=>{if(await save('entered')){toast('Отмечено');closeModal();costTab='cards';vCost()}})
+        :btn('Утвердить','pri',async()=>{if(await save('approved')){toast('Утверждено — распечатайте и занесите в iiko');closeModal();costTab='cards';vCost()}})])];
+  modal('Техкарта · '+(card.name||'новая'),'',foot,true);document.querySelector('.mb').classList.add('xwide');draw();
+}
+function cardPrint(card){
+  const rows=card.items.map(it=>{const r=cardCalc(it);return `<tr><td>${esc(it.product_name||it.raw)}</td><td>${esc(it.process||'')}</td><td class="n">${r3(r.brutto)}</td><td class="n">${r3(r.netto)}</td><td>${esc(it.unit||'')}</td><td class="n">${r.cost!=null?Math.round(r.cost*100)/100:''}</td></tr>`}).join('');
+  const w=window.open('','_blank');if(!w){toast('Разрешите всплывающие окна для печати');return}
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>${esc(card.name)}</title><style>body{font:14px system-ui,sans-serif;margin:24px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:5px 8px;text-align:left}.n{text-align:right}h2{margin:0 0 4px}</style>
+   <h2>Технологическая карта: ${esc(card.name)}</h2><div>Выход: ${card.output||card._out||'—'} г · Себестоимость: ${card.cost??'—'} ₽${card.price?` · Цена: ${card.price} ₽ · Фудкост: ${Math.round(card.cost/card.price*1000)/10}%`:''}</div>
+   <p style="color:#555">Для iiko: «Брутто» = вход (amountIn), «Нетто» = выход (amountOut), в единицах товара iiko.</p>
+   <table><tr><th>Товар iiko</th><th>Обработка</th><th class="n">Брутто</th><th class="n">Нетто</th><th>Ед.</th><th class="n">Сумма, ₽</th></tr>${rows}</table>
+   ${card.source_text?`<h3>С листка шефа</h3><pre style="white-space:pre-wrap">${esc(card.source_text)}</pre>`:''}<script>print()<\/script>`);
+  w.document.close();
+}
+
 async function costSettings(){
   const st=(await q(sb.from('cost_settings').select('*').eq('id','main').maybeSingle()))||{params:{}};const P=st.params||{};
   const F=[['price_jump_pct','Подорожание: сигнал, %'],['price_jump_crit_pct','Подорожание: срочно, %'],['price_window_days','Смотреть поставки за, дней'],['foodcost_kitchen_pct','Фудкост кухни, норма %'],['foodcost_bar_pct','Фудкост бара (разлив, коктейли), %'],['foodcost_bottle_pct','Фудкост штучного товара бара, %'],['stale_days','«Не закупается» — дольше, дней'],['sales_days','«Продаётся» — продажи за, дней']];

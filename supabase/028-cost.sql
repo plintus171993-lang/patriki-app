@@ -105,3 +105,34 @@ select cron.schedule('cost-digest-morning', '10 6 * * *', $cron$
     body := '{"action":"digest","venue":"petrogradka"}'::jsonb,
     timeout_milliseconds := 60000);
 $cron$);
+
+-- =====================================================================
+--  Техкарта «с листочка»: шеф фотографирует листок (или пишет текстом) → ИИ распознаёт состав,
+--  сопоставляет с номенклатурой iiko, подставляет потери при обработке → CRM считает брутто,
+--  себестоимость по последним ценам прихода и фудкост. Карта хранится черновиком, утверждается
+--  и печатается для занесения в iiko (в iiko сама не пишет).
+--  Нужен ключ ИИ: insert into app_secrets (key, value) values ('anthropic_api_key', 'sk-ant-…');
+-- =====================================================================
+create table if not exists public.cost_cards (
+  id          uuid primary key default gen_random_uuid(),
+  venue_id    text references public.venues(id),
+  name        text not null,
+  product_id  uuid,                                  -- блюдо iiko, если уже есть в номенклатуре
+  status      text not null default 'draft' check (status in ('draft', 'approved', 'entered')),
+  source_text text,                                  -- что распознано с листка
+  output      numeric,                               -- выход порции, г
+  price       numeric,                               -- цена продажи, ₽
+  items       jsonb not null default '[]',           -- [{raw, product_id, product_name, unit, qty, qty_unit, process, loss_cold, loss_hot, netto, brutto, price, cost, note}]
+  notes       jsonb not null default '[]',           -- вопросы и замечания распознавания
+  cost        numeric,
+  created_by  uuid default auth.uid(),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists cost_cards_created on public.cost_cards (created_at desc);
+alter table public.cost_cards enable row level security;
+drop policy if exists "cost cards" on public.cost_cards;
+create policy "cost cards" on public.cost_cards for all
+  using (public.crm_can('cost.view') and (venue_id is null or public.can_manage(venue_id)))
+  with check (public.crm_can('cost.view') and (venue_id is null or public.can_manage(venue_id)));
+grant select, insert, update, delete on public.cost_cards to authenticated;

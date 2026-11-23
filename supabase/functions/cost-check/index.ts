@@ -4,6 +4,8 @@
 // body:
 //   { action: 'check',  venue?: 'petrogradka', trigger?: 'cron'|'manual' } → {stats}   — проверить и обновить cost_issues
 //   { action: 'digest', venue? }                                            → {sent}    — сводка управляющему в Telegram
+//   { action: 'card_parse', text?, image? (base64 jpeg), media? }            → {card, catalog} — техкарта «с листочка» (ИИ, ключ app_secrets.anthropic_api_key)
+//   { action: 'card_catalog' }                                              → {catalog} — товары и заготовки iiko с последней ценой прихода
 // Доступ: service-role, x-pos-key = app_secrets.pos_api_key (pg_cron), либо вход в Офис с правом cost.view (или владелец).
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -303,6 +305,141 @@ async function check(venue: string, trigger: string) {
   }
 }
 
+// ---------- техкарта «с листочка» ----------
+// Каталог для сопоставления: товары и заготовки iiko с единицей и последней ценой прихода; блюда — с ценой продажи.
+async function cardCatalog() {
+  const today = mskDate(), invFrom = mskDate(-120), salesFrom = mskDate(-30);
+  const raw = await iikoServer(async (get, post) => {
+    const [prods, units, inv, charts] = await Promise.all([
+      get('v2/entities/products/list', { includeDeleted: 'false' }),
+      get('v2/entities/list', { rootType: 'MeasureUnit', includeDeleted: 'false' }).catch(() => '[]'),
+      get('documents/export/incomingInvoice', { from: invFrom, to: today }),
+      get('v2/assemblyCharts/getAll', { dateFrom: today, dateTo: today, includeDeletedProducts: 'false', includePreparedCharts: 'false' }).catch(() => '{}'),
+    ]);
+    let sales: any[] = [];
+    try {
+      sales = JSON.parse(await post('v2/reports/olap', {
+        reportType: 'SALES', buildSummary: false, groupByRowFields: ['DishId'], aggregateFields: ['DishAmountInt', 'DishSumInt'],
+        filters: {
+          'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: salesFrom, to: today, includeLow: true, includeHigh: false },
+          'OrderDeleted': { filterType: 'IncludeValues', values: ['NOT_DELETED'] },
+        },
+      })).data || [];
+    } catch { /* без цены продажи — её введут руками */ }
+    return { prods, units, inv, sales, charts };
+  });
+  const unitName = new Map<string, string>((JSON.parse(raw.units) as any[]).map((u) => [u.id, String(u.name || '')]));
+  const deliveries = parseInvoices(raw.inv, '');
+  const salePrice = new Map<string, number>();
+  for (const r of raw.sales) { const q = Number(r.DishAmountInt || 0), s = Number(r.DishSumInt || 0); if (r.DishId && q > 0 && s > 0) salePrice.set(r.DishId, s / q); }
+  // заготовка (п/ф) не закупается — её цена считается по её техкарте из последних цен прихода
+  const charts = parseCharts(raw.charts || '{}');
+  const lastOf = (id: string) => { const l = deliveries.get(id); return l && l.length ? l[l.length - 1] : null; };
+  const memo = new Map<string, number | null>();
+  const prepCost = (id: string, depth = 0): number | null => {
+    if (memo.has(id)) return memo.get(id)!;
+    const last = lastOf(id);
+    let v: number | null = last ? last.price : null;
+    if (v == null && depth < 6) {
+      const ch = charts.get(id);
+      if (ch && ch.items.length) {
+        let sum = 0;
+        for (const it of ch.items) { const c = prepCost(it.product, depth + 1); if (c == null) { sum = NaN; break; } sum += c * it.amountIn; }
+        v = Number.isFinite(sum) ? sum / ch.amount : null;
+      }
+    }
+    memo.set(id, v); return v;
+  };
+  const goods: { id: string; name: string; type: string; unit: string; price: number | null; at: string | null }[] = [];
+  const dishes: { id: string; name: string; price: number | null }[] = [];
+  for (const p of JSON.parse(raw.prods) as any[]) {
+    if (p.deleted) continue;
+    const t = String(p.type || '').toUpperCase(), name = String(p.name || '').trim();
+    if (t === 'GOODS' || t === 'PREPARED') {
+      const last = lastOf(p.id);
+      const price = last ? last.price : t === 'PREPARED' ? prepCost(p.id) : null;
+      goods.push({ id: p.id, name, type: t, unit: unitName.get(p.mainUnit) || '', price: price != null ? round(price) : null, at: last?.at || (price != null ? 'техкарта' : null) });
+    } else if (t === 'DISH') dishes.push({ id: p.id, name, price: salePrice.has(p.id) ? round(salePrice.get(p.id)!) : null });
+  }
+  return { goods, dishes };
+}
+
+const CARD_TOOL = {
+  name: 'techcard',
+  description: 'Структурированная технологическая карта, распознанная с листка шеф-повара',
+  input_schema: {
+    type: 'object',
+    properties: {
+      dish: { type: 'string', description: 'Название блюда, как на листке' },
+      dish_id: { type: ['string', 'null'], description: 'id блюда из списка «Блюда iiko», если это то же блюдо; иначе null' },
+      output_g: { type: ['number', 'null'], description: 'Выход готового блюда, г (если указан или однозначно следует из состава)' },
+      text: { type: 'string', description: 'Дословная расшифровка листка' },
+      items: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            raw: { type: 'string', description: 'Ингредиент как написан на листке' },
+            product_id: { type: ['string', 'null'], description: 'id из списка «Номенклатура iiko»; null, если подходящего нет' },
+            qty: { type: 'number', description: 'Количество, как на листке' },
+            qty_unit: { type: 'string', enum: ['г', 'кг', 'мл', 'л', 'шт'] },
+            qty_is: { type: 'string', enum: ['нетто', 'брутто'], description: 'Что указал шеф: нетто (что идёт в блюдо) или брутто (что берётся со склада). Если не сказано — нетто' },
+            process: { type: 'string', description: 'Обработка: без обработки, очистка, разделка, варка, жарка, фритюр, тушение, запекание, гриль, су-вид и т.п.' },
+            loss_cold: { type: 'number', description: 'Потери при холодной обработке, % (очистка, разделка, разморозка) — по Сборнику рецептур; 0 для готовых покупных продуктов' },
+            loss_hot: { type: 'number', description: 'Потери при тепловой обработке, % (ужарка, уварка) — по Сборнику рецептур; 0 если без тепловой обработки' },
+            note: { type: ['string', 'null'], description: 'Сомнение по этой строке для шефа, если есть' },
+          },
+          required: ['raw', 'product_id', 'qty', 'qty_unit', 'qty_is', 'process', 'loss_cold', 'loss_hot'],
+        },
+      },
+      questions: { type: 'array', items: { type: 'string' }, description: 'Что уточнить у шефа (неразборчиво, неясные граммовки, нет в номенклатуре)' },
+    },
+    required: ['dish', 'items', 'questions', 'text'],
+  },
+};
+
+async function cardParse(b: any) {
+  const key = await secret('anthropic_api_key');
+  if (!key) throw new Error('Не задан ключ ИИ: app_secrets.anthropic_api_key');
+  const text = String(b.text || '').slice(0, 4000);
+  const image = typeof b.image === 'string' && b.image.length < 6_000_000 ? b.image : null;
+  if (!text && !image) throw new Error('Пришлите фото листка или текст техкарты');
+  const cat = await cardCatalog();
+  const goodsList = cat.goods.map((g) => `${g.id};${g.name};${g.unit || '?'};${g.type === 'PREPARED' ? 'заготовка' : 'товар'}`).join('\n');
+  const dishList = cat.dishes.map((d) => `${d.id};${d.name}`).join('\n');
+  const system = `Ты — калькулятор (технолог) общепита в пабе. Тебе дают листок шеф-повара с составом блюда.
+Задача: расшифровать листок, разложить состав по строкам и сопоставить каждый ингредиент с номенклатурой iiko.
+Правила:
+- product_id бери ТОЛЬКО из списка «Номенклатура iiko». Предпочитай заготовку (п/ф), если шеф пишет про готовый полуфабрикат («соус BBQ», «котлета»), и товар — если про сырьё. Если сомневаешься между вариантами — выбери лучший и напиши note. Если подходящего нет — null и вопрос в questions.
+- Количество переписывай как на листке, без пересчёта. «Булка 1» — 1 шт.
+- Потери при обработке ставь по Сборнику рецептур и здравому смыслу кухни паба: сырое мясо, рыба, овощи с очисткой, жарка, варка — с потерями; покупные готовые продукты (булки, соусы в упаковке, сыр ломтиками, замороженный картофель фри) — 0 холодных потерь. Не выдумывай потери там, где их нет.
+- Если блюдо уже есть в списке «Блюда iiko» — укажи dish_id.
+- Всё, что неразборчиво или вызывает сомнение, — в questions, коротко, по-русски.`;
+  const content: any[] = [];
+  if (image) content.push({ type: 'image', source: { type: 'base64', media_type: b.media || 'image/jpeg', data: image } });
+  content.push({ type: 'text', text: `${text ? 'Текст от шефа:\n' + text + '\n\n' : ''}Номенклатура iiko (id;название;единица;вид):\n${goodsList}\n\nБлюда iiko (id;название):\n${dishList}` });
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', signal: AbortSignal.timeout(120000),
+    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: (await secret('anthropic_model')) || 'claude-sonnet-5-5', max_tokens: 4000, system, tools: [CARD_TOOL], tool_choice: { type: 'tool', name: 'techcard' }, messages: [{ role: 'user', content }] }),
+  });
+  const out = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('ИИ не ответил: ' + (out?.error?.message || r.status));
+  const card = (out.content || []).find((c: any) => c.type === 'tool_use')?.input;
+  if (!card) throw new Error('ИИ не вернул техкарту');
+
+  const goods = new Map(cat.goods.map((g) => [g.id, g]));
+  const items = (card.items || []).map((it: any) => {
+    const g = it.product_id ? goods.get(it.product_id) : undefined;
+    return { raw: it.raw, product_id: g ? g.id : null, product_name: g?.name || null, unit: g?.unit || null, qty: Number(it.qty) || 0, qty_unit: it.qty_unit, qty_is: it.qty_is || 'нетто',
+      process: it.process || '', loss_cold: Number(it.loss_cold) || 0, loss_hot: Number(it.loss_hot) || 0, price: g?.price ?? null, price_at: g?.at ?? null,
+      note: it.note || (it.product_id && !g ? 'ИИ указал товар, которого нет в номенклатуре' : null) };
+  });
+  const dish = card.dish_id ? cat.dishes.find((d) => d.id === card.dish_id) : null;
+  return { card: { name: card.dish || '', product_id: dish?.id || null, price: dish?.price ?? null, output: card.output_g ?? null, source_text: card.text || text, items, notes: card.questions || [] },
+    catalog: cat.goods.map((g) => ({ id: g.id, name: g.name, unit: g.unit, price: g.price, at: g.at })) };
+}
+
 // ---------- утренняя сводка ----------
 const KIND: Record<string, string> = {
   no_chart: 'Продаётся без техкарты', deleted_ingredient: 'Удалённый товар в техкарте', stale_ingredient: 'Ингредиент давно не закупался',
@@ -359,6 +496,8 @@ Deno.serve(async (req) => {
     const b = await req.json().catch(() => ({}));
     const venue = String(b.venue || 'petrogradka');
     if (b.action === 'digest') return json(await digest(venue));
+    if (b.action === 'card_parse') return json(await cardParse(b));
+    if (b.action === 'card_catalog') { const c = await cardCatalog(); return json({ catalog: c.goods.map((g) => ({ id: g.id, name: g.name, unit: g.unit, price: g.price, at: g.at })) }); }
     return json({ venue, stats: await check(venue, b.trigger === 'cron' ? 'cron' : 'manual') });
   } catch (e) {
     return json({ error: String((e as Error).message || e) }, 400);
