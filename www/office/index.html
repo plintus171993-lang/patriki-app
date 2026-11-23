@@ -981,14 +981,14 @@ async function vCost(){
   const rows=vis.filter(i=>i.kind===costTab);
   const cards=costTab==='cards'?await all(()=>{const b=sb.from('cost_cards').select('*').order('created_at',{ascending:false});return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
   const runTxt=!run?'проверок ещё не было':run.ok===false?`<span style="color:var(--out)">последняя проверка ${new Date(run.started_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})} не прошла: ${esc(run.error||'')}</span>`:!run.finished_at?'идёт проверка…':`проверено ${new Date(run.finished_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}${run.stats&&run.stats.sales_error?' <span class="pill y" title="'+esc(run.stats.sales_error)+'">без продаж</span>':''}`;
-  $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь, сводка управляющему в Telegram утром · ${runTxt}</span><span class="sp"></span>
+  $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь · нажмите на позицию, чтобы открыть её техкарту · ${runTxt}</span><span class="sp"></span>
     <select id="cSec"><option value="all">Кухня и бар</option><option value="Кухня" ${costSec==='Кухня'?'selected':''}>Кухня</option><option value="Бар" ${costSec==='Бар'?'selected':''}>Бар</option></select>
     <label style="display:flex;gap:6px;align-items:center" class="muted"><input type="checkbox" id="cMut" ${costMuted?'checked':''}> скрытые</label>
     ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn" id="cNew">＋ Техкарта с листочка</button><button class="btn pri" id="cRun">Проверить сейчас</button></div>
   <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a></div>
   ${costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
   ${rows.length?`<div class="tw" style="max-height:66vh"><table><thead><tr><th></th><th>Позиция</th><th>Раздел</th><th>Что не так</th><th>С</th><th></th></tr></thead><tbody>
-   ${rows.map(i=>`<tr style="${i.muted?'opacity:.5':''}"><td>${i.severity==='crit'?'<span class="pill r">срочно</span>':'<span class="pill y">внимание</span>'}</td><td><b>${esc(i.product_name)}</b>${i.note?`<div class="muted" style="font-size:12px">${esc(i.note)}</div>`:''}</td><td>${esc(i.section||'—')}</td><td>${costDetails(i)}</td><td class="muted" style="white-space:nowrap">${fd(i.first_seen.slice(0,10))}</td>
+   ${rows.map(i=>`<tr data-open="${i.id}" style="cursor:pointer;${i.muted?'opacity:.5':''}"><td>${i.severity==='crit'?'<span class="pill r">срочно</span>':'<span class="pill y">внимание</span>'}</td><td><b style="color:var(--accent)">${esc(i.product_name)}</b>${i.note?`<div class="muted" style="font-size:12px">${esc(i.note)}</div>`:''}</td><td>${esc(i.section||'—')}</td><td>${costDetails(i)}</td><td class="muted" style="white-space:nowrap">${fd(i.first_seen.slice(0,10))}</td>
    <td><button class="btn sm" data-mute="${i.id}">${i.muted?'Вернуть':'Не проблема'}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${run?'Здесь всё в порядке':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`}`}`;
   $('#cNew').onclick=()=>cardNew();
   document.querySelectorAll('tr[data-card]').forEach(r=>r.onclick=()=>cardEdit(cards.find(c=>c.id===r.dataset.card)));
@@ -999,11 +999,30 @@ async function vCost(){
     try{const venue=S.venue==='all'?'petrogradka':S.venue;const d=await callCost({action:'check',venue});toast('Готово: проблем '+d.stats.issues+(d.stats.resolved?', закрыто '+d.stats.resolved:''))}
     catch(err){toast('Не получилось: '+err.message)}vCost()};
   if($('#cSet'))$('#cSet').onclick=costSettings;
-  document.querySelectorAll('[data-mute]').forEach(b=>b.onclick=()=>{const i=all_.find(x=>String(x.id)===b.dataset.mute);
+  document.querySelectorAll('tr[data-open]').forEach(r=>r.onclick=e=>{if(e.target.closest('[data-mute]'))return;const i=all_.find(x=>String(x.id)===r.dataset.open);
+    if(i.kind==='price_jump')costGoods(i);else costDish(i.product_id)});
+  document.querySelectorAll('[data-mute]').forEach(b=>b.onclick=e=>{e.stopPropagation();const i=all_.find(x=>String(x.id)===b.dataset.mute);
     if(i.muted){q(sb.from('cost_issues').update({muted:false,updated_by:S.me.uid}).eq('id',i.id)).then(vCost);return}
     modal('Не проблема: '+i.product_name,`<div class="muted" style="margin-bottom:8px">Строка скроется из списка и из утренней сводки. Если проблема уйдёт и появится снова — снова будет скрыта; вернуть можно галочкой «скрытые».</div><label class="f">Почему (необязательно)<input id="mN" placeholder="Например: подаём без списания по решению владельца"></label>`,
       [btn('Отмена','',closeModal),btn('Скрыть','pri',async()=>{await q(sb.from('cost_issues').update({muted:true,note:$('#mN').value.trim()||null,updated_by:S.me.uid}).eq('id',i.id));closeModal();vCost()})])});
 }
+/* ---- карточка блюда: действующая техкарта из iiko ---- */
+const IIKOWEB='https://pab-patriki.iikoweb.ru';
+const iikoLink=id=>IIKOWEB+'/nomenclature/index.html#/list?item='+id;
+async function costDish(id){
+  modal('Техкарта из iiko','<div class="empty">Загружаю техкарту из iiko…</div>');
+  try{const d=await callCost({action:'dish_card',product_id:id});S.cache.costCat=d.catalog;
+    cardEdit({...d.card,status:'draft',fromIiko:true,venue_id:S.venue==='all'?'petrogradka':S.venue})}
+  catch(e){$('#mBody').innerHTML=`<div class="err">Не получилось: ${esc(e.message)}</div>`;$('#mFoot').innerHTML='';$('#mFoot').appendChild(btn('Открыть в iiko','',()=>window.open(iikoLink(id),'_blank')))}
+}
+function costGoods(i){const d=i.details||{};
+  modal('Подорожание: '+i.product_name,`<div style="font-size:15px;margin-bottom:8px"><b>${num(d.prev_price)} → ${num(d.price)} ₽</b> (+${num(d.pct)}%)</div>
+   <div>Поставка ${fd(d.at)}${d.doc?' № '+esc(d.doc):''} · ${esc(d.supplier)}</div><div class="muted">Прошлая поставка ${fd(d.prev_at)} · ${esc(d.prev_supplier||'')}</div>
+   ${d.pct>200?'<div class="card" style="margin-top:10px;background:var(--warnSoft);border-color:#f1d9a8">Рост в разы — скорее всего, ошибка в накладной: упаковку оприходовали как штуку или перепутали единицы. Проверьте накладную в iiko.</div>':''}
+   ${d.used_in&&d.used_in.length?`<div style="margin-top:10px"><b>Где используется:</b> ${esc(d.used_in.join(', '))}</div>`:'<div class="muted" style="margin-top:10px">В техкартах не используется</div>'}`,
+   [btn('Закрыть','',closeModal),btn('Товар в iiko','',()=>window.open(iikoLink(i.product_id),'_blank'))]);
+}
+
 /* ---- техкарта «с листочка» ---- */
 const CARD_ST={draft:['черновик',''],approved:['утверждена — занести в iiko','y'],entered:['занесена в iiko','g']};
 function cardsTable(cards){
@@ -1059,6 +1078,7 @@ async function cardEdit(c){
     $('#mBody').innerHTML=`<datalist id="cCat">${cat.map(g=>`<option value="${esc(g.name)}">`).join('')}</datalist>
      <div class="row2"><label class="f">Блюдо<input id="kN" value="${esc(card.name)}" ${ro?'disabled':''}></label>
       <div class="row2"><label class="f">Цена продажи, ₽<input type="number" id="kP" value="${card.price??''}" ${ro?'disabled':''}></label><label class="f">Выход, г<input type="number" id="kO" value="${card.output??''}" placeholder="${card._out||''}" ${ro?'disabled':''}></label></div></div>
+     ${card.fromIiko?'<div class="muted" style="font-size:13px;margin-bottom:8px">Так техкарта сейчас записана в iiko (брутто в единицах товара, потери — из разницы брутто/нетто). Правки здесь iiko не меняют: сохраните черновик, распечатайте и внесите в iiko — или нажмите «Открыть в iiko».</div>':''}
      ${card.notes.length?`<div class="card" style="background:var(--warnSoft);border-color:#f1d9a8;margin-bottom:10px"><b>Уточнить у шефа:</b><ul style="margin:6px 0 0 18px;padding:0">${card.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`:''}
      <div class="tw" style="max-height:48vh"><table><thead><tr><th>На листке</th><th>Товар iiko</th><th>Количество</th><th>Обработка</th><th>Хол., %</th><th>Гор., %</th><th class="n">Брутто</th><th class="n">Цена за ед.</th><th class="n">Сумма</th><th></th></tr></thead><tbody>${rows}
      <tr class="tot"><td colspan="6">${ro?'':'<a id="kAdd" style="cursor:pointer;color:var(--accent)">+ строка</a>'}${miss?` <span style="color:var(--out);font-weight:400">· ${miss} строк без цены — себестоимость неполная</span>`:''}</td><td class="n">${card._out?'≈ '+card._out+' г':''}</td><td></td><td class="n">${rub(total)}</td><td></td></tr></tbody></table></div>
@@ -1079,12 +1099,13 @@ async function cardEdit(c){
     if(card.id)await q(sb.from('cost_cards').update(row).eq('id',card.id));else card.id=(await q(sb.from('cost_cards').insert(row).select('id').single())).id;
     card.status=status;return true};
   const foot=[...(card.id&&S.me.owner?[btn('Удалить','red',async()=>{if(!confirm('Удалить техкарту «'+card.name+'»?'))return;await q(sb.from('cost_cards').delete().eq('id',card.id));closeModal();vCost()})]:[]),
+    ...(card.product_id?[btn('Открыть в iiko','',()=>window.open(iikoLink(card.product_id),'_blank'))]:[]),
     btn('Печать','',()=>cardPrint(card)),
     ...(ro?[btn('Вернуть в черновик','',async()=>{await save('draft');closeModal();costTab='cards';vCost()})]:[
       btn('Сохранить черновик','',async()=>{if(await save('draft')){toast('Сохранено');closeModal();costTab='cards';vCost()}}),
       card.status==='approved'?btn('Занесено в iiko','green',async()=>{if(await save('entered')){toast('Отмечено');closeModal();costTab='cards';vCost()}})
         :btn('Утвердить','pri',async()=>{if(await save('approved')){toast('Утверждено — распечатайте и занесите в iiko');closeModal();costTab='cards';vCost()}})])];
-  modal('Техкарта · '+(card.name||'новая'),'',foot,true);document.querySelector('.mb').classList.add('xwide');draw();
+  modal((card.fromIiko?'Техкарта в iiko · ':'Техкарта · ')+(card.name||'новая'),'',foot,true);document.querySelector('.mb').classList.add('xwide');draw();
 }
 function cardPrint(card){
   const rows=card.items.map(it=>{const r=cardCalc(it);return `<tr><td>${esc(it.product_name||it.raw)}</td><td>${esc(it.process||'')}</td><td class="n">${r3(r.brutto)}</td><td class="n">${r3(r.netto)}</td><td>${esc(it.unit||'')}</td><td class="n">${r.cost!=null?Math.round(r.cost*100)/100:''}</td></tr>`}).join('');
