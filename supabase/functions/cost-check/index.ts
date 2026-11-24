@@ -326,6 +326,44 @@ async function check(venue: string, trigger: string) {
       }
     }
 
+    // ---------- меню: все блюда с себестоимостью, маржой и тревогами (вкладка «Все блюда») ----------
+    const jumped = new Map<string, number>();
+    for (const i of issues) if (i.kind === 'price_jump' && i.product_id) jumped.set(i.product_id, Number((i.details as any).pct) || 0);
+    // «не проблема», отмеченные в Офисе, в меню тоже не тревожат
+    const { data: mutedRows } = await db.from('cost_issues').select('key').eq('muted', true);
+    const muted = new Set((mutedRows || []).map((r: any) => r.key));
+    const byDish = new Map<string, Issue[]>();
+    for (const i of issues) if (i.kind !== 'price_jump' && i.product_id && !muted.has(i.key)) (byDish.get(i.product_id) || byDish.set(i.product_id, []).get(i.product_id)!).push(i);
+    const menu: any[] = [];
+    for (const p of dishes) {
+      if (p.type !== 'DISH') continue;
+      const ch = charts.get(p.id), s = sales?.[p.id];
+      if (!(s && s.qty > 0) && !(ch && ch.items.length)) continue; // ни продаж, ни техкарты — старая позиция
+      const section = sectionOf(p.id);
+      const c = ch && ch.items.length ? unitCost(p.id) : { cost: null, missing: [] as string[] };
+      const price = s && s.qty > 0 && s.sum > 0 ? s.sum / s.qty : null;
+      const full = c.cost != null && !c.missing.length;
+      const fc = full && price ? c.cost! / price * 100 : null;
+      const bottle = section === 'Бар' && !!ch && ch.items.length === 1 && products.get(ch.items[0].product)?.type === 'GOODS';
+      const lim = section === 'Бар' ? (bottle ? P.foodcost_bottle_pct : P.foodcost_bar_pct) : P.foodcost_kitchen_pct;
+      const reasons: string[] = []; let sev: 'crit' | 'warn' | 'ok' = 'ok';
+      const up = (x: 'crit' | 'warn') => { if (x === 'crit' || sev === 'ok') sev = x; };
+      for (const i of byDish.get(p.id) || []) {
+        if (i.kind === 'no_chart') { reasons.push('нет техкарты — продажи не списываются'); up(i.severity === 'crit' ? 'crit' : 'warn'); }
+        else if (i.kind === 'deleted_ingredient') { reasons.push('удалённый товар: ' + (i.details as any).ingredient); up('crit'); }
+        else if (i.kind === 'foodcost') { reasons.push(`фудкост ${round(fc ?? Number((i.details as any).pct), 1)}% при норме ${lim}%`); up(i.severity === 'crit' ? 'crit' : 'warn'); }
+        else if (i.kind === 'stale_ingredient') { reasons.push('давно не закупался: ' + (i.details as any).ingredient); up('warn'); }
+      }
+      if (ch && ch.items.length && !full) { reasons.push('нет цены прихода: ' + [...new Set(c.missing)].slice(0, 3).join(', ')); up('warn'); }
+      const ups = (ch?.items || []).map((it) => ({ n: name(it.product), pct: jumped.get(it.product) })).filter((x) => x.pct);
+      if (ups.length) { reasons.push('подорожало: ' + ups.slice(0, 3).map((x) => `${x.n} +${x.pct}%`).join(', ')); up('warn'); }
+      if (!price) reasons.push('нет продаж за ' + P.sales_days + ' дн.');
+      menu.push({ venue_id: venue, product_id: p.id, name: p.name, section, grp: groupPath(p.id), price: price != null ? round(price) : null,
+        cost: c.cost != null ? round(c.cost) : null, cost_full: full, foodcost_pct: fc != null ? round(fc, 1) : null, limit_pct: lim,
+        margin: full && price ? round(price - c.cost!) : null, sold_qty: s ? round(s.qty) : 0, sold_sum: s ? Math.round(s.sum) : 0,
+        margin_total: full && price && s ? Math.round((price - c.cost!) * s.qty) : null, severity: sev, reasons, updated_at: new Date().toISOString() });
+    }
+
     // ---------- запись: новые / ещё есть / исчезли ----------
     const now = new Date().toISOString();
     const { data: open } = await db.from('cost_issues').select('id,key').eq('venue_id', venue).is('resolved_at', null);
@@ -360,10 +398,17 @@ async function check(venue: string, trigger: string) {
       invRows = list.length;
     }
 
+    // меню заменяем целиком: блюда, которых больше нет, уходят
+    await db.from('cost_menu').delete().eq('venue_id', venue);
+    for (let i = 0; i < menu.length; i += 500) {
+      const { error } = await db.from('cost_menu').insert(menu.slice(i, i + 500));
+      if (error) throw new Error(error.message);
+    }
+
     const by: Record<string, number> = {};
     issues.forEach((x) => by[x.kind] = (by[x.kind] || 0) + 1);
     const stats = { issues: issues.length, by, resolved: gone.length, products: products.size, charts: charts.size, dishes: dishes.length,
-      priced_goods: deliveries.size, sales: sales ? Object.keys(sales).length : null, sales_error: raw.salesError, inventory_rows: invRows, inventory_error: raw.inventoryError };
+      priced_goods: deliveries.size, menu: menu.length, sales: sales ? Object.keys(sales).length : null, sales_error: raw.salesError, inventory_rows: invRows, inventory_error: raw.inventoryError };
     await db.from('cost_runs').update({ finished_at: new Date().toISOString(), ok: true, stats }).eq('id', run.id);
     return stats;
   } catch (e) {

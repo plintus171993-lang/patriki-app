@@ -988,7 +988,7 @@ const COST_KIND={
  foodcost:['Фудкост','Себестоимость по последним ценам прихода выше нормы к средней цене продажи за 30 дней'],
  price_jump:['Подорожания','Цена в последней накладной выше прошлой поставки'],
  stale_ingredient:['Не закупается','Ингредиент техкарты давно не приходил — возможно, его заменили, а техкарту не поправили']};
-let costTab='no_chart',costSec='all',costMuted=false;
+let costTab='no_chart',costSec='all',costMuted=false,menuSort='fc',menuUnsold=false;
 const callCost=body=>callFn('cost-check',body);
 // долгая работа (распознавание, проверка): сервер сразу даёт номер задачи и считает в фоне,
 // а мы короткими запросами спрашиваем «готово?» — обрыв связи посередине результат не теряет
@@ -1016,23 +1016,27 @@ async function vCost(){
   const run=runs[0];
   const vis=all_.filter(i=>(costMuted||!i.muted)&&(costSec==='all'||i.section===costSec));
   const cnt=k=>vis.filter(i=>i.kind===k).length;
-  if(!COST_KIND[costTab]&&costTab!=='cards'&&costTab!=='inv')costTab='no_chart';
+  if(!COST_KIND[costTab]&&!['cards','inv','menu'].includes(costTab))costTab='no_chart';
   const rows=vis.filter(i=>i.kind===costTab);
   const inv=costTab==='inv'?await all(()=>{const b=sb.from('cost_inventory').select('*').order('at',{ascending:false});return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
+  const menu=costTab==='menu'?await all(()=>{const b=sb.from('cost_menu').select('*');return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
   const cards=costTab==='cards'?await all(()=>{const b=sb.from('cost_cards').select('*').order('created_at',{ascending:false});return S.venue==='all'?b:b.eq('venue_id',S.venue)}):[];
   const runTxt=!run?'проверок ещё не было':run.ok===false?`<span style="color:var(--out)">последняя проверка ${new Date(run.started_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})} не прошла: ${esc(run.error||'')}</span>`:!run.finished_at?'идёт проверка…':`проверено ${new Date(run.finished_at).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'})}${run.stats&&run.stats.sales_error?' <span class="pill y" title="'+esc(run.stats.sales_error)+'">без продаж</span>':''}`;
   $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь · нажмите на позицию, чтобы открыть её техкарту · ${runTxt}</span><span class="sp"></span>
     <select id="cSec"><option value="all">Кухня и бар</option><option value="Кухня" ${costSec==='Кухня'?'selected':''}>Кухня</option><option value="Бар" ${costSec==='Бар'?'selected':''}>Бар</option></select>
     <label style="display:flex;gap:6px;align-items:center" class="muted"><input type="checkbox" id="cMut" ${costMuted?'checked':''}> скрытые</label>
     ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn" id="cNew">＋ Новая техкарта</button><button class="btn pri" id="cRun">Проверить сейчас</button></div>
-  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a><a data-t="inv">Инвентаризации</a></div>
-  ${costTab==='inv'?invTable(inv,run):costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
+  <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a><a data-t="inv">Инвентаризации</a><a data-t="menu">Все блюда</a></div>
+  ${costTab==='menu'?menuTable(menu.filter(m=>costSec==='all'||m.section===costSec),run):costTab==='inv'?invTable(inv,run):costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
   ${rows.length?`<div class="tw" style="max-height:66vh"><table><thead><tr><th></th><th>Позиция</th><th>Раздел</th><th>Что не так</th><th>С</th><th></th></tr></thead><tbody>
    ${rows.map(i=>`<tr data-open="${i.id}" style="cursor:pointer;${i.muted?'opacity:.5':''}"><td>${i.severity==='crit'?'<span class="pill r">срочно</span>':'<span class="pill y">внимание</span>'}</td><td><b style="color:var(--accent)">${esc(i.product_name)}</b>${i.note?`<div class="muted" style="font-size:12px">${esc(i.note)}</div>`:''}</td><td>${esc(i.section||'—')}</td><td>${costDetails(i)}</td><td class="muted" style="white-space:nowrap">${fd(i.first_seen.slice(0,10))}</td>
    <td><button class="btn sm" data-mute="${i.id}">${i.muted?'Вернуть':'Не проблема'}</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${run?'Здесь всё в порядке':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`}`}`;
   $('#cNew').onclick=()=>cardNew();
   if(costTab==='inv')document.querySelectorAll('tr[data-inv]').forEach(r=>r.onclick=()=>invDoc(inv,r.dataset.inv,all_));
   document.querySelectorAll('tr[data-card]').forEach(r=>r.onclick=()=>cardEdit(cards.find(c=>c.id===r.dataset.card)));
+  document.querySelectorAll('tr[data-dish]').forEach(r=>r.onclick=()=>costDish(r.dataset.dish));
+  if($('#mSort'))$('#mSort').onchange=e=>{menuSort=e.target.value;vCost()};
+  if($('#mUns'))$('#mUns').onchange=e=>{menuUnsold=e.target.checked;vCost()};
   document.querySelectorAll('.tabs a').forEach(a=>{a.classList.toggle('on',a.dataset.t===costTab);a.onclick=()=>{costTab=a.dataset.t;vCost()}});
   $('#cSec').onchange=e=>{costSec=e.target.value;vCost()};
   $('#cMut').onchange=e=>{costMuted=e.target.checked;vCost()};
@@ -1046,6 +1050,35 @@ async function vCost(){
     if(i.muted){q(sb.from('cost_issues').update({muted:false,updated_by:S.me.uid}).eq('id',i.id)).then(vCost);return}
     modal('Не проблема: '+i.product_name,`<div class="muted" style="margin-bottom:8px">Строка скроется из списка и из утренней сводки. Если проблема уйдёт и появится снова — снова будет скрыта; вернуть можно галочкой «скрытые».</div><label class="f">Почему (необязательно)<input id="mN" placeholder="Например: подаём без списания по решению владельца"></label>`,
       [btn('Отмена','',closeModal),btn('Скрыть','pri',async()=>{await q(sb.from('cost_issues').update({muted:true,note:$('#mN').value.trim()||null,updated_by:S.me.uid}).eq('id',i.id));closeModal();vCost()})])});
+}
+/* ---- все блюда: себестоимость, фудкост и маржа; сверху срочные, дальше от невыгодных к выгодным ---- */
+function menuTable(all,run){
+  // блюда без продаж за 30 дней (старое меню) — не тревожим ими, по галочке показываем в самом конце
+  const unsold=all.filter(m=>!(+m.sold_qty>0)).length;
+  const menu=all.map(m=>+m.sold_qty>0?m:{...m,severity:'ok'}).filter(m=>menuUnsold||+m.sold_qty>0);
+  if(!all.length)return `<div class="empty">${run?'Список блюд появится после следующей проверки — нажмите «Проверить сейчас»':'Нажмите «Проверить сейчас» — первая проверка займёт около минуты'}</div>`;
+  const SEV={crit:0,warn:1,ok:2};
+  // внутри группы: по выгодности — сначала с самым высоким фудкостом; без цены/продаж — в конце своей группы (у срочных — в начале: себестоимость неизвестна)
+  const fcKey=m=>!(+m.sold_qty>0)?-2:m.foodcost_pct==null?(m.severity==='ok'?-1:1e9):+m.foodcost_pct;
+  const key={fc:m=>-fcKey(m),margin:m=>!(+m.sold_qty>0)?2e12:m.margin==null?1e12:+m.margin,total:m=>!(+m.sold_qty>0)?2e12:m.margin_total==null?1e12:+m.margin_total,revenue:m=>-(+m.sold_sum||0)}[menuSort]||(m=>-fcKey(m));
+  const list=[...menu].sort((a,b)=>SEV[a.severity]-SEV[b.severity]||key(a)-key(b)||a.name.localeCompare(b.name));
+  const n=s=>menu.filter(m=>m.severity===s).length;
+  const known=menu.filter(m=>m.cost_full&&m.price&&m.sold_qty>0);
+  const rev=known.reduce((a,m)=>a+(+m.sold_sum),0),cost=known.reduce((a,m)=>a+(+m.cost)*(+m.sold_qty),0);
+  const fcCol=m=>m.foodcost_pct==null?'—':`<b style="color:${+m.foodcost_pct>+m.limit_pct?'var(--out)':+m.foodcost_pct>+m.limit_pct*0.85?'var(--warn)':'var(--in)'}">${num(m.foodcost_pct)}%</b><div class="muted" style="font-size:11px">норма ${num(m.limit_pct)}%</div>`;
+  return `<div class="bar" style="margin:-4px 0 10px;flex-wrap:wrap;gap:12px"><span class="muted" style="font-size:13px">Все блюда, которые продавались за 30 дней или имеют техкарту. Цена — средняя за 30 дней с учётом скидок, себестоимость — по техкарте iiko и последним ценам прихода. Нажмите на блюдо, чтобы открыть техкарту.</span><span class="sp"></span>
+    <label class="muted" style="display:flex;gap:6px;align-items:center">Порядок<select id="mSort"><option value="fc" ${menuSort==='fc'?'selected':''}>от невыгодных к выгодным (фудкост)</option><option value="margin" ${menuSort==='margin'?'selected':''}>маржа с порции, ₽ — меньше сверху</option><option value="total" ${menuSort==='total'?'selected':''}>заработали за 30 дней — меньше сверху</option><option value="revenue" ${menuSort==='revenue'?'selected':''}>выручка за 30 дней — больше сверху</option></select></label>
+    <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="mUns" ${menuUnsold?'checked':''}> не продавались 30 дн. (${unsold})</label></div>
+   <div class="row2" style="grid-template-columns:repeat(4,1fr);margin-bottom:10px">
+    <div class="card"><div class="muted">Блюд в продаже</div><b style="font-size:20px">${menu.filter(m=>+m.sold_qty>0).length}</b> <span class="pill r">срочно ${n('crit')}</span> <span class="pill y">внимание ${n('warn')}</span></div>
+    <div class="card"><div class="muted">Выручка за 30 дн.</div><b style="font-size:20px">${rub(rev)}</b><div class="muted" style="font-size:11px">по блюдам с полной себестоимостью</div></div>
+    <div class="card"><div class="muted">Маржа за 30 дн.</div><b style="font-size:20px">${rub(rev-cost)}</b></div>
+    <div class="card"><div class="muted">Средний фудкост</div><b style="font-size:20px">${rev?num(Math.round(cost/rev*1000)/10)+'%':'—'}</b></div></div>
+   <div class="tw" style="max-height:62vh"><table><thead><tr><th></th><th>Блюдо</th><th>Раздел</th><th class="n">Цена</th><th class="n">Себест.</th><th class="n">Фудкост</th><th class="n">Маржа с порции</th><th class="n">Продано за 30 дн.</th><th class="n">Заработали за 30 дн.</th></tr></thead><tbody>
+   ${list.map(m=>`<tr data-dish="${m.product_id}" style="cursor:pointer;${+m.sold_qty>0?'':'opacity:.55'}"><td>${m.severity==='crit'?'<span class="pill r">срочно</span>':m.severity==='warn'?'<span class="pill y">внимание</span>':''}</td>
+    <td><b style="color:var(--accent)">${esc(m.name)}</b>${(m.reasons||[]).length?`<div style="font-size:12px;color:${m.severity==='crit'?'var(--out)':m.severity==='warn'?'var(--warn)':'var(--muted)'}">${(m.reasons||[]).map(esc).join(' · ')}</div>`:''}</td>
+    <td>${esc(m.section||'—')}</td><td class="n">${m.price!=null?rub(m.price):'—'}</td><td class="n">${m.cost!=null?rub(m.cost)+(m.cost_full?'':'<div class="muted" style="font-size:11px">неполная</div>'):'—'}</td>
+    <td class="n">${fcCol(m)}</td><td class="n">${m.margin!=null?rub(m.margin):'—'}</td><td class="n">${num(m.sold_qty)} шт<div class="muted" style="font-size:11px">${rub(m.sold_sum)}</div></td><td class="n"><b>${m.margin_total!=null?rub(m.margin_total):'—'}</b></td></tr>`).join('')}</tbody></table></div>`;
 }
 /* ---- инвентаризации: недостачи и излишки по позициям (ночная проверка, cost_inventory) ---- */
 function invDocs(inv){const m=new Map();inv.forEach(r=>{const k=r.doc+'|'+r.store;const d=m.get(k)||{k,doc:r.doc,store:r.store,at:r.at,short:0,surp:0,n:0};
