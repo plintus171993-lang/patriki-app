@@ -4,7 +4,8 @@
 // body:
 //   { action: 'check',  venue?: 'petrogradka', trigger?: 'cron'|'manual' } → {stats}   — проверить и обновить cost_issues
 //   { action: 'digest', venue? }                                            → {sent}    — сводка управляющему в Telegram
-//   { action: 'card_parse', text?, image? (base64 jpeg), media? }            → {card, catalog} — техкарта «с листочка» (ИИ, ключ app_secrets.anthropic_api_key)
+//   { action: 'card_text', text, name? }                                     → {card, catalog} — техкарта из текста шефа: разбор строк и подбор товаров iiko без ИИ
+//   { action: 'card_parse', text?, image? (base64 jpeg), media? }            → {card, catalog} — то же через ИИ (запас на будущее: нужен app_secrets.anthropic_api_key)
 //   { action: 'dish_card', product_id }                                     → {card, catalog} — действующая техкарта блюда из iiko для правки
 //   { action: 'card_catalog' }                                              → {catalog} — товары и заготовки iiko с последней ценой прихода
 //   { action: 'job_start', job: 'card_parse'|'check', ...параметры }         → {job_id}  — то же в фоне (обрыв связи не теряет результат)
@@ -488,6 +489,123 @@ const CARD_TOOL = {
   },
 };
 
+// ---------- техкарта из текста без ИИ ----------
+// Шеф пишет состав строками: «Джим бим 40мл», «котлета говяжья 180 г (жарка)», «2 ломтика чеддера».
+// Разбираем количество и единицу, товар iiko подбираем по похожести названия (с учётом латиницы: Jim Beam = джим бим).
+const LAT: Record<string, string> = { sch: 'щ', sh: 'ш', ch: 'ч', zh: 'ж', ya: 'я', yu: 'ю', yo: 'е', kh: 'х', ts: 'ц', ph: 'ф', th: 'т', ee: 'и', oo: 'у', ea: 'и', j: 'дж', a: 'а', b: 'б', c: 'к', d: 'д', e: 'е', f: 'ф', g: 'г', h: 'х', i: 'и', k: 'к', l: 'л', m: 'м', n: 'н', o: 'о', p: 'п', q: 'к', r: 'р', s: 'с', t: 'т', u: 'у', v: 'в', w: 'в', x: 'кс', y: 'и', z: 'з' };
+const LAT_RE = new RegExp(Object.keys(LAT).sort((a, b) => b.length - a.length).join('|'), 'g');
+// упрощаем написание, чтобы «бим/беам», «сок/сока», «ё/е» совпадали
+const norm = (x: string) => x.toLowerCase().replace(/ё/g, 'е').replace(/\bbbq\b/g, 'барбекю').replace(/[a-z]+/g, (w) => w.replace(LAT_RE, (m) => LAT[m]))
+  .replace(/[ъь]/g, '').replace(/й/g, 'и').replace(/[^а-я0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const STOP = new Set(['и', 'с', 'в', 'на', 'для', 'из', 'по', 'пф', 'п', 'ф', 'шт', 'г', 'кг', 'мл', 'л', 'гр']);
+const words = (x: string) => norm(x).split(' ').filter((w) => w.length > 1 && !STOP.has(w) && !/^\d+$/.test(w));
+function tri(a: string) { const s = ` ${a} `, out = new Set<string>(); for (let i = 0; i < s.length - 2; i++) out.add(s.slice(i, i + 3)); return out; }
+function wordSim(a: string, b: string) {
+  if (a === b) return 1;
+  // общее начало слова: «лимона/лимонный», «сахарный/сахар» — но не «красный/краб», «портвейн/порц»
+  let cp = 0; while (cp < a.length && cp < b.length && a[cp] === b[cp]) cp++;
+  if (cp >= 4 && cp >= 0.6 * Math.min(a.length, b.length)) return 0.9;
+  const ta = tri(a), tb = tri(b); let n = 0; ta.forEach((t) => tb.has(t) && n++);
+  const sim = 2 * n / (ta.size + tb.size);
+  return sim >= 0.5 ? sim : 0; // случайные общие буквы («портвейн/глинтвейн») не считаем
+}
+// насколько название товара iiko похоже на то, что написал шеф (0…1); strong — нашлось ли хоть одно слово уверенно
+// weight — вес слова: редкое в номенклатуре («портвейн») важнее частого («красный»: лук, вино, перец…)
+function nameMatch(query: string[], target: string[], weight: (w: string) => number = () => 1) {
+  if (!query.length || !target.length) return { s: 0, strong: false };
+  let sum = 0, total = 0, strong = false;
+  for (const q of query) {
+    let best = 0; for (const t of target) best = Math.max(best, wordSim(q, t));
+    const w = weight(q); sum += best * w; total += w;
+    if (best >= 0.9 && q.length >= 3) strong = true;
+  }
+  const cover = sum / total;                               // все ли слова шефа нашлись (с учётом веса)
+  const extra = Math.max(0, target.length - query.length); // лишние слова в названии iiko чуть снижают оценку
+  return { s: cover - Math.min(0.15, extra * 0.03), strong };
+}
+const nameScore = (q: string[], t: string[]) => nameMatch(q, t).s;
+const UNIT: [RegExp, string][] = [[/^(кг|килогр[а-яё]*)$/, 'кг'], [/^(г|гр|грамм?[а-яё]*)$/, 'г'], [/^(мл|миллилитр[а-яё]*)$/, 'мл'], [/^(л|литр[а-яё]*)$/, 'л'], [/^(шт|штук[а-яё]*|ломтик[а-яё]*|долька|дольк[а-яё]*|кусо?к[а-яё]*|лист[а-яё]*|веточ[а-яё]*|щепот[а-яё]*|пласт[а-яё]*|порц[а-яё]*|банк[а-яё]*|бутыл[а-яё]*)$/, 'шт']];
+const unitOf = (u: string) => { for (const [re, v] of UNIT) if (re.test(u.toLowerCase().replace(/\.$/, ''))) return v; return null; };
+const PROCESS = /(жарк[а-яё]*|обжар[а-яё]*|фритюр[а-яё]*|варк[а-яё]*|отвар[а-яё]*|тушен[а-яё]*|запек[а-яё]*|гриль|су[- ]?вид|бланш[а-яё]*|очист[а-яё]*|разделк[а-яё]*)/i;
+
+function parseLines(text: string) {
+  let lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // всё одной строкой через запятую / точку с запятой — режем на позиции
+  if (lines.length <= 2) lines = lines.flatMap((l) => l.split(/;|,(?![\d])/)).map((l) => l.trim()).filter(Boolean);
+  let dish = '';
+  const rows: { raw: string; name: string; qty: number; unit: string; process: string }[] = [];
+  for (let l of lines) {
+    // «Бургер Патрики: булка 1 шт» — название блюда до двоеточия
+    const head = l.match(/^([^:\d]{3,}):\s*(.*)$/);
+    if (head) { if (!dish) dish = head[1].trim(); l = head[2]; if (!l) continue; }
+    l = l.replace(/^[-–—•*]+\s*/, '').replace(/^\d+[.)]\s+/, '').trim(); // маркеры списка «-», нумерация «1.»
+    let process = '';
+    const par = l.match(/\(([^)]*)\)/);
+    if (par) { const pm = par[1].match(PROCESS); if (pm) process = par[1].trim(); l = l.replace(par[0], ' ').trim(); }
+    if (!process) { const pm = l.match(PROCESS); if (pm) process = pm[1]; }
+    const num = '(\\d+(?:[.,]\\d+)?|\\d+\\/\\d+)';
+    const toN = (x: string) => x.includes('/') ? Number(x.split('/')[0]) / Number(x.split('/')[1]) : Number(x.replace(',', '.'));
+    // «Джим бим 40мл», «сок лимона 20 мл», «булка 1»
+    let m = l.match(new RegExp(`^(.*?)[\\s,–—-]*${num}\\s*([а-яёa-z.]*)\\s*$`, 'i'));
+    let name = '', qty = 0, unit = '';
+    if (m && m[1].trim()) { name = m[1]; qty = toN(m[2]); unit = m[3]; }
+    else {
+      // «2 ломтика чеддера», «40 мл джим бим»
+      m = l.match(new RegExp(`^${num}\\s*([а-яёa-z.]*)\\s+(.+)$`, 'i'));
+      if (m) { qty = toN(m[1]); const u = unitOf(m[2]); if (u) { unit = m[2]; name = m[3]; } else { unit = ''; name = m[2] + ' ' + m[3]; } }
+    }
+    if (!name) { if (!rows.length && !dish && !/\d/.test(l)) { dish = l; continue; } name = l; }
+    name = name.replace(PROCESS, ' ').replace(/[\s,–—-]+$/, '').replace(/\s+/g, ' ').trim();
+    const u = unitOf(unit) || (unit ? null : 'шт');
+    rows.push({ raw: l, name: u || !unit ? name : `${name} ${unit}`.trim(), qty, unit: u || 'шт', process: process.toLowerCase() });
+  }
+  return { dish, rows };
+}
+
+async function cardText(b: any) {
+  const text = String(b.text || '').slice(0, 4000).trim();
+  if (!text) throw new Error('Напишите состав: каждый ингредиент с новой строки, например «Джим бим 40 мл»');
+  const cat = await cardCatalog();
+  const { dish: dishFromText, rows } = parseLines(text);
+  if (!rows.length) throw new Error('Не нашла в тексте ни одной строки состава');
+  const goods = cat.goods.map((g) => ({ g, w: words(g.name) }));
+  // сколько товаров содержат слово (по началу слова) — чем чаще, тем меньше вес
+  const key = (w: string) => w.slice(0, 5);
+  const df = new Map<string, number>();
+  for (const x of goods) for (const k of new Set(x.w.map(key))) df.set(k, (df.get(k) || 0) + 1);
+  const weight = (w: string) => Math.log(1 + goods.length / (1 + (df.get(key(w)) || 0)));
+  const notes: string[] = [];
+  const items = rows.map((r) => {
+    const q = words(r.name);
+    const ranked = goods.map((x) => { const m = nameMatch(q, x.w, weight); return { g: x.g, s: m.s + (x.g.price != null ? 0.02 : 0), strong: m.strong }; })
+      .sort((a, z) => z.s - a.s || a.g.name.length - z.g.name.length);
+    const best = ranked[0], second = ranked[1];
+    // уверенно — почти всё совпало и нет равного соперника; «проверьте» — совпало главное слово («сахарный сироп» → «Сироп в асс-те»)
+    const maybe = (x?: { s: number; strong: boolean }) => !!x && (x.s >= 0.7 || (x.strong && x.s >= 0.4));
+    let g: typeof best.g | null = null, note: string | null = null;
+    if (best && best.s >= 0.8 && !(second && second.s >= best.s - 0.03 && second.g.name !== best.g.name)) g = best.g;
+    else if (maybe(best)) {
+      g = best.g;
+      const alt = ranked.slice(1, 3).filter(maybe).map((x) => '«' + x.g.name + '»');
+      note = 'Проверьте товар' + (alt.length ? ': ещё подходят ' + alt.join(', ') : '');
+    } else { note = 'Не нашла в номенклатуре iiko — выберите товар'; notes.push(`«${r.name}» — нет похожего товара в iiko`); }
+    if (!r.qty) note = (note ? note + '; ' : '') + 'не указано количество';
+    return { raw: r.raw, product_id: g?.id || null, product_name: g?.name || null, unit: g?.unit || null, qty: r.qty, qty_unit: r.unit, qty_is: 'нетто',
+      process: r.process, loss_cold: 0, loss_hot: 0, price: g?.price ?? null, price_at: g?.at ?? null,
+      note: note || (r.process ? 'Укажите потери при обработке, если они есть' : null) };
+  });
+  // блюдо: название из поля, из текста или пусто; цену продажи берём из iiko, если такое блюдо там есть
+  const dishName = String(b.name || '').trim() || dishFromText;
+  let dish: { id: string; name: string; price: number | null } | null = null;
+  if (dishName) {
+    const q = words(dishName);
+    const top = cat.dishes.map((d) => ({ d, s: nameScore(q, words(d.name)) })).sort((a, z) => z.s - a.s)[0];
+    if (top && top.s >= 0.8) dish = top.d;
+  }
+  return { card: { name: dish?.name || dishName, product_id: dish?.id || null, price: dish?.price ?? null, output: null, source_text: text, items, notes },
+    catalog: cat.goods.map((g) => ({ id: g.id, name: g.name, unit: g.unit, price: g.price, at: g.at })) };
+}
+
 async function cardParse(b: any) {
   const key = await secret('anthropic_api_key');
   if (!key) throw new Error('Не задан ключ ИИ: app_secrets.anthropic_api_key');
@@ -593,6 +711,7 @@ Deno.serve(async (req) => {
       return json({ error: 'unknown job' }, 400);
     }
     if (b.action === 'digest') return json(await digest(venue));
+    if (b.action === 'card_text') return json(await cardText(b));
     if (b.action === 'card_parse') return json(await cardParse(b));
     if (b.action === 'dish_card') return json(await dishCard(String(b.product_id || '')));
     if (b.action === 'card_catalog') { const c = await cardCatalog(); return json({ catalog: c.goods.map((g) => ({ id: g.id, name: g.name, unit: g.unit, price: g.price, at: g.at })) }); }
