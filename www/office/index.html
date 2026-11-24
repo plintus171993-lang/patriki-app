@@ -354,12 +354,13 @@ async function cashOps(list,canAdd,canTr){
     <span class="sp"></span>
     ${canAdd?'<button class="btn green" id="bIn">+ Приход</button><button class="btn red" id="bOut">− Расход</button>':''}
     ${canTr?'<button class="btn pri" id="bTr">⇄ Перемещение</button>':''}
+    ${canAdd?'<button class="btn" id="bCnt" title="Пересчитать деньги в кассе и выровнять остаток">⚖ Пересчёт</button>':''}
     ${S.me.owner?'<button class="btn" id="bCb">+ Касса</button><button class="btn" id="bBank">⇪ Выписка банка</button>':''}
   </div><div id="opsTbl"><div class="empty">Загрузка…</div></div>`;
   $('#fDir').value=f.dir;$('#fCat').value=f.cat;
   const upd=()=>{Object.assign(f,{from:$('#fFrom').value,to:$('#fTo').value,dir:$('#fDir').value,cat:$('#fCat').value,s:$('#fS').value.trim()});loadOps(list)};
   ['fFrom','fTo','fDir','fCat'].forEach(i=>$('#'+i).onchange=upd);$('#fS').oninput=()=>{clearTimeout(S._t);S._t=setTimeout(upd,350)};
-  if(canAdd){$('#bIn').onclick=()=>opForm('in',list);$('#bOut').onclick=()=>opForm('out',list)}
+  if(canAdd){$('#bIn').onclick=()=>opForm('in',list);$('#bOut').onclick=()=>opForm('out',list);$('#bCnt').onclick=()=>countForm(list)}
   if(canTr)$('#bTr').onclick=()=>trForm(list);
   if(S.me.owner){$('#bCb').onclick=()=>cbForm();$('#bBank').onclick=bankPick}
   loadOps(list);
@@ -404,6 +405,25 @@ function opForm(dir,list){
       closeModal();toast('Сохранено');vCash()})]);
   const sw=()=>$('#oEw').style.display=$('#oC').value==='Зарплата и авансы'?'':'none';$('#oC').onchange=sw;
 }
+function countForm(list){
+  const cash=list.filter(c=>c.kind==='cash'||c.kind==='accountable');const def=S.cbSel&&cash.find(c=>c.id===S.cbSel)?S.cbSel:(cash.find(c=>c.iiko_pay_type==='Наличные')||cash[0]||{}).id;
+  if(!cash.length){toast('Нет наличных касс');return}
+  modal('Пересчёт кассы',`<div class="muted" style="font-size:12px;margin-bottom:10px">Пересчитайте деньги и введите сколько лежит по факту. CRM запишет корректировку на разницу, и остаток станет равен факту. Наличная выручка из iiko приходит сама каждый час — выдачи, инкассацию и расходы из кассы нужно вносить кнопками «Расход» и «Перемещение».</div>
+    <label class="f">Касса<select id="kCb">${cash.map(c=>`<option value="${c.id}" ${c.id===def?'selected':''}>${esc(c.name)} · ${esc(venueName(c.venue_id))}</option>`).join('')}</select></label>
+    <div class="row2"><label class="f">На конец дня<input type="date" id="kD" value="${today()}"></label><label class="f">По факту, ₽<input type="number" id="kA" min="0" step="0.01"></label></div>
+    <div id="kInfo" class="card" style="padding:10px 12px;background:#f7f8fa"></div>
+    <label class="f" style="margin-top:10px">Комментарий<input id="kC" placeholder="Например: пересчёт сейфа перед запуском CRM"></label><div class="err" id="kErr"></div>`,
+    [btn('Отмена','',closeModal),btn('Записать','pri',async()=>{
+      const fact=$('#kA').value===''?NaN:+$('#kA').value;if(!(fact>=0)){$('#kErr').textContent='Введите сумму по факту';return}
+      const bal=await balAt($('#kCb').value,$('#kD').value),d=Math.round((fact-bal)*100)/100;
+      if(Math.abs(d)<0.01){closeModal();toast('Касса сходится, корректировка не нужна');return}
+      await q(sb.from('crm_cash_ops').insert({cashbox_id:$('#kCb').value,op_date:$('#kD').value,direction:d>0?'in':'out',amount:Math.abs(d),category:'Корректировка остатка',comment:`Пересчёт: по факту ${rub(fact)}, в CRM было ${rub(bal)}${$('#kC').value.trim()?' · '+$('#kC').value.trim():''}`,source:'manual'}));
+      closeModal();toast('Остаток выровнен по факту');vCash()})]);
+  const info=async()=>{const bal=await balAt($('#kCb').value,$('#kD').value),f=$('#kA').value===''?null:+$('#kA').value;
+    $('#kInfo').innerHTML=`В CRM на конец ${fd($('#kD').value)}: <b>${rub(bal)}</b>${f!==null?`<br>Разница: <b class="${f-bal>=0?'in':'out'}">${f-bal>=0?'+':'−'}${rub(Math.abs(f-bal))}</b> ${Math.abs(f-bal)<0.01?'— сходится':f-bal>0?'— денег больше, чем в CRM':'— денег меньше, чем в CRM'}`:''}`};
+  ['kCb','kD'].forEach(i=>$('#'+i).onchange=info);$('#kA').oninput=info;info();
+}
+async function balAt(cb,day){const r=await all(()=>sb.from('crm_cash_ops').select('amount,direction').eq('cashbox_id',cb).lte('op_date',day));return Math.round(r.reduce((s,x)=>s+(x.direction==='in'?+x.amount:-x.amount),0)*100)/100}
 function trForm(list){
   const all=S.cashboxes;
   modal('Перемещение между кассами',`
@@ -503,6 +523,7 @@ function classify(o){
   const t=(o.cp+' '+o.purpose).toLowerCase();
   if(o.dir==='in'&&/эквайр/.test(t)){const c=(o.purpose.match(/Комиссия\s+([\d\s]+[.,]\d+)/i)||[])[1];return {type:'acq',fee:c?+c.replace(/\s/g,'').replace(',','.'):0}}
   if(o.dir==='in'&&/яндекс/.test(t))return {type:'yandex'};
+  if(o.dir==='in'&&/при[её]м\s*(ден|нал)|через\s*ус\s*\d|взнос\s*наличн|инкассац/.test(t))return {type:'cashdep'};
   if(o.dir==='out'&&/фссп|пристав/.test(t)){const g=guessSalary(o);const ip=fsspIp(o.purpose),debtor=(o.purpose.match(/в отношении\s+([А-ЯЁ][а-яё-]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]?\.?)/)||[])[1]||'';
     return {type:'salperson',fssp:true,ip,debtor,kind:'salary',month:g.month,reg:null,emp:(ip&&S.salLinks?.['ip:'+ip])||findEmpByDebtor(debtor)}}
   if(o.dir==='out'&&/заработн|зарплат|аванс|отпускн|оплат[аы] труда/.test(o.purpose.toLowerCase())&&!/ндфл|налог|взнос/.test(t)){
@@ -518,6 +539,7 @@ function howText(o){const c=o.cls;
   if(c.fssp)return c.emp?`Приставы за ${esc(c.emp.name)} → засчитаю ему как зарплату за ${monthName(c.month)}`:`Приставы${c.debtor?' за «'+esc(c.debtor)+'»':''}: сотрудник не найден → разнести в «Зарплате», дальше по этому ИП засчитаю сам`;
   if(c.type==='acq')return `Карты → р/с${c.fee?' · комиссия '+rub(c.fee):''}`;
   if(c.type==='yandex')return 'Яндекс → р/с';
+  if(c.type==='cashdep')return 'Внесение наличных на счёт → перемещение из кассы «Наличные». Если это свои деньги, выберите «Взносы учредителей и займы»';
   if(c.type==='salreg')return `Зарплата по реестру №${c.reg||'?'} · ${PAYK2[c.kind]} за ${monthName(c.month)} → разнести`;
   if(c.type==='salperson')return c.emp?`→ ${esc(c.emp.name)}: ${PAYK2[c.kind]} за ${monthName(c.month)}`:`Зарплата: сотрудник не найден по ФИО → разнести`;
   return '';
@@ -528,8 +550,8 @@ async function bankPreview(st,fname){
   S.salLinks={};(await q(sb.from('crm_bank_salary_links').select('key,employee_id'))).forEach(l=>{const e=S.employees.find(e=>e.id===l.employee_id);if(e)S.salLinks[l.key]=e});
   const cb=S.cashboxes.find(c=>c.account_no===st.acc);
   const have=new Set(cb?(await all(()=>sb.from('crm_cash_ops').select('ext_id').eq('cashbox_id',cb.id).not('ext_id','is',null))).map(x=>x.ext_id):[]);
-  const cardCb=S.cashboxes.find(c=>/банковск|карт/i.test(c.iiko_pay_type||'')),yaCb=S.cashboxes.find(c=>/яндекс/i.test(c.iiko_pay_type||''));
-  st.ops.forEach(o=>{o.dup=have.has(o.ext);o.cls=classify(o);o.cat=o.cls.type.startsWith('sal')?'Зарплата и авансы':(o.cls.type==='acq'&&cardCb)||(o.cls.type==='yandex'&&yaCb)?'Перемещение':autoCat(o,rules);o.cat0=o.cat});
+  const cardCb=S.cashboxes.find(c=>/банковск|карт/i.test(c.iiko_pay_type||'')),yaCb=S.cashboxes.find(c=>/яндекс/i.test(c.iiko_pay_type||'')),cashCb=S.cashboxes.find(c=>c.iiko_pay_type==='Наличные');
+  st.ops.forEach(o=>{o.dup=have.has(o.ext);o.cls=classify(o);o.cat=o.cls.type.startsWith('sal')?'Зарплата и авансы':(o.cls.type==='acq'&&cardCb)||(o.cls.type==='yandex'&&yaCb)||(o.cls.type==='cashdep'&&cashCb)?'Перемещение':autoCat(o,rules);o.cat0=o.cat});
   const fresh=st.ops.filter(o=>!o.dup);const tin=fresh.filter(o=>o.dir==='in').reduce((s,o)=>s+o.amount,0),tout=fresh.filter(o=>o.dir==='out').reduce((s,o)=>s+o.amount,0);
   const nSal=fresh.filter(o=>o.cls.type.startsWith('sal')).length,nAcq=fresh.filter(o=>o.cls.type==='acq').length;
   const opt=dir=>(dir==='in'?[...CATS_IN,'Перемещение']:[...CATS_OUT,'Перемещение']).map(c=>`<option>${c}</option>`).join('');
@@ -554,6 +576,7 @@ async function bankPreview(st,fname){
         if(o.cat==='Перемещение'&&c.type==='acq'&&cardCb){r.comment='Эквайринг → р/с · '+r.comment;
           side.push({...base(o),cashbox_id:cardCb.id,direction:'out',amount:o.amount,category:'Перемещение',comment:'Зачислено на расчётный счёт (эквайринг)'});
           if(c.fee)side.push({...base(o),ext_id:o.ext+'|fee',cashbox_id:cardCb.id,direction:'out',amount:c.fee,category:'Комиссия банка',comment:'Комиссия эквайринга'});}
+        if(o.cat==='Перемещение'&&c.type==='cashdep'&&cashCb){r.comment='Наличные → р/с · '+r.comment;side.push({...base(o),cashbox_id:cashCb.id,direction:'out',amount:o.amount,category:'Перемещение',comment:'Внесено на расчётный счёт'})}
         if(o.cat==='Перемещение'&&c.type==='yandex'&&yaCb)side.push({...base(o),cashbox_id:yaCb.id,direction:'out',amount:o.amount,category:'Перемещение',comment:'Зачислено на расчётный счёт (Яндекс)'});
         if(o.cat==='Зарплата и авансы'&&c.type?.startsWith('sal')){r.salary_bank=true;r.registry_no=c.reg;r.pay_kind=c.kind;r.pay_month=c.month+'-01'}
         rows.push(r);
@@ -816,13 +839,27 @@ function allocForm(op,pre){
       await q(sb.from('crm_salary_alloc').insert(ok.map(r=>({op_id:op.id,employee_id:r.emp,amount:+r.amount,pay_month:$('#aM').value+'-01',pay_kind:$('#aK').value,source:r.fio?'registry':'manual'}))));
       const ip=fsspIp(op.comment);if(ip&&ok.length===1)await q(sb.from('crm_bank_salary_links').upsert({key:'ip:'+ip,employee_id:ok[0].emp},{onConflict:'key'}));
       for(const r of ok.filter(r=>r.fio)){const e=S.employees.find(e=>e.id===r.emp);if(e&&!e.full_name)await q(sb.from('crm_employees').update({full_name:r.fio}).eq('id',e.id))}
-      closeModal();toast('Выплата разнесена');await loadRefs();vPay()})],true);
+      closeModal();toast('Выплата разнесена');await loadRefs();await vPay();regNext()})],true);
   $('#aAdd').onclick=()=>{rows.push({emp:'',amount:''});draw()};draw();
 }
 /* ---------- Загрузка реестра зарплатного проекта (Excel / CSV / XML) ---------- */
 function regPick(unal){
-  const inp=document.createElement('input');inp.type='file';inp.accept='.xlsx,.xls,.csv,.xml,.txt';
-  inp.onchange=async()=>{const f=inp.files[0];if(!f)return;try{regMatch(await parseRegistry(f),unal,f.name)}catch(e){toast('Не получилось прочитать реестр: '+e.message)}};inp.click();
+  const inp=document.createElement('input');inp.type='file';inp.accept='.xlsx,.xls,.csv,.xml,.txt,.zip';inp.multiple=true;
+  inp.onchange=async()=>{let files=[];
+    try{for(const f of inp.files){if(/\.zip$/i.test(f.name))files.push(...await unzipFiles(f));else files.push(f)}
+      const regs=[];for(const f of files){try{regs.push({R:await parseRegistry(f),name:f.name})}catch(e){}}
+      if(!regs.length){toast('В файлах не нашёл реестров с ФИО и суммами');return}
+      S.regQueue=regs.slice(1);regMatch(regs[0].R,unal,regs[0].name+(regs.length>1?` (1 из ${regs.length})`:''))}
+    catch(e){toast('Не получилось прочитать: '+e.message)}};inp.click();
+}
+async function unzipFiles(f){
+  if(!window.JSZip)await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';s.onload=ok;s.onerror=()=>no(new Error('не загрузилась библиотека архивов'));document.head.appendChild(s)});
+  const z=await JSZip.loadAsync(f),out=[];
+  for(const e of Object.values(z.files)){if(e.dir||!/\.(xlsx|xls|csv|xml|txt)$/i.test(e.name)||/__MACOSX/.test(e.name))continue;out.push(new File([await e.async('arraybuffer')],e.name.split('/').pop()))}
+  return out;
+}
+async function regNext(){if(!S.regQueue?.length)return;const n=S.regQueue.shift();
+  const unal=(await q(sb.from('crm_salary_bank_ops').select('*').order('op_date'))).filter(o=>+o.amount-+o.allocated>0.009);regMatch(n.R,unal,n.name)
 }
 async function loadXLSX(){if(window.XLSX)return;await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=ok;s.onerror=()=>no(new Error('не загрузилась библиотека Excel'));document.head.appendChild(s)})}
 const isFio=s=>/^[А-ЯЁ][а-яё-]+\s+[А-ЯЁ][а-яё-]+(\s+[А-ЯЁ][а-яё-]+){0,2}$/.test(String(s||'').trim());
@@ -850,7 +887,7 @@ async function parseRegistry(f){
 function regMatch(R,unal,fname){
   const cand=unal.filter(o=>(R.reg&&o.registry_no===R.reg)||Math.abs((o.amount-o.allocated)-R.total)<0.01);
   const op=cand.find(o=>R.reg&&o.registry_no===R.reg&&Math.abs((o.amount-o.allocated)-R.total)<0.01)||cand[0];
-  if(!op){modal('Реестр',`<div>В реестре ${R.reg?'№'+esc(R.reg)+' ':''}${R.rows.length} чел. на <b>${rub(R.total)}</b>, но в загруженных выписках нет неразнесённого платежа на эту сумму.</div><div class="muted" style="font-size:12px;margin-top:8px">Сначала загрузите банковскую выписку за период, когда был этот платёж.</div>`,[btn('Понятно','',closeModal)]);return}
+  if(!op){modal('Реестр',`<div>В реестре ${R.reg?'№'+esc(R.reg)+' ':''}${R.rows.length} чел. на <b>${rub(R.total)}</b>, но в загруженных выписках нет неразнесённого платежа на эту сумму.</div><div class="muted" style="font-size:12px;margin-top:8px">Сначала загрузите банковскую выписку за период, когда был этот платёж.</div>`,[btn(S.regQueue?.length?'Дальше':'Понятно','',()=>{closeModal();regNext()})]);return}
   const pre=R.rows.map(r=>({fio:r.fio,amount:r.amount,emp:(findEmpByFio(r.fio)||{}).id||''}));
   toast(`${fname}: ${R.rows.length} чел., ${rub(R.total)} — проверьте сотрудников`);
   allocForm(op,pre);

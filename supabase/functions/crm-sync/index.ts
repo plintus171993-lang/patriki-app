@@ -2,7 +2,7 @@
 // Каждому типу оплаты iiko соответствует своя касса (crm_cashboxes.iiko_pay_type), касса создаётся сама при первой оплате.
 // В CRM НЕ попадают: тип оплаты «Рубли» и оплата баллами (баллы — не деньги, они в разделе «Система лояльности»; сумма пишется в crm_daily_revenue.loyalty).
 // Доступ: владелец (JWT из панели) или x-pos-key = app_secrets.pos_api_key, либо service-role.
-// body: { from, to, venue:'petrogradka', action:'preview'|'save'|'types' } — по умолчанию вчера, preview.
+// body: { from, to, venue:'petrogradka', action:'preview'|'save'|'types'|'probe' } — по умолчанию вчера, preview.
 //   types — создать кассы по всем типам оплат, встречавшимся за 90 дней (без операций, остаток 0).
 // Запускается каждый час задачей pg_cron «crm-sync-hourly» (см. supabase/025-crm-money.sql). Деплой: verify_jwt = false.
 import { createClient } from 'npm:@supabase/supabase-js@2';
@@ -58,13 +58,58 @@ async function olap(from: string, to: string) {
     const r = await fetch(`${base}/api/v2/reports/olap?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const txt = await r.text();
     if (!r.ok) throw new Error(`OLAP ${r.status}: ${txt.slice(0, 200)}`);
-    return ((JSON.parse(txt).data || []) as any[]).map((x) => ({
+    const pay = ((JSON.parse(txt).data || []) as any[]).map((x) => ({
       day: String(x['OpenDate.Typed'] || '').slice(0, 10), name: String(x['PayTypes'] || '').trim(),
       grp: String(x['PayTypes.Group'] || ''), sum: Number(x['DishDiscountSumInt'] || 0),
     })).filter((x) => x.day && x.name && x.name !== '(без оплаты)' && !SKIP(x.name));
+    // оборот кухни и бара — по верхней группе блюд iiko («Блюда Кухня» / «Блюда Бар»)
+    const extra = async (rows: string[], agg: string[]) => {
+      const q = await fetch(`${base}/api/v2/reports/olap?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, groupByRowFields: rows, aggregateFields: agg }) });
+      return q.ok ? ((await q.json()).data || []) as any[] : [];
+    };
+    const groups = (await extra(['OpenDate.Typed', 'DishGroup.TopParent'], ['DishDiscountSumInt'])).map((x) => ({
+      day: String(x['OpenDate.Typed'] || '').slice(0, 10), group: String(x['DishGroup.TopParent'] || ''), sum: Number(x['DishDiscountSumInt'] || 0) }));
+    // сервисный сбор — надбавка к заказу в iiko (OrderIncrease)
+    const inc = (await extra(['OpenDate.Typed', 'OrderIncrease.Type'], ['IncreaseSum'])).map((x) => ({
+      day: String(x['OpenDate.Typed'] || '').slice(0, 10), type: String(x['OrderIncrease.Type'] || ''), sum: Number(x['IncreaseSum'] || 0) }));
+    return { pay, groups, inc };
   } finally {
     await fetch(`${base}/api/logout?key=${key}`).catch(() => {});
   }
+}
+
+// probe — только чтение: какие поля есть в OLAP и как выручка делится по группам / местам приготовления,
+// что похоже на сервисный сбор и какие кассовые смены за день. Нужен, чтобы настроить кухню/бар и сервис.
+async function probe(day: string) {
+  const base = (await secret('iiko_server_url')).replace(/\/+$/, '');
+  const login = await secret('iiko_server_login'), pass = await secret('iiko_server_password');
+  const a = await fetch(`${base}/api/auth?login=${encodeURIComponent(login)}&pass=${await sha1(pass)}`);
+  const key = (await a.text()).trim();
+  if (!a.ok || key.length > 100 || key.includes('<')) throw new Error(`сервер iiko не принял логин (${a.status})`);
+  const out: Record<string, unknown> = { day };
+  const filters = {
+    'OpenDate.Typed': { filterType: 'DateRange', periodType: 'CUSTOM', from: day, to: addDay(day), includeLow: true, includeHigh: false },
+    'OrderDeleted': { filterType: 'IncludeValues', values: ['NOT_DELETED'] },
+    'DeletedWithWriteoff': { filterType: 'IncludeValues', values: ['NOT_DELETED'] },
+  };
+  const olapQ = async (rows: string[], agg: string[]) => {
+    const r = await fetch(`${base}/api/v2/reports/olap?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reportType: 'SALES', buildSummary: false, groupByRowFields: rows, aggregateFields: agg, filters }) });
+    const t = await r.text(); return r.ok ? JSON.parse(t).data : { error: r.status + ' ' + t.slice(0, 300) };
+  };
+  try {
+    const c = await fetch(`${base}/api/v2/reports/olap/columns?reportType=SALES&key=${key}`);
+    const cols = c.ok ? await c.json() : {};
+    out.columns = Object.keys(cols).filter((k) => /cook|group|categ|service|surcharge|discount|sum|place|section|store|type/i.test(k)).slice(0, 200);
+    out.byTopGroup = await olapQ(['DishGroup.TopParent'], ['DishDiscountSumInt', 'DishSumInt']);
+    out.byCookingPlace = await olapQ(['CookingPlaceType'], ['DishDiscountSumInt']);
+    out.byCategory = await olapQ(['DishCategory'], ['DishDiscountSumInt']);
+    const dishes = await olapQ(['DishName'], ['DishDiscountSumInt', 'DishAmountInt']);
+    out.serviceLike = Array.isArray(dishes) ? dishes.filter((x: any) => /обслуж|сервис|service|чаев/i.test(String(x.DishName))) : dishes;
+    out.surcharge = await olapQ(['OrderIncrease.Type'], ['IncreaseSum']);
+    const s = await fetch(`${base}/api/v2/cashshifts/list?openDateFrom=${day}&openDateTo=${addDay(day)}&status=ANY&key=${key}`);
+    out.cashShifts = s.ok ? (await s.text()).slice(0, 4000) : 'cashshifts ' + s.status;
+  } finally { await fetch(`${base}/api/logout?key=${key}`).catch(() => {}); }
+  return out;
 }
 
 const kindFor = (grp: string) => grp === 'CASH' ? 'cash' : grp === 'CARD' ? 'bank' : 'other';
@@ -90,9 +135,10 @@ Deno.serve(async (req) => {
     const venue = b.venue || 'petrogradka';
     const cache = new Map<string, string>();
 
+    if (b.action === 'probe') return json(await probe(b.from || addDay(mskToday(), -1)));
     if (b.action === 'types') {
       const to = mskToday(), from = addDay(to, -90);
-      const rows = await olap(from, to);
+      const rows = (await olap(from, to)).pay;
       const types = new Map<string, string>();
       rows.forEach((r) => { if (!IS_POINTS(r.name)) types.set(r.name, r.grp); });
       for (const [name, grp] of types) await cashboxFor(venue, name, grp, cache);
@@ -103,10 +149,13 @@ Deno.serve(async (req) => {
     const from = b.from || yesterday, to = b.to || from;
     if (to < from || (new Date(to).getTime() - new Date(from).getTime()) > 62 * 864e5) return json({ error: 'Период до 62 дней' }, 400);
 
-    const rows = await olap(from, to);
+    const res = await olap(from, to), rows = res.pay;
     const days: Record<string, any> = {};
+    const dayOf = (d: string) => days[d] = days[d] || { day: d, cashless: 0, cash: 0, loyalty: 0, yandex: 0, kitchen: 0, bar: 0, service: 0, types: {} as Record<string, { grp: string; sum: number }> };
+    for (const g of res.groups) { if (!g.day) continue; const t = dayOf(g.day); if (/кух/i.test(g.group)) t.kitchen += g.sum; else if (/бар/i.test(g.group)) t.bar += g.sum; }
+    for (const i of res.inc) { if (!i.day || !i.type || !i.sum) continue; dayOf(i.day).service += i.sum; }
     for (const r of rows) {
-      const t = days[r.day] = days[r.day] || { day: r.day, cashless: 0, cash: 0, loyalty: 0, yandex: 0, types: {} as Record<string, { grp: string; sum: number }> };
+      const t = dayOf(r.day);
       if (IS_POINTS(r.name)) { t.loyalty += r.sum; continue; }
       if (/яндекс|yandex/i.test(r.name)) t.yandex += r.sum;
       else if (r.grp === 'CASH') t.cash += r.sum;
@@ -121,7 +170,7 @@ Deno.serve(async (req) => {
     for (const t of list as any[]) {
       const by: Record<string, number> = {};
       for (const [n, v] of Object.entries(t.types) as any) by[n] = v.sum;
-      const { error } = await db.from('crm_daily_revenue').upsert({ venue_id: venue, day: t.day, cashless: t.cashless, cash: t.cash, loyalty: t.loyalty || null, yandex: t.yandex || null, by_pay_type: by, source: 'iiko', updated_at: new Date().toISOString() }, { onConflict: 'venue_id,day' });
+      const { error } = await db.from('crm_daily_revenue').upsert({ venue_id: venue, day: t.day, cashless: t.cashless, cash: t.cash, loyalty: t.loyalty || null, yandex: t.yandex || null, kitchen_turnover: t.kitchen || null, bar_turnover: t.bar || null, service_fee: t.service || null, by_pay_type: by, source: 'iiko', updated_at: new Date().toISOString() }, { onConflict: 'venue_id,day' });
       if (error) throw new Error(error.message);
       for (const [name, v] of Object.entries(t.types) as any) {
         const cb = await cashboxFor(venue, name, v.grp, cache);
