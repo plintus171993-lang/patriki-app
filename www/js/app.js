@@ -688,8 +688,23 @@ function BookingVenuePick() {
       <span>${esc(v.name)}</span><small>${esc(v.address)}</small></button>`).join('')}
     </div>${none ? '<span class="seg-hint">Нажмите на паб, в котором хотите забронировать стол</span>' : ''}</section>`;
 }
+// Бронь гостя, которая ещё ждёт подтверждения паба (любое заведение)
+const pendingBooking = () => (S.bookings || []).filter((x) => x.status === 'new' && bookingActive(x))
+  .sort((a, z) => a.starts_at.localeCompare(z.starts_at))[0];
 function Booking() {
   const b = S.booking, c = S.draftContact || {};
+  const wait = !S.bkBusy && pendingBooking();
+  if (wait) return `<main class="screen">
+    <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
+    <div class="card stack" role="status">
+      <span class="h2" style="font-size:20px">Вы уже забронировали стол</span>
+      <span style="font-size:15px;line-height:1.5">Бронь №${esc(wait.number)} · ${esc(fmtBookTime(wait.starts_at))} · ${esc(wait.guests)} чел.<br>
+        ${esc((S.venues.find((v) => v.id === wait.venue_id) || {}).name || '')}</span>
+      <span style="color:var(--text-2);line-height:1.5">Ожидайте подтверждения — паб свяжется с вами. Новую бронь можно будет сделать после ответа паба.</span>
+      <a class="btn btn-accent btn-block" href="#/profile/bookings">Мои брони</a>
+      <button type="button" class="btn btn-outline btn-block" data-act="call">Позвонить в паб</button>
+    </div>
+  </main>`;
   if (b.venue && !S.venues.some((x) => x.id === b.venue)) b.venue = '';
   if (!b.venue) return `<main class="screen">
     <div class="row">${backBtn('/')}<h1 class="h1" style="font-size:26px">Бронь стола</h1></div>
@@ -728,7 +743,7 @@ function Booking() {
         : `<div class="muted" style="font-size:12px;line-height:1.5">Бронь бесплатная. Паб подтвердит её звонком или сообщением; держим стол 15 минут после назначенного времени.</div>`}
       ${ConsentBox(b.pdTick)}
       <p class="error" id="bk-err" role="alert"></p>
-      <button type="submit" class="btn btn-accent btn-block">${dep > 0 ? `Забронировать и оплатить ${rub(dep)}` : 'Забронировать'}</button>
+      <button type="submit" class="btn btn-accent btn-block" ${S.bkBusy ? 'disabled' : ''}>${S.bkBusy ? 'Бронируем…' : dep > 0 ? `Забронировать и оплатить ${rub(dep)}` : 'Забронировать'}</button>
     </form>
     ${(S.bookings || []).filter(bookingActive).length ? `<a class="btn btn-ghost btn-block" href="#/profile/bookings">Мои брони</a>` : ''}
   </main>`;
@@ -740,6 +755,7 @@ function saveBookingForm() {
   S.draftContact = { ...S.draftContact, name: f.name.value, phone: f.phone.value };
 }
 async function submitBooking(form) {
+  if (S.bkBusy) return;               // уже отправляем — второе нажатие игнорируем
   saveBookingForm();
   const b = S.booking, c = S.draftContact || {}, err = document.getElementById('bk-err');
   if (!b.venue) return (err.textContent = 'Выберите паб');
@@ -747,6 +763,7 @@ async function submitBooking(form) {
   if (!c.name?.trim()) return (err.textContent = 'Укажите имя');
   if (phone10(c.phone).length !== 10) return (err.textContent = 'Введите номер полностью: +7 (XXX) XXX-XX-XX');
   if (!hasPdConsent() && !b.pdTick) return (err.textContent = 'Отметьте согласие на обработку персональных данных');
+  S.bkBusy = true;
   const btn = form.querySelector('[type=submit]'); btn.disabled = true; btn.textContent = 'Бронируем…';
   try {
     await grantPd('booking');
@@ -755,12 +772,18 @@ async function submitBooking(form) {
       name: c.name.trim(), phone: fmtPhone(c.phone), comment: (b.comment || '').trim(), pd_consent: true, pd_consent_version: CV,
     });
     S.booking = { guests: 2, day: '', time: '', comment: '', venue: '' };
+    S.bkBusy = false;
     S.bookings = null; loadBookings();
     toast(res.deposit > 0 ? `Бронь №${res.number} создана — осталось оплатить депозит` : `Бронь №${res.number} отправлена в паб`);
     location.hash = '#/profile/bookings';
   } catch (ex) {
-    err.textContent = ex.message || 'Не удалось забронировать';
-    btn.disabled = false; btn.textContent = 'Забронировать';
+    S.bkBusy = false;
+    const msg = ex.message || 'Не удалось забронировать';
+    // экран мог перерисоваться, пока шёл запрос, — берём актуальные элементы
+    const e2 = document.getElementById('bk-err'), b2 = document.querySelector('#booking [type=submit]');
+    if (e2) e2.textContent = msg;
+    if (b2) { b2.disabled = false; b2.textContent = 'Забронировать'; }
+    if (/Ожидайте подтверждения/.test(msg)) loadBookings();   // сервер нашёл бронь в обработке — покажем её
   }
 }
 function MyBookings() {
