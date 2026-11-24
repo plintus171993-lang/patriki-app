@@ -396,11 +396,14 @@ function opForm(dir,list){
   modal(dir==='in'?'Приход в кассу':'Расход из кассы',`
     <label class="f">Касса<select id="oCb">${cbOptions(list,S.cbSel||(list.find(c=>c.kind==='accountable')||list[0]||{}).id)}</select></label>
     <div class="row2"><label class="f">Дата<input type="date" id="oD" value="${today()}"></label><label class="f">Сумма, ₽<input type="number" id="oA" min="0" step="0.01"></label></div>
-    <label class="f">Категория<select id="oC">${(dir==='in'?CATS_IN:CATS_OUT).map(c=>`<option>${c}</option>`).join('')}</select></label>
+    <label class="f">${dir==='in'?'Откуда деньги':'Назначение'}<select id="oC"><option value="">— выберите —</option>${(dir==='in'?CATS_IN:CATS_OUT).map(c=>`<option>${c}</option>`).join('')}</select></label>
     <label class="f" id="oEw" style="display:none">Сотрудник<select id="oE"><option value="">—</option>${S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select></label>
     <label class="f">Комментарий<textarea id="oCm" rows="2" placeholder="${dir==='in'?'Откуда деньги':'На что потрачено'}"></textarea></label><div class="err" id="oErr"></div>`,
     [btn('Отмена','',closeModal),btn('Сохранить',dir==='in'?'green':'red',async()=>{
       const a=+$('#oA').value;if(!(a>0)){$('#oErr').textContent='Укажите сумму';return}
+      if(!$('#oC').value){$('#oErr').textContent=dir==='in'?'Укажите, откуда деньги':'Укажите назначение: зарплата, хозтовары, продукты…';return}
+      if($('#oC').value==='Зарплата и авансы'&&!$('#oE').value){$('#oErr').textContent='Выберите сотрудника';return}
+      if(['Прочее','Прочие приходы'].includes($('#oC').value)&&!$('#oCm').value.trim()){$('#oErr').textContent='Для «'+$('#oC').value+'» напишите в комментарии, на что';return}
       await q(sb.from('crm_cash_ops').insert({cashbox_id:$('#oCb').value,op_date:$('#oD').value,direction:dir,amount:a,category:$('#oC').value,comment:$('#oCm').value.trim()||null,employee_id:$('#oE').value||null,source:'manual'}));
       closeModal();toast('Сохранено');vCash()})]);
   const sw=()=>$('#oEw').style.display=$('#oC').value==='Зарплата и авансы'?'':'none';$('#oC').onchange=sw;
