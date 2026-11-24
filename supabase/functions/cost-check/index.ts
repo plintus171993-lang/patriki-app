@@ -7,6 +7,8 @@
 //   { action: 'card_parse', text?, image? (base64 jpeg), media? }            → {card, catalog} — техкарта «с листочка» (ИИ, ключ app_secrets.anthropic_api_key)
 //   { action: 'dish_card', product_id }                                     → {card, catalog} — действующая техкарта блюда из iiko для правки
 //   { action: 'card_catalog' }                                              → {catalog} — товары и заготовки iiko с последней ценой прихода
+//   { action: 'job_start', job: 'card_parse'|'check', ...параметры }         → {job_id}  — то же в фоне (обрыв связи не теряет результат)
+//   { action: 'job', id }                                                   → {status: running|done|error, result?, error?}
 // Доступ: service-role, x-pos-key = app_secrets.pos_api_key (pg_cron), либо вход в Офис с правом cost.view (или владелец).
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
@@ -24,16 +26,44 @@ async function secret(key: string) {
   return ((data?.value as string) || '').trim();
 }
 
-async function allowed(req: Request) {
+// кто вызывает: { uid } — вошедший в Офис с правом, { uid: null } — служебный вызов, null — нет доступа
+async function allowed(req: Request): Promise<{ uid: string | null } | null> {
   const auth = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-  if (auth && auth === SERVICE_KEY) return true;
+  if (auth && auth === SERVICE_KEY) return { uid: null };
   const pk = req.headers.get('x-pos-key');
-  if (pk && pk === await secret('pos_api_key')) return true;
-  if (!auth) return false;
+  if (pk && pk === await secret('pos_api_key')) return { uid: null };
+  if (!auth) return null;
   const u = createClient(URL_, Deno.env.get('SUPABASE_ANON_KEY')!, { global: { headers: { Authorization: 'Bearer ' + auth } }, auth: { persistSession: false } });
   const { data } = await u.rpc('crm_me');
   const me = data as any;
-  return !!(me && (me.owner || (me.perms || []).includes('cost.view')));
+  return me && (me.owner || (me.perms || []).includes('cost.view')) ? { uid: me.uid || me.user_id || null } : null;
+}
+
+// ---------- фоновые задачи: ответ сразу, работа — после ответа ----------
+async function jobStart(kind: string, uid: string | null, work: () => Promise<unknown>) {
+  await db.from('cost_jobs').delete().lt('created_at', new Date(Date.now() - DAY).toISOString());
+  const { data, error } = await db.from('cost_jobs').insert({ kind, created_by: uid }).select('id').single();
+  if (error) throw new Error(error.message);
+  const id = data.id as string;
+  const run = (async () => {
+    try {
+      const result = await work();
+      await db.from('cost_jobs').update({ status: 'done', result, finished_at: new Date().toISOString() }).eq('id', id);
+    } catch (e) {
+      await db.from('cost_jobs').update({ status: 'error', error: String((e as Error).message || e), finished_at: new Date().toISOString() }).eq('id', id);
+    }
+  })();
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(run); else await run;
+  return { job_id: id };
+}
+async function jobGet(id: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Не указана задача');
+  const { data } = await db.from('cost_jobs').select('status,result,error,created_at').eq('id', id).maybeSingle();
+  if (!data) return { status: 'error', error: 'Задача не найдена — запустите заново' };
+  // фоновая работа живёт не дольше нескольких минут: зависшую считаем упавшей
+  if (data.status === 'running' && Date.now() - Date.parse(data.created_at) > 8 * 60e3) return { status: 'error', error: 'Сервер не успел — запустите ещё раз' };
+  return data;
 }
 
 // ---------- iikoServer: вход → запросы → выход (вход занимает лицензию) ----------
@@ -552,9 +582,16 @@ async function digest(venue: string) {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   try {
-    if (!(await allowed(req))) return json({ error: 'Нет доступа' }, 403);
+    const who = await allowed(req);
+    if (!who) return json({ error: 'Нет доступа' }, 403);
     const b = await req.json().catch(() => ({}));
     const venue = String(b.venue || 'petrogradka');
+    if (b.action === 'job') return json(await jobGet(String(b.id || '')));
+    if (b.action === 'job_start') {
+      if (b.job === 'card_parse') return json(await jobStart('card_parse', who.uid, () => cardParse(b)));
+      if (b.job === 'check') return json(await jobStart('check', who.uid, async () => ({ venue, stats: await check(venue, 'manual') })));
+      return json({ error: 'unknown job' }, 400);
+    }
     if (b.action === 'digest') return json(await digest(venue));
     if (b.action === 'card_parse') return json(await cardParse(b));
     if (b.action === 'dish_card') return json(await dishCard(String(b.product_id || '')));
