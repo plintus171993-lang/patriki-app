@@ -141,7 +141,38 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 <script>
 const SB_URL='https://ozbdmczmpejyctezxrdk.supabase.co';
 const SB_KEY='sb_publishable_PhI0d9qM0Hp7KrERGKHQfg_668fWJMv';
-const sb=supabase.createClient(SB_URL,SB_KEY);
+/* ---------- сеть: связь до Supabase бывает рваной (провайдер, VPN) — повторяем и говорим по-человечески ---------- */
+const NET_ERR='Нет связи с сервером — проверьте интернет (или выключите VPN) и нажмите ещё раз';
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const isNet=e=>!!e&&(e.name==='TypeError'||e.name==='AbortError'||e.name==='TimeoutError'||/failed to fetch|networkerror|load failed|network request failed/i.test(e.message||''));
+// tries — сколько раз пробовать при обрыве; timeout — сколько ждать одну попытку (0 — без ограничения)
+async function netFetch(url,opt={},{tries=3,timeout=60000}={}){
+  for(let i=0;;i++){
+    const ac=new AbortController(),t=timeout?setTimeout(()=>ac.abort(),timeout):0;
+    if(opt.signal){if(opt.signal.aborted)ac.abort();else opt.signal.addEventListener('abort',()=>ac.abort(),{once:true})}
+    try{return await fetch(url,{...opt,signal:ac.signal})}
+    catch(e){if(opt.signal?.aborted||i>=tries-1||!isNet(e))throw e;await sleep(1000*2**i)}
+    finally{clearTimeout(t)}
+  }
+}
+// чтение и обновление входа повторяем сами; запись в базу — один раз, чтобы не задвоить операцию
+const sbFetch=(url,opt={})=>{const m=String(opt.method||'GET').toUpperCase();
+  return netFetch(url,opt,m==='GET'||m==='HEAD'||String(url).includes('/auth/v1/token')?{tries:3,timeout:45000}:{tries:1,timeout:0})};
+const sb=supabase.createClient(SB_URL,SB_KEY,{global:{fetch:sbFetch}});
+async function token(){
+  let {data:{session}}=await sb.auth.getSession();
+  if(!session)session=(await sb.auth.refreshSession()).data.session;
+  if(!session)throw new Error('Вход в Офис закончился — обновите страницу и войдите заново');
+  return session.access_token}
+// вызов серверной функции: повтор при обрыве, понятные ошибки
+async function callFn(name,body,{tries=3,timeout=150000}={}){
+  try{
+    const r=await netFetch(SB_URL+'/functions/v1/'+name,{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+await token()},body:JSON.stringify(body)},{tries,timeout});
+    const d=await r.json().catch(()=>null);
+    if(!d)throw new Error(r.status>=500||r.status===0?'Сервер не ответил вовремя — нажмите ещё раз':'Сервер ответил ошибкой '+r.status);
+    if(!r.ok||d.error)throw new Error(d.error||('Сервер ответил ошибкой '+r.status));
+    return d}
+  catch(e){if(isNet(e))throw new Error(NET_ERR);throw e}}
 
 const S={me:null,venues:[],venue:'all',cashboxes:[],employees:[],page:'dash',month:new Date().toISOString().slice(0,7),cbSel:null,cache:{}};
 const $=s=>document.querySelector(s);
@@ -163,7 +194,7 @@ function modal(title,body,foot,wide){document.querySelector('.mb').classList.tog
 function closeModal(){$('#modal').classList.add('hidden')}
 $('#mX').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};
 function btn(t,cls,fn){const b=document.createElement('button');b.className='btn '+(cls||'');b.textContent=t;b.onclick=fn;return b}
-async function q(p){const {data,error}=await p;if(error){toast('Ошибка: '+error.message);throw error}return data}
+async function q(p){const {data,error}=await p;if(error){toast(isNet(error)?NET_ERR:'Ошибка: '+error.message);throw error}return data}
 async function all(build){let out=[],from=0;for(;;){const d=await q(build().range(from,from+999));out=out.concat(d);if(d.length<1000)break;from+=1000}return out}
 const venueName=id=>id?((S.venues.find(v=>v.id===id)||{}).name||id):'Вся компания';
 const vFilter=(qb,col='venue_id')=>S.venue==='all'?qb:qb.eq(col,S.venue);
@@ -279,10 +310,8 @@ function revChart(rev,m){
   return s+'</svg>'}
 
 /* ---------- выгрузка из iiko ---------- */
-async function callSync(body){
-  const {data:{session}}=await sb.auth.getSession();
-  const r=await fetch(SB_URL+'/functions/v1/crm-sync',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
-  const d=await r.json().catch(()=>({error:'нет ответа'}));if(!r.ok||d.error)throw new Error(d.error||r.status);return d}
+// запись выручки за день заменяет прежнюю — повторять при обрыве безопасно
+const callSync=body=>callFn('crm-sync',body);
 function iikoForm(){
   const y=new Date(Date.now()+3*3600e3).toISOString().slice(0,10);
   const venue=S.venue==='all'?(S.venues[0]||{}).id:S.venue;
@@ -960,10 +989,20 @@ const COST_KIND={
  price_jump:['Подорожания','Цена в последней накладной выше прошлой поставки'],
  stale_ingredient:['Не закупается','Ингредиент техкарты давно не приходил — возможно, его заменили, а техкарту не поправили']};
 let costTab='no_chart',costSec='all',costMuted=false;
-async function callCost(body){
-  const {data:{session}}=await sb.auth.getSession();
-  const r=await fetch(SB_URL+'/functions/v1/cost-check',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
-  const d=await r.json().catch(()=>({error:'нет ответа'}));if(!r.ok||d.error)throw new Error(d.error||r.status);return d}
+const callCost=body=>callFn('cost-check',body);
+// долгая работа (распознавание, проверка): сервер сразу даёт номер задачи и считает в фоне,
+// а мы короткими запросами спрашиваем «готово?» — обрыв связи посередине результат не теряет
+async function costJob(job,params,tick){
+  const {job_id}=await callCost({action:'job_start',job,...params});
+  const t0=Date.now();
+  while(Date.now()-t0<8*60e3){
+    await sleep(3000);tick&&tick(Math.round((Date.now()-t0)/1000));
+    let d;try{d=await callFn('cost-check',{action:'job',id:job_id},{tries:2,timeout:20000})}
+    catch(e){if(e.message===NET_ERR)continue;throw e}   // связь пропала — ждём, задача на сервере идёт
+    if(d.status==='done')return d.result;
+    if(d.status==='error')throw new Error(d.error||'не получилось');
+  }
+  throw new Error('Сервер долго не отвечает — нажмите ещё раз')}
 function costDetails(i){const d=i.details||{};switch(i.kind){
   case 'no_chart':return `${d.sold_qty?`продано <b>${num(d.sold_qty)}</b> шт на ${rub(d.sold_sum)} за ${d.days} дн.`:'заготовка без техкарты'}${d.group?` <span class="muted">· ${esc(d.group)}</span>`:''}`;
   case 'deleted_ingredient':return `в составе: <b>${esc(d.ingredient)}</b> (${num(d.amount)})`;
@@ -998,7 +1037,7 @@ async function vCost(){
   $('#cSec').onchange=e=>{costSec=e.target.value;vCost()};
   $('#cMut').onchange=e=>{costMuted=e.target.checked;vCost()};
   $('#cRun').onclick=async e=>{e.target.disabled=true;e.target.textContent='Проверяю… ~1 мин';
-    try{const venue=S.venue==='all'?'petrogradka':S.venue;const d=await callCost({action:'check',venue});toast('Готово: проблем '+d.stats.issues+(d.stats.resolved?', закрыто '+d.stats.resolved:''))}
+    try{const venue=S.venue==='all'?'petrogradka':S.venue;const d=await costJob('check',{venue},s=>e.target.textContent='Проверяю… '+s+' с');toast('Готово: проблем '+d.stats.issues+(d.stats.resolved?', закрыто '+d.stats.resolved:''))}
     catch(err){toast('Не получилось: '+err.message)}vCost()};
   if($('#cSet'))$('#cSet').onclick=costSettings;
   document.querySelectorAll('tr[data-open]').forEach(r=>r.onclick=e=>{if(e.target.closest('[data-mute]'))return;const i=all_.find(x=>String(x.id)===r.dataset.open);
@@ -1072,7 +1111,7 @@ function cardNew(){
     [btn('Отмена','',closeModal),btn('Распознать','pri',async e=>{
       const f=$('#nF').files[0],text=$('#nT').value.trim();if(!f&&!text){$('#nErr').textContent='Добавьте фото или текст';return}
       e.target.disabled=true;e.target.textContent='Распознаю…';$('#nErr').textContent='';
-      try{const image=f?await shrinkImage(f):null;const d=await callCost({action:'card_parse',text,image,media:'image/jpeg'});S.cache.costCat=d.catalog;
+      try{const image=f?await shrinkImage(f):null;const d=await costJob('card_parse',{text,image,media:'image/jpeg'},s=>e.target.textContent='Распознаю… '+s+' с');S.cache.costCat=d.catalog;
         cardEdit({...d.card,status:'draft',venue_id:S.venue==='all'?'petrogradka':S.venue})}
       catch(err){$('#nErr').textContent='Не получилось: '+err.message;e.target.disabled=false;e.target.textContent='Распознать'}})]);
 }
@@ -1167,10 +1206,8 @@ const PERM_LIST=[
  ['cash.transfer','Кассы — перемещения','отправлять деньги между кассами (включает «смотреть»)'],
  ['staff.edit','Сотрудники','добавлять и редактировать своих сотрудников — без зарплат и мотивации'],
  ['cost.view','Себестоимость','проблемы техкарт, подорожания у поставщиков и фудкост из iiko; отмечать «не проблема»']];
-async function callUsers(body){
-  const {data:{session}}=await sb.auth.getSession();
-  const r=await fetch(SB_URL+'/functions/v1/crm-users',{method:'POST',headers:{'Content-Type':'application/json',apikey:SB_KEY,Authorization:'Bearer '+session.access_token},body:JSON.stringify(body)});
-  const d=await r.json().catch(()=>({error:'нет ответа'}));if(!r.ok||d.error)throw new Error(d.error||r.status);return d}
+// создание доступа не повторяем (мог дойти и создаться), остальное — можно
+const callUsers=body=>callFn('crm-users',body,{tries:body.action==='save'?1:3});
 async function vAcc(){
   const {users}=await callUsers({action:'list'});
   const mg=users.filter(u=>!u.owner).sort((a,b)=>(a.venue||'').localeCompare(b.venue||'')||(a.name||'').localeCompare(b.name||''));
