@@ -186,7 +186,7 @@ const monthEnd=m=>m+'-'+String(daysIn(m)).padStart(2,'0');
 const today=()=>new Date(Date.now()+3*3600e3).toISOString().slice(0,10);
 const DEPT={bar:'Бар',hall:'Зал',kitchen:'Кухня',dish:'Мойка',admin:'Администрация'};
 const KIND={accountable:'Подотчёт',cash:'Наличные',bank:'Безнал / р/с',safe:'Сейф',other:'Другое'};
-const CATS_OUT=['Зарплата и авансы','Поставщики','Аренда','Коммунальные услуги','Комиссия банка','Продукты и напитки','Хозтовары и магазин','Ремонт и обслуживание','Маркетинг и печать','Игровые автоматы','Вывоз, уборка, охрана','Налоги, юристы, штрафы','Связь и IT','Транспорт и доставка','Финансы','Прочее'];
+const CATS_OUT=['Зарплата и авансы','Поставщики','Аренда','Коммунальные услуги','Комиссия банка','Продукты и напитки','Хозтовары и магазин','Оборудование и инвентарь','Ремонт и обслуживание','Маркетинг и печать','Игровые автоматы','Вывоз, уборка, охрана','Налоги, юристы, штрафы','Связь и IT','Транспорт и доставка','Финансы','Дивиденды','Прочее'];
 const CATS_IN=['Выручка','Эквайринг','Яндекс Доставка','Поступление на счёт','Взносы учредителей и займы','Возврат с зарплаты','Итоги инвентаризации','Прочие приходы'];
 
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.remove('hidden');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.add('hidden'),2600)}
@@ -271,7 +271,7 @@ async function vDash(){
   const pay=S.me.owner?await q(vFilter(sb.from('crm_payroll').select('total')).eq('month',from)):[];
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
   const cashless=sum(rev,r=>r.cashless),cash=sum(rev,r=>r.cash),total=cashless+cash;
-  const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id&&!['Корректировка остатка','Перемещение'].includes(o.category));
+  const exp=ops.filter(o=>o.direction==='out'&&!o.transfer_id&&!['Корректировка остатка','Перемещение','Дивиденды'].includes(o.category));
   const expSum=sum(exp,o=>o.amount),fot=sum(pay,p=>p.total);
   const byCat={};exp.forEach(o=>byCat[o.category||'Прочее']=(byCat[o.category||'Прочее']||0)+ +o.amount);
   const cats=Object.entries(byCat).sort((a,b)=>b[1]-a[1]);const maxC=cats.length?cats[0][1]:1;
@@ -462,14 +462,24 @@ function autoCat(o,rules){
   const r=rules.find(r=>r.direction===o.dir&&((o.inn&&r.inn===o.inn)||(!r.inn&&r.name&&r.name===o.cp)));if(r)return r.category;
   const t=(o.cp+' '+o.purpose).toLowerCase();
   if(o.dir==='in'){if(/эквайр|возмещ|торгов.*эквайр|pos/.test(t))return 'Эквайринг';if(/яндекс/.test(t))return 'Яндекс Доставка';if(/займ|учредит|взнос|пополнение/.test(t))return 'Взносы учредителей и займы';return 'Поступление на счёт'}
-  if(/налог|фнс|уфк|страхов|взнос|енп|пени/.test(t))return 'Налоги, юристы, штрафы';
-  if(/аренд/.test(t))return 'Аренда';
-  if(/коммун|электроэнерг|водоснаб|теплоснаб|газоснаб|жку/.test(t))return 'Коммунальные услуги';
-  if(/комисси|обслуживан.{0,20}сч|тариф|плата за/.test(t))return 'Комиссия банка';
+  const cp=(o.cp||'').toLowerCase();
+  if(/фссп|пристав/.test(t))return 'Зарплата и авансы';
+  if(/налог|фнс|уфк|страхов|взнос|енп|пени|осфр|социальн.{0,10}фонд/.test(t))return 'Налоги, юристы, штрафы';
+  if(/дивиденд/.test(t))return 'Дивиденды';
+  if(/банк/.test(cp)&&/комисси|тариф|плата за продукт|обслуживан/.test(t))return 'Комиссия банка';
   if(/заработн|зарплат|аванс|реестр/.test(t))return 'Зарплата и авансы';
-  if(/пиво|напит|продукт|товар|поставк|упд|накладн|счет-фактур|счёт-фактур|за товар/.test(t))return 'Поставщики';
-  if(/реклам|маркет|продвижен/.test(t))return 'Маркетинг и печать';
-  if(/ремонт|обслуживан|монтаж/.test(t))return 'Ремонт и обслуживание';
+  if(/аренд/.test(t))return 'Аренда';
+  if(/коммун|электроэнерг|водоснаб|водоотвед|водопотреб|тепло|газоснаб|жку|водоканал/.test(t))return 'Коммунальные услуги';
+  if(/юридическ|консультац|адвокат|нотари|юрист/.test(t))return 'Налоги, юристы, штрафы';
+  if(/климатическ|холодильн|моноблок|гриль|посуд|оборудован|мебел|инвентар|техник/.test(t))return 'Оборудование и инвентарь';
+  if(/реклам|маркет|продвижен|видео|фото|печат|полиграф/.test(t))return 'Маркетинг и печать';
+  if(/ккм|касс.{0,10}аппарат|домен|интернет|звонк|связ|телефон|онлайн офис|программ|лицензи|по подписке/.test(t))return 'Связь и IT';
+  if(/вывоз|утилизац|уборк|клининг|охран/.test(t))return 'Вывоз, уборка, охрана';
+  if(/транспортн|экспедиц|такси|перевозк/.test(t))return 'Транспорт и доставка';
+  if(/хозяйствен|хозтовар/.test(t))return 'Хозтовары и магазин';
+  if(/пиво|пивн|напит|продукт|мяс|рыб|орех|хлеб|кофе|колбас|пельмен|двуокис|товар|поставк|упд|накладн|счет-фактур|счёт-фактур/.test(t))return 'Поставщики';
+  if(/ремонт|монтаж/.test(t))return 'Ремонт и обслуживание';
+  if(/комисси/.test(t))return 'Комиссия банка';
   return 'Прочее';
 }
 const PAYK2={advance:'аванс',salary:'зарплата',bonus:'премия',vacation:'отпускные'};
@@ -493,13 +503,19 @@ function classify(o){
   const t=(o.cp+' '+o.purpose).toLowerCase();
   if(o.dir==='in'&&/эквайр/.test(t)){const c=(o.purpose.match(/Комиссия\s+([\d\s]+[.,]\d+)/i)||[])[1];return {type:'acq',fee:c?+c.replace(/\s/g,'').replace(',','.'):0}}
   if(o.dir==='in'&&/яндекс/.test(t))return {type:'yandex'};
+  if(o.dir==='out'&&/фссп|пристав/.test(t)){const g=guessSalary(o);const ip=fsspIp(o.purpose),debtor=(o.purpose.match(/в отношении\s+([А-ЯЁ][а-яё-]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]?\.?)/)||[])[1]||'';
+    return {type:'salperson',fssp:true,ip,debtor,kind:'salary',month:g.month,reg:null,emp:(ip&&S.salLinks?.['ip:'+ip])||findEmpByDebtor(debtor)}}
   if(o.dir==='out'&&/заработн|зарплат|аванс|отпускн|оплат[аы] труда/.test(o.purpose.toLowerCase())&&!/ндфл|налог|взнос/.test(t)){
     const g=guessSalary(o);if(g.reg||/сбербанк/i.test(o.cp)&&/реестр/i.test(o.purpose))return {type:'salreg',...g};
     return {type:'salperson',...g,emp:findEmpByFio(o.cp)};
   }
   return {type:'plain'};
 }
+const fsspIp=s=>((s||'').match(/ИП\s*№\s*([\d/]+-ИП)/i)||[])[1]||null;
+function findEmpByDebtor(d){if(!d)return null;const w=normFio(d).split(' ');const sur=w[0].replace(/(ой|ого|ей|ую|а|у|ы)$/,'');if(sur.length<3)return null;
+  const m=S.employees.filter(e=>{if(!e.full_name)return false;const f=normFio(e.full_name).split(' ');return f[0].startsWith(sur)&&(!w[1]||(f[1]||'')[0]===w[1][0])});return m.length===1?m[0]:null}
 function howText(o){const c=o.cls;
+  if(c.fssp)return c.emp?`Приставы за ${esc(c.emp.name)} → засчитаю ему как зарплату за ${monthName(c.month)}`:`Приставы${c.debtor?' за «'+esc(c.debtor)+'»':''}: сотрудник не найден → разнести в «Зарплате», дальше по этому ИП засчитаю сам`;
   if(c.type==='acq')return `Карты → р/с${c.fee?' · комиссия '+rub(c.fee):''}`;
   if(c.type==='yandex')return 'Яндекс → р/с';
   if(c.type==='salreg')return `Зарплата по реестру №${c.reg||'?'} · ${PAYK2[c.kind]} за ${monthName(c.month)} → разнести`;
@@ -509,6 +525,7 @@ function howText(o){const c=o.cls;
 async function bankPreview(st,fname){
   await loadRefs();
   const rules=await q(sb.from('crm_bank_rules').select('*'));
+  S.salLinks={};(await q(sb.from('crm_bank_salary_links').select('key,employee_id'))).forEach(l=>{const e=S.employees.find(e=>e.id===l.employee_id);if(e)S.salLinks[l.key]=e});
   const cb=S.cashboxes.find(c=>c.account_no===st.acc);
   const have=new Set(cb?(await all(()=>sb.from('crm_cash_ops').select('ext_id').eq('cashbox_id',cb.id).not('ext_id','is',null))).map(x=>x.ext_id):[]);
   const cardCb=S.cashboxes.find(c=>/банковск|карт/i.test(c.iiko_pay_type||'')),yaCb=S.cashboxes.find(c=>/яндекс/i.test(c.iiko_pay_type||''));
@@ -547,6 +564,8 @@ async function bankPreview(st,fname){
       const idOf={};ins.forEach(x=>idOf[x.ext_id]=x.id);
       const auto=fresh.filter(o=>o.cat==='Зарплата и авансы'&&o.cls.type==='salperson'&&o.cls.emp).map(o=>({op_id:idOf[o.ext],employee_id:o.cls.emp.id,amount:o.amount,pay_month:o.cls.month+'-01',pay_kind:o.cls.kind,source:'auto'}));
       if(auto.length)await q(sb.from('crm_salary_alloc').insert(auto));
+      const links=fresh.filter(o=>o.cls.fssp&&o.cls.ip&&o.cls.emp&&o.cat==='Зарплата и авансы').map(o=>({key:'ip:'+o.cls.ip,employee_id:o.cls.emp.id,note:o.cls.debtor||null}));
+      if(links.length)await q(sb.from('crm_bank_salary_links').upsert(links,{onConflict:'key'}));
       const learn={};fresh.filter(o=>o.cat!==o.cat0&&!['Перемещение','Зарплата и авансы'].includes(o.cat)).forEach(o=>{const k=(o.inn||o.cp)+'|'+o.dir;learn[k]={inn:o.inn,name:o.inn?null:o.cp,direction:o.dir,category:o.cat}});
       for(const r of Object.values(learn)){if(r.inn)await q(sb.from('crm_bank_rules').upsert(r,{onConflict:'inn,direction'}));else await q(sb.from('crm_bank_rules').insert(r))}
       closeModal();toast(`Загружено: ${rows.length}${auto.length?' · засчитано сотрудникам: '+auto.length:''}`);await loadRefs();render()})],true);
@@ -786,7 +805,7 @@ function allocForm(op,pre){
     document.querySelectorAll('[data-ae]').forEach(x=>x.onchange=()=>rows[+x.dataset.ae].emp=x.value);
     document.querySelectorAll('[data-aa]').forEach(x=>x.oninput=()=>{rows[+x.dataset.aa].amount=x.value;const s=rows.reduce((t,r)=>t+(+r.amount||0),0);$('#aSum').innerHTML=`Разнесено ${rub(s)} из ${rub(left)}${Math.abs(s-left)<0.01?' ✓':''}`;$('#aSum').style.color=Math.abs(s-left)<0.01?'var(--in)':'var(--out)'});
     document.querySelectorAll('[data-ax]').forEach(x=>x.onclick=()=>{rows.splice(+x.dataset.ax,1);if(!rows.length)rows.push({emp:'',amount:''});draw()})};
-  modal('Разнести выплату по сотрудникам',`<div class="card" style="padding:10px 12px;margin-bottom:10px;background:#f7f8fa">${fd(op.op_date)} · ${op.registry_no?'реестр №'+esc(op.registry_no):'перевод'} · <b>${rub(op.amount)}</b>${op.allocated?' · уже разнесено '+rub(op.allocated):''}</div>
+  modal('Разнести выплату по сотрудникам',`<div class="card" style="padding:10px 12px;margin-bottom:10px;background:#f7f8fa">${fd(op.op_date)} · ${op.registry_no?'реестр №'+esc(op.registry_no):fsspIp(op.comment)?'приставы, ИП '+esc(fsspIp(op.comment)):'перевод'} · <b>${rub(op.amount)}</b>${fsspIp(op.comment)?`<div class="muted" style="font-size:12px;margin-top:4px">${esc(op.comment)}<br>Удержание по исполнительному листу засчитывается сотруднику как выплаченная зарплата. Выберите его один раз — следующие платежи по этому ИП засчитаю сам.</div>`:''}${op.allocated?' · уже разнесено '+rub(op.allocated):''}</div>
     <div class="row2"><label class="f">Что это<select id="aK">${Object.entries(PAYK).map(([k,v])=>`<option value="${k}" ${op.pay_kind===k?'selected':''}>${v}</option>`).join('')}</select></label><label class="f">За месяц<input type="month" id="aM" value="${m0}"></label></div>
     <div id="aRows"></div><a id="aAdd" style="cursor:pointer;color:var(--accent);font-size:13px">+ ещё сотрудник</a>
     <div id="aSum" style="margin-top:10px;font-weight:600"></div><div class="err" id="aErr"></div>`,
@@ -795,6 +814,7 @@ function allocForm(op,pre){
       if(!ok.length){$('#aErr').textContent='Добавьте хотя бы одного сотрудника';return}
       if(s-left>0.009){$('#aErr').textContent='Разнесено больше суммы платежа';return}
       await q(sb.from('crm_salary_alloc').insert(ok.map(r=>({op_id:op.id,employee_id:r.emp,amount:+r.amount,pay_month:$('#aM').value+'-01',pay_kind:$('#aK').value,source:r.fio?'registry':'manual'}))));
+      const ip=fsspIp(op.comment);if(ip&&ok.length===1)await q(sb.from('crm_bank_salary_links').upsert({key:'ip:'+ip,employee_id:ok[0].emp},{onConflict:'key'}));
       for(const r of ok.filter(r=>r.fio)){const e=S.employees.find(e=>e.id===r.emp);if(e&&!e.full_name)await q(sb.from('crm_employees').update({full_name:r.fio}).eq('id',e.id))}
       closeModal();toast('Выплата разнесена');await loadRefs();vPay()})],true);
   $('#aAdd').onclick=()=>{rows.push({emp:'',amount:''});draw()};draw();
