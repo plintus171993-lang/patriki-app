@@ -1024,7 +1024,7 @@ async function vCost(){
   $('#view').innerHTML=`<div class="bar"><span class="muted">Данные из iiko, проверка каждую ночь · нажмите на позицию, чтобы открыть её техкарту · ${runTxt}</span><span class="sp"></span>
     <select id="cSec"><option value="all">Кухня и бар</option><option value="Кухня" ${costSec==='Кухня'?'selected':''}>Кухня</option><option value="Бар" ${costSec==='Бар'?'selected':''}>Бар</option></select>
     <label style="display:flex;gap:6px;align-items:center" class="muted"><input type="checkbox" id="cMut" ${costMuted?'checked':''}> скрытые</label>
-    ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn" id="cNew">＋ Техкарта с листочка</button><button class="btn pri" id="cRun">Проверить сейчас</button></div>
+    ${S.me.owner?'<button class="btn" id="cSet">Пороги</button>':''}<button class="btn" id="cNew">＋ Новая техкарта</button><button class="btn pri" id="cRun">Проверить сейчас</button></div>
   <div class="tabs">${Object.entries(COST_KIND).map(([k,[t]])=>`<a data-t="${k}">${t} <span class="pill ${cnt(k)?(vis.some(i=>i.kind===k&&i.severity==='crit')?'r':'y'):''}">${cnt(k)}</span></a>`).join('')}<a data-t="cards">Техкарты шефа</a><a data-t="inv">Инвентаризации</a></div>
   ${costTab==='inv'?invTable(inv,run):costTab==='cards'?cardsTable(cards):`<div class="muted" style="margin:-4px 0 10px;font-size:13px">${COST_KIND[costTab][1]}</div>
   ${rows.length?`<div class="tw" style="max-height:66vh"><table><thead><tr><th></th><th>Позиция</th><th>Раздел</th><th>Что не так</th><th>С</th><th></th></tr></thead><tbody>
@@ -1100,20 +1100,25 @@ const CARD_ST={draft:['черновик',''],approved:['утверждена —
 function cardsTable(cards){
   return `<div class="muted" style="margin:-4px 0 10px;font-size:13px">Шеф фотографирует листок — ИИ разбирает состав, подбирает товары iiko и потери при обработке, CRM считает брутто, себестоимость и фудкост. Утверждённую карту печатаете и заносите в iiko.</div>`+
   (cards.length?`<div class="tw"><table><thead><tr><th>Блюдо</th><th>Статус</th><th class="n">Себестоимость</th><th class="n">Цена</th><th class="n">Фудкост</th><th>Создана</th></tr></thead><tbody>
-  ${cards.map(c=>`<tr data-card="${c.id}" style="cursor:pointer"><td><b style="color:var(--accent)">${esc(c.name)}</b>${(c.notes||[]).length&&c.status==='draft'?` <span class="pill y">вопросов: ${c.notes.length}</span>`:''}</td><td><span class="pill ${CARD_ST[c.status][1]}">${CARD_ST[c.status][0]}</span></td><td class="n">${rub(c.cost)}</td><td class="n">${c.price?rub(c.price):'—'}</td><td class="n">${c.cost&&c.price?num(Math.round(c.cost/c.price*1000)/10)+'%':'—'}</td><td class="muted">${new Date(c.created_at).toLocaleDateString('ru-RU')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Техкарт пока нет. Нажмите «＋ Техкарта с листочка»</div>');
+  ${cards.map(c=>`<tr data-card="${c.id}" style="cursor:pointer"><td><b style="color:var(--accent)">${esc(c.name)}</b>${(c.notes||[]).length&&c.status==='draft'?` <span class="pill y">вопросов: ${c.notes.length}</span>`:''}</td><td><span class="pill ${CARD_ST[c.status][1]}">${CARD_ST[c.status][0]}</span></td><td class="n">${rub(c.cost)}</td><td class="n">${c.price?rub(c.price):'—'}</td><td class="n">${c.cost&&c.price?num(Math.round(c.cost/c.price*1000)/10)+'%':'—'}</td><td class="muted">${new Date(c.created_at).toLocaleDateString('ru-RU')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">Техкарт пока нет. Нажмите «＋ Новая техкарта»</div>');
 }
 async function costCatalog(){if(!S.cache.costCat)S.cache.costCat=(await callCost({action:'card_catalog'})).catalog;return S.cache.costCat}
-function shrinkImage(file){return new Promise((ok,bad)=>{const img=new Image();img.onload=()=>{const k=Math.min(1,1600/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);c.getContext('2d').drawImage(img,0,0,c.width,c.height);ok(c.toDataURL('image/jpeg',.85).split(',')[1])};img.onerror=()=>bad(new Error('не получилось открыть фото'));img.src=URL.createObjectURL(file)})}
 function cardNew(){
-  modal('Техкарта с листочка',`<label class="f">Фото листка<input type="file" id="nF" accept="image/*" capture="environment"></label>
-    <label class="f">…или текстом / дописать к фото<textarea id="nT" rows="5" style="width:100%" placeholder="Бургер Патрики: булка 1 шт, котлета говяжья 180 г (жарка), чеддер 2 ломтика, салат 15 г, соус BBQ 20 г"></textarea></label>
-    <div class="muted" style="font-size:12px">ИИ сверит состав с номенклатурой iiko и последними ценами прихода — около 30–60 секунд.</div><div class="err" id="nErr"></div>`,
-    [btn('Отмена','',closeModal),btn('Распознать','pri',async e=>{
-      const f=$('#nF').files[0],text=$('#nT').value.trim();if(!f&&!text){$('#nErr').textContent='Добавьте фото или текст';return}
-      e.target.disabled=true;e.target.textContent='Распознаю…';$('#nErr').textContent='';
-      try{const image=f?await shrinkImage(f):null;const d=await costJob('card_parse',{text,image,media:'image/jpeg'},s=>e.target.textContent='Распознаю… '+s+' с');S.cache.costCat=d.catalog;
+  // разбор без ИИ: строки состава → товары iiko по похожим названиям; ИИ подключается позже (action card_parse в cost-check)
+  modal('Новая техкарта',`<label class="f">Блюдо<input id="nN" placeholder="Например: Виски сауэр (можно не заполнять)"></label>
+    <label class="f">Состав — каждый ингредиент с новой строки<textarea id="nT" rows="7" style="width:100%" placeholder="Джим бим 40 мл
+сок лимона 20 мл
+сахарный сироп 20 мл
+котлета говяжья 180 г (жарка)
+чеддер 2 ломтика"></textarea></label>
+    <div class="muted" style="font-size:12px">CRM подберёт товары из номенклатуры iiko и посчитает себестоимость по последним ценам прихода. Где не уверена — подсветит строку, товар выберете из списка.</div><div class="err" id="nErr"></div>`,
+    [btn('Отмена','',closeModal),btn('Разобрать','pri',async e=>{
+      const text=$('#nT').value.trim(),name=$('#nN').value.trim();if(!text){$('#nErr').textContent='Напишите состав';return}
+      e.target.disabled=true;e.target.textContent='Разбираю…';$('#nErr').textContent='';
+      try{const d=await callCost({action:'card_text',text,name});S.cache.costCat=d.catalog;
         cardEdit({...d.card,status:'draft',venue_id:S.venue==='all'?'petrogradka':S.venue})}
-      catch(err){$('#nErr').textContent='Не получилось: '+err.message;e.target.disabled=false;e.target.textContent='Распознать'}})]);
+      catch(err){$('#nErr').textContent='Не получилось: '+err.message;e.target.disabled=false;e.target.textContent='Разобрать'}})]);
+  setTimeout(()=>$('#nT')&&$('#nT').focus(),50);
 }
 // пересчёт строки: количество с листка → в единицах iiko; нетто ↔ брутто через потери
 function cardCalc(it){
@@ -1155,7 +1160,7 @@ async function cardEdit(c){
      <div class="tw" style="max-height:48vh"><table><thead><tr><th>На листке</th><th>Товар iiko</th><th>Количество</th><th>Обработка</th><th>Хол., %</th><th>Гор., %</th><th class="n">Брутто</th><th class="n">Цена за ед.</th><th class="n">Сумма</th><th></th></tr></thead><tbody>${rows}
      <tr class="tot"><td colspan="6">${ro?'':'<a id="kAdd" style="cursor:pointer;color:var(--accent)">+ строка</a>'}${miss?` <span style="color:var(--out);font-weight:400">· ${miss} строк без цены — себестоимость неполная</span>`:''}</td><td class="n">${card._out?'≈ '+card._out+' г':''}</td><td></td><td class="n">${rub(total)}</td><td></td></tr></tbody></table></div>
      <div style="margin-top:10px;font-size:15px">Себестоимость <b>${rub(total)}</b>${fc!=null?` · фудкост <b style="color:${fc>35?'var(--out)':'var(--in)'}">${Math.round(fc*10)/10}%</b>`:' · укажите цену продажи, чтобы посчитать фудкост'}</div>
-     ${card.source_text?`<details style="margin-top:8px"><summary class="muted">Что распознано с листка</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(card.source_text)}</pre></details>`:''}<div class="err" id="kErr"></div>`;
+     ${card.source_text?`<details style="margin-top:8px"><summary class="muted">Что написал шеф</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(card.source_text)}</pre></details>`:''}<div class="err" id="kErr"></div>`;
     $('#mBody').querySelectorAll('[data-f]').forEach(el=>el.onchange=()=>{const it=card.items[+el.dataset.i],f=el.dataset.f;
       if(f==='product'){const g=byName.get(el.value.trim());if(g){it.product_id=g.id;it.product_name=g.name;it.unit=g.unit;it.price=g.price;it.price_at=g.at;it.note=null}else{it.product_id=null;it.product_name=el.value.trim()}}
       else it[f]=['qty','loss_cold','loss_hot'].includes(f)?+el.value:el.value;draw()});
