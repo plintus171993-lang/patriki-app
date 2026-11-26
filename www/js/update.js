@@ -1,7 +1,9 @@
 // Обновление приложения без переустановки.
 // Android-приложение (APK) открывает сайт patrikipab.ru внутри себя (capacitor.config: server.url),
 // поэтому при каждом запуске гость получает свежую версию — как на сайте.
-// Если приложение долго было открыто, а за это время вышла новая сборка, — подсказка «Обновить» (перезагрузка).
+// Новая веб-сборка ставится тихо, без вопросов: сразу при запуске (первые секунды) или,
+// если гость уже пользуется приложением, — в момент, когда он его свернёт. Окно показываем
+// только когда нужна новая APK / версия из магазина (меняется нативная часть) — это редко.
 // Если изменилась нативная часть (разрешения, плагины) — update.json: apk_min, и мы предложим скачать новый APK.
 
 const LATEST_URL = 'https://patrikipab.ru/update/latest.json';
@@ -21,6 +23,10 @@ const STORE_PAGE = { rustore: 'https://www.rustore.ru/catalog/app/ru.patriki.pub
 let lastCheck = 0;
 let shownFor = 0;      // для какой сборки уже показали окно в этом запуске
 let busy = false;
+let pending = null;    // найденная новая сборка, которую поставим, когда приложение свернут
+let forceNow = false;  // кнопка «Проверить обновления» — ставим сразу
+const STARTED = Date.now();
+const QUIET_START = 20000; // первые 20 секунд после запуска гость ещё ничего не начал — можно перезагрузить
 
 /** Оставлено для совместимости (раньше подтверждало рабочую версию плагину обновлений). */
 export function markReady() {}
@@ -28,7 +34,10 @@ export function markReady() {}
 export function startUpdateChecks() {
   if (!BUILD) return; // локальная разработка — проверять нечего
   setTimeout(check, 4000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (pending && !routeBusy(true)) applyWeb(); }
+    else check();
+  });
   try { AppPlugin && AppPlugin.addListener('resume', () => check()); } catch { /* нет плагина App */ }
 }
 
@@ -58,7 +67,8 @@ let lastError = '';
 
 /** Кнопка «Проверить обновления» на экране «Информация». */
 export async function checkNow() {
-  const r = await check(true);
+  forceNow = true;
+  const r = await check(true).finally(() => { forceNow = false; });
   if (r === 'latest') return { ok: true, text: `У вас последняя версия (сборка ${BUILD})` };
   if (r === 'update') return { ok: true, text: '' };
   if (r === 'busy') return { ok: true, text: 'Уже проверяем…' };
@@ -86,30 +96,37 @@ async function nativeUpdate(L) {
   webPrompt(L);
 }
 
+// Веб-обновление — без окна: сразу, если приложение только открыли, иначе — когда его свернут.
+let lastSeen = 0;
 function webPrompt(L) {
-  if (shownFor === L.build) return;
-  shownFor = L.build;
-  sheet({
-    title: 'Есть новая версия',
-    text: `Версия ${esc(L.version || '')}. Обновление займёт пару секунд — корзина и вход сохранятся.`,
-    notes: L.notes,
-    ok: 'Обновить',
-    later: 'Позже',
-    onOk: async () => {
-      // Новая версия скачивается в память телефона (service worker) — ждём, пока она встанет,
-      // иначе после перезагрузки откроется старая копия. Не дольше 15 секунд.
-      try {
-        const sw = navigator.serviceWorker;
-        const reg = await sw?.getRegistration();
-        if (reg) {
-          const switched = new Promise((res) => sw.addEventListener('controllerchange', res, { once: true }));
-          await reg.update();
-          if (reg.installing || reg.waiting) await Promise.race([switched, new Promise((r) => setTimeout(r, 15000))]);
-        }
-      } catch { /* ignore */ }
-      location.reload();
-    },
-  });
+  lastSeen = L.build;
+  if (forceNow || (Date.now() - STARTED < QUIET_START && !routeBusy(true))) { applyWeb(); return; }
+  pending = L;
+}
+
+let applying = false;
+async function applyWeb() {
+  if (applying) return;
+  // защита от бесконечной перезагрузки: одну и ту же сборку пробуем поставить не чаще раза в 10 минут
+  try {
+    const t = JSON.parse(sessionStorage.getItem('pk_upd_try') || 'null');
+    const want = pending ? pending.build : lastSeen;
+    if (!forceNow && t && t.b === want && Date.now() - t.at < 10 * 60 * 1000) return;
+    sessionStorage.setItem('pk_upd_try', JSON.stringify({ b: want, at: Date.now() }));
+  } catch { /* приватный режим — без защиты */ }
+  applying = true;
+  // Новая версия скачивается в память телефона (service worker) — ждём, пока она встанет,
+  // иначе после перезагрузки откроется старая копия. Не дольше 15 секунд.
+  try {
+    const sw = navigator.serviceWorker;
+    const reg = await sw?.getRegistration();
+    if (reg) {
+      const switched = new Promise((res) => sw.addEventListener('controllerchange', res, { once: true }));
+      await reg.update();
+      if (reg.installing || reg.waiting) await Promise.race([switched, new Promise((r) => setTimeout(r, 15000))]);
+    }
+  } catch { /* ignore */ }
+  location.reload();
 }
 
 function storeSheet(L) {
@@ -136,9 +153,9 @@ function apkSheet(L) {
 
 // не перебиваем оформление заказа, оплату и ввод кода — покажем позже
 const BUSY_ROUTES = ['/checkout', '/verify', '/pay', '/booking'];
-function routeBusy() {
+function routeBusy(routesOnly = false) {
   const h = (location.hash || '').replace(/^#/, '');
-  return BUSY_ROUTES.some((r) => h.startsWith(r)) || !!document.querySelector('.sheet-wrap');
+  return BUSY_ROUTES.some((r) => h.startsWith(r)) || (!routesOnly && !!document.querySelector('.sheet-wrap'));
 }
 
 function sheet(o) {
