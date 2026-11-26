@@ -410,7 +410,60 @@ function LoyaltyEditor() {
     <p class="error" role="alert" style="margin:0"></p>
     <button type="submit" class="btn btn-accent">Сохранить правила</button>
     <p class="muted" style="font-size:12px;margin:0;line-height:1.6">Пример: «Гость 0 ₽ — 5%», «Завсегдатай от 5 000 ₽ — 10%», «Свой человек от 15 000 ₽ — 15%». Процент берётся по уровню на момент покупки. Изменения сразу действуют для всех гостей.</p>
+  </form>
+  ${LunchEditor()}`;
+}
+
+/* ---------- ланч-карта: каждый N-й ланч в подарок (отдельно от баллов) ---------- */
+function LunchEditor() {
+  const { esc } = ctx;
+  if (A.lunch === undefined) { A.lunch = null; Promise.all([store.lunchSettings(), store.lunchStats()]).then(([l, s]) => { A.lunch = l; A.lunchStats = s; if (A.tab === 'loyalty') draw(); }).catch((e) => console.error(e)); }
+  const L = A.lunch;
+  if (!L) return '<div class="empty" style="margin-top:24px">Загружаем ланч-карту…</div>';
+  const S = A.lunchStats || {};
+  return `<form id="lunch-form" class="stack" style="gap:16px;max-width:760px;margin-top:32px">
+    <h2 class="h2" style="margin:0">Ланч-карта</h2>
+    <div class="grid-2">
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Ланчей по акции за 30 дней</span><b style="font-size:22px">${esc(S.stamps ?? 0)}</b></div>
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Подарено за 30 дней</span><b style="font-size:22px">${esc(S.gifts ?? 0)}</b></div>
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Гостей с ланчами за 30 дней</span><b style="font-size:22px">${esc(S.guests ?? 0)}</b></div>
+      <div class="card stack" style="gap:2px"><span class="muted" style="font-size:12px">Ждут подарка сейчас</span><b style="font-size:22px">${esc(S.ready ?? 0)}</b></div>
+    </div>
+    <section class="card stack" style="gap:14px">
+      <div class="between" style="gap:16px"><span class="stack" style="gap:2px"><span>Акция включена</span><span class="muted" style="font-size:12px">гости видят ланч-карту в приложении, касса ставит штампы</span></span>
+        <button type="button" class="switch" role="switch" data-a="loy-sw" data-v="lunch_enabled" aria-checked="${!!L.enabled}" aria-label="Акция включена"></button></div>
+      <label class="field">Название (видно гостю)<input class="input" name="title" value="${esc(L.title || '')}"></label>
+      <div class="grid-2">
+        <label class="field">Каждый какой ланч в подарок<input class="input" name="goal" inputmode="numeric" value="${esc(L.goal)}"></label>
+        <label class="field">Штампов в день на гостя <span class="muted" style="font-size:12px">0 — без ограничения</span><input class="input" name="max_per_day" inputmode="numeric" value="${esc(L.max_per_day)}"></label>
+        <label class="field">Штампы сгорают без ланчей, дней <span class="muted" style="font-size:12px">пусто — не сгорают</span><input class="input" name="expire_days" inputmode="numeric" value="${esc(L.expire_days ?? '')}"></label>
+      </div>
+      <label class="field">Какие позиции iiko считаются ланчем <span class="muted" style="font-size:12px">id позиций, по одному в строке; сейчас — «Ланч» 590 ₽</span>
+        <textarea class="textarea" name="product_ids" style="font-family:monospace;font-size:12px">${esc((L.product_ids || []).join('\n'))}</textarea></label>
+      <label class="field">Дополнительные условия (видны гостю)<textarea class="textarea" name="rules_text" placeholder="Например: акция действует по будням">${esc(L.rules_text || '')}</textarea></label>
+    </section>
+    <p class="error" role="alert" style="margin:0"></p>
+    <button type="submit" class="btn btn-accent">Сохранить ланч-карту</button>
+    <p class="muted" style="font-size:12px;margin:0;line-height:1.6">Гость показывает QR из приложения, бармен нажимает «Карта Патрики» — после закрытия чека с ланчем ставится штамп. На ${esc(L.goal)}-й раз касса предлагает «Ланч в подарок» (скидка «Ланч в подарок» в iiko). Баллы за ланчи начисляются как обычно.</p>
   </form>`;
+}
+async function onLunchSubmit(e) {
+  const f = e.target; e.preventDefault();
+  const d = Object.fromEntries(new FormData(f));
+  const n = (v) => parseInt(String(v).replace(/\D/g, ''), 10);
+  const st = {
+    ...A.lunch,
+    enabled: f.querySelector('[data-v=lunch_enabled]').getAttribute('aria-checked') === 'true',
+    title: (d.title || '').trim() || 'Ланч в подарок',
+    goal: Math.min(20, Math.max(2, n(d.goal) || 5)),
+    max_per_day: Math.max(0, n(d.max_per_day) || 0),
+    expire_days: n(d.expire_days) > 0 ? n(d.expire_days) : null,
+    product_ids: String(d.product_ids || '').split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean),
+    rules_text: (d.rules_text || '').trim() || null,
+  };
+  if (!st.product_ids.length) return (f.querySelector('.error').textContent = 'Укажите хотя бы одну позицию-ланч');
+  try { await store.saveLunchSettings(st); A.lunch = st; draw(); ctx.toast('Ланч-карта сохранена'); }
+  catch (ex) { console.error(ex); f.querySelector('.error').textContent = 'Не удалось сохранить: ' + (ex.message || ''); }
 }
 function readLoyForm(f) {
   const d = Object.fromEntries(new FormData(f));
@@ -778,6 +831,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.
 document.addEventListener('submit', (e) => {
   if (!location.hash.startsWith('#/admin')) return;
   if (e.target.id === 'loy-form') return onLoyaltySubmit(e);
+  if (e.target.id === 'lunch-form') return onLunchSubmit(e);
   if (e.target.id === 'cash-find' || e.target.id === 'cash-go') return onCashSubmit(e);
   if (e.target.classList?.contains('fb-reply')) return onFbReply(e);
   onVenueSubmit(e);

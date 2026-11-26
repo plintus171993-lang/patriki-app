@@ -302,6 +302,10 @@ function Home() {
     ${`<a class="card card-link between loy-home" href="#/card">
       <div class="stack" style="gap:4px"><span class="eyebrow">Карта гостя${S.loy?.tier ? ` · ${esc(S.loy.tier.name)} ${esc(S.loy.tier.pct)}%` : ''}</span><span style="font-size:15px;font-weight:600">${S.loy && S.loy.settings?.enabled ? `${pts(S.loy.balance)} ${ptsWord(S.loy.balance)}` : 'Баллы за заказы и визиты'}</span></div>
       <span class="row muted" style="font-size:13px">QR ${icon.chev}</span></a>`}
+    ${lunchOn() ? `<a class="card card-link stack lunch-home" href="#/card" style="gap:8px">
+      <div class="between"><span class="eyebrow">Ланч-карта · ${esc(Math.min(S.lunch.stamps, S.lunch.goal - 1))} из ${esc(S.lunch.goal - 1)}</span><span class="row muted">${icon.chev}</span></div>
+      ${lunchStamps(S.lunch, 26)}
+      <span style="font-size:14px;font-weight:600">${lunchLine(S.lunch)}</span></a>` : ''}
     ${hits.length ? `<section class="stack" style="gap:12px">
       <div class="between"><h2 class="h2">Хиты паба</h2><a href="#/menu" style="font-size:13px;text-decoration:none">Всё меню</a></div>
       <div class="hscroll">${hits.map((x) => `<button type="button" class="mini" data-act="open" data-id="${esc(x.id)}">
@@ -1264,6 +1268,7 @@ async function loadLoyalty() {
   if (!S.loy) S.loy = false;                        // первая загрузка
   try { S.loy = await store.myLoyalty(); S.loyAt = Date.now(); } catch (e) { console.warn('Карта гостя не загрузилась', e); S.loy = null; return; }
   finally { loyLoading = false; }
+  try { S.lunch = await store.myLunch(); } catch (e) { console.warn('Ланч-карта не загрузилась', e); S.lunch = null; }
   if (['/', '/profile', '/card', '/checkout'].includes(route())) render();
 }
 const loyActive = () => S.loy && S.loy.settings?.enabled && (!S.loy.settings.verified_only || S.loy.verified);
@@ -1271,6 +1276,35 @@ const pts = (n) => `${Number(n || 0).toLocaleString('ru-RU')}`;
 const ptsWord = (n) => { n = Math.abs(n) % 100; const d = n % 10; return n > 10 && n < 20 ? 'баллов' : d === 1 ? 'балл' : d >= 2 && d <= 4 ? 'балла' : 'баллов'; };
 const LOY_KIND = { accrue: 'Начислено', pending: 'Начислится', redeem: 'Списано', refund: 'Возврат', bonus: 'Бонус', adjust: 'Корректировка', expire: 'Сгорело', reverse: 'Отмена начисления', import: 'Перенос с прежней карты' };
 const LOY_SRC = { app: 'заказ в приложении', venue: 'в пабе', pos: 'касса', admin: 'управляющий', system: '' };
+
+/* ---------- ланч-карта: каждый N-й ланч в подарок ---------- */
+const lunchOn = () => S.lunch && S.lunch.enabled;
+const lunchWord = (n) => { n = Math.abs(n) % 100; const d = n % 10; return n > 10 && n < 20 ? 'ланчей' : d === 1 ? 'ланч' : d >= 2 && d <= 4 ? 'ланча' : 'ланчей'; };
+// goal−1 кружков за оплаченные ланчи + последний — подарок
+function lunchStamps(L, size = 34) {
+  const goal = L.goal || 5, have = Math.min(L.stamps || 0, goal - 1);
+  return `<div class="lunch-stamps" role="img" aria-label="${have} из ${goal - 1} ланчей, ${goal}-й в подарок">${Array.from({ length: goal }, (_, i) => {
+    const gift = i === goal - 1, on = gift ? L.ready : i < have;
+    return `<span class="lunch-stamp${on ? ' on' : ''}${gift ? ' gift' : ''}" style="width:${size}px;height:${size}px">${gift ? '🎁' : on ? '✓' : ''}</span>`;
+  }).join('')}</div>`;
+}
+const lunchLine = (L) => L.ready ? 'Следующий ланч — в подарок!' : `До бесплатного ланча: ${L.left} ${lunchWord(L.left)} (${L.left - 1 > 0 ? `${L.left - 1} оплатить, ` : ''}${L.goal}-й — бесплатно)`;
+function LunchCard() {
+  const L = S.lunch;
+  if (!lunchOn()) return '';
+  const hist = (L.history || []).slice(0, 6);
+  const KIND = { stamp: 'Ланч', gift: 'Ланч в подарок', expire: 'Штампы сгорели', adjust: 'Корректировка' };
+  return `<section class="card stack lunch-card" id="lunch" style="gap:10px">
+    <div class="between"><span class="eyebrow accent">Ланч-карта</span><span class="muted" style="font-size:12px">${esc(Math.min(L.stamps, L.goal - 1))} из ${esc(L.goal - 1)}</span></div>
+    <b style="font-size:17px">${esc(L.title || `Каждый ${L.goal}-й ланч в подарок`)}</b>
+    ${lunchStamps(L)}
+    <span style="font-size:15px;font-weight:600;color:${L.ready ? 'var(--ok)' : 'var(--text)'}">${lunchLine(L)}</span>
+    <span class="muted" style="font-size:12px;line-height:1.6">Покажите QR-код ниже бармену, когда берёте ланч — штамп поставится сам.${L.max_per_day ? ` Засчитывается ${L.max_per_day} ${lunchWord(L.max_per_day)} в день.` : ''}${L.expire_days ? ` Штампы сгорают, если ${esc(L.expire_days)} дней не было ланчей.` : ''}${L.rules_text ? ' ' + esc(L.rules_text) : ''}</span>
+    ${hist.length ? `<div class="menu-group">${hist.map((h) => `<div class="menu-row" style="cursor:default"><span class="stack" style="gap:2px"><span>${KIND[h.kind] || esc(h.kind)}${h.status === 'held' ? ' · оформляется' : ''}</span>
+      <span class="muted" style="font-size:12px">${new Date(h.created_at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}${h.venue ? ` · ${esc(h.venue)}` : ''}</span></span>
+      <b style="color:${h.qty > 0 ? 'var(--ok)' : 'var(--text-2)'}">${h.kind === 'gift' ? '🎁' : (h.qty > 0 ? '+' : '') + esc(h.qty)}</b></div>`).join('')}</div>` : ''}
+  </section>`;
+}
 
 function GuestCard() {
   const L = S.loy;
@@ -1292,6 +1326,7 @@ function GuestCard() {
       ${L.pending ? `<span class="muted" style="font-size:12px">+${pts(L.pending)} ${ptsWord(L.pending)} ещё в пути — начислятся через ${esc(st.accrue_delay_days || 0)} дн. после покупки</span>` : ''}
       <span class="loy-no">№ ${esc(String(L.card_no).replace(/(\d{4})(\d{4})/, '$1 $2'))}</span>
     </section>
+    ${LunchCard()}
     ${locked ? `<div class="card stack"><b>Подтвердите номер — и баллы начнут копиться</b>
         <span class="muted" style="font-size:13px;line-height:1.5">Так мы защищаем баллы от чужих рук: карта привязывается к вашему телефону.</span>
         <a class="btn btn-accent btn-sm" href="#/verify" style="align-self:flex-start">Подтвердить номер</a></div>`
