@@ -1278,7 +1278,9 @@ const LOY_KIND = { accrue: 'Начислено', pending: 'Начислится'
 const LOY_SRC = { app: 'заказ в приложении', venue: 'в пабе', pos: 'касса', admin: 'управляющий', system: '' };
 
 /* ---------- ланч-карта: каждый N-й ланч в подарок ---------- */
-const lunchOn = () => S.lunch && S.lunch.enabled;
+// ланч-карта показывается только тем, кто уже брал ланч по акции (первый штамп «открывает» карту)
+const lunchOn = () => !!(S.lunch && S.lunch.enabled &&
+  ((S.lunch.paid_total || 0) > 0 || (S.lunch.stamps || 0) > 0 || (S.lunch.gifts_total || 0) > 0 || (S.lunch.held || 0) > 0));
 const lunchWord = (n) => { n = Math.abs(n) % 100; const d = n % 10; return n > 10 && n < 20 ? 'ланчей' : d === 1 ? 'ланч' : d >= 2 && d <= 4 ? 'ланча' : 'ланчей'; };
 // goal−1 кружков за оплаченные ланчи + последний — подарок
 function lunchStamps(L, size = 34) {
