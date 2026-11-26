@@ -545,6 +545,31 @@ export const store = {
     if (error) throw error;
     return data;
   },
+  // ланч-карта (031-lunch.sql): каждый N-й ланч в подарок
+  async myLunch() {
+    if (this.demo) return { enabled: false };
+    await this.whenGuest();
+    const { data, error } = await sb.rpc('my_lunch');
+    if (error) throw error;
+    return data;
+  },
+  async lunchSettings() {
+    if (this.demo) return null;
+    const { data, error } = await sb.from('lunch_settings').select('*').eq('id', 1).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+  async saveLunchSettings(st) {
+    const row = { ...st }; delete row.id; delete row.updated_at;
+    const { error } = await sb.from('lunch_settings').update({ ...row, updated_at: new Date().toISOString() }).eq('id', 1);
+    if (error) throw error;
+    return row;
+  },
+  async lunchStats() {
+    if (this.demo) return {};
+    const { data } = await sb.rpc('lunch_stats');
+    return data || {};
+  },
   async loyaltySettings() {
     if (this.demo) return { ...DEFAULT_SETTINGS, ...LS.get('loy_settings', {}) };
     const { data, error } = await sb.from('loyalty_settings').select('*').eq('id', 1).maybeSingle();

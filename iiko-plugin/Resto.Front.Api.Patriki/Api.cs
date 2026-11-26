@@ -25,6 +25,35 @@ namespace Resto.Front.Api.Patriki
         public string TierText;
         public bool Legacy;
         public int MaxRedeemPct;
+        public LunchInfo Lunch = new LunchInfo();
+    }
+
+    /// <summary>Ланч-карта гостя (2.0): goal−1 оплаченных ланчей → goal-й в подарок.</summary>
+    internal sealed class LunchInfo
+    {
+        public bool Enabled;
+        public int Stamps;
+        public int Goal;
+        public bool Ready;
+        public int Left;
+        public HashSet<string> ProductIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public string Text => !Enabled ? "" : Ready
+            ? $"Ланч-карта: {Stamps} из {Goal - 1} — ЭТОТ ЛАНЧ В ПОДАРОК!"
+            : $"Ланч-карта: {Stamps} из {Goal - 1}, бесплатный ланч через {Left}";
+
+        internal static LunchInfo From(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var l = new LunchInfo();
+            if (d == null) return l;
+            l.Enabled = d.TryGetValue("enabled", out var e) && e is bool eb && eb;
+            l.Ready = d.TryGetValue("ready", out var r) && r is bool rb && rb;
+            l.Stamps = Api.IntOf(d, "stamps"); l.Goal = Api.IntOf(d, "goal"); l.Left = Api.IntOf(d, "left");
+            if (d.TryGetValue("product_ids", out var p) && p is System.Collections.IEnumerable list && !(p is string))
+                foreach (var x in list) if (x != null) l.ProductIds.Add(Convert.ToString(x));
+            return l;
+        }
     }
 
     internal sealed class RedeemResult
@@ -53,6 +82,8 @@ namespace Resto.Front.Api.Patriki
         public List<CloseItem> Items { get; set; } = new List<CloseItem>();
         // "done" — заказ доставки из приложения закрыт (в очередь, если нет связи)
         public string Kind { get; set; }
+        // 2.0: в заказе осталась скидка «Ланч в подарок» (null — подарка не было)
+        public bool? LunchGift { get; set; }
 
         public static CloseRequest FromOrder(IOrder order, string code, string venue)
         {
@@ -104,7 +135,7 @@ namespace Resto.Front.Api.Patriki
 
         public static GuestInfo Lookup(string code)
         {
-            var d = Post(new Dictionary<string, object> { ["action"] = "front-lookup", ["code"] = code });
+            var d = Post(new Dictionary<string, object> { ["action"] = "front-lookup", ["code"] = code, ["lunch"] = true });
             var tier = d.TryGetValue("tier", out var t) ? t as Dictionary<string, object> : null;
             var tierName = tier != null && tier.TryGetValue("name", out var tn) ? Convert.ToString(tn) : "";
             var tierPct = tier != null && tier.TryGetValue("pct", out var tp) ? Convert.ToString(tp, CultureInfo.InvariantCulture) : "";
@@ -116,7 +147,25 @@ namespace Resto.Front.Api.Patriki
                 TierText = string.IsNullOrEmpty(tierName) ? "" : $"{tierName} {tierPct}%",
                 Legacy = d.TryGetValue("legacy", out var l) && l is bool b && b,
                 MaxRedeemPct = Int(d, "max_redeem_pct"),
+                Lunch = LunchInfo.From(d.TryGetValue("lunch", out var lu) ? lu : null),
             };
+        }
+
+        /// <summary>«Ланч в подарок»: сервер списывает штампы по свежему QR и держит подарок за заказом.</summary>
+        public static string LunchGift(string qr, Guid orderId)
+        {
+            var d = Post(new Dictionary<string, object>
+            {
+                ["action"] = "front-lunch-gift", ["code"] = qr, ["venue"] = Config.Current.Venue, ["order_id"] = orderId.ToString(),
+            });
+            return Str(d, "id");
+        }
+
+        /// <summary>Вернуть штампы (скидку «Ланч в подарок» убрали или заказ удалён).</summary>
+        public static bool LunchGiftCancel(string id)
+        {
+            var d = Post(new Dictionary<string, object> { ["action"] = "front-lunch-gift-cancel", ["id"] = id });
+            return d.TryGetValue("returned", out var r) && r is bool b && b;
         }
 
         /// <summary>Оплата баллами: сервер сразу списывает баллы по свежему QR и держит их за заказом iiko.</summary>
@@ -169,6 +218,7 @@ namespace Resto.Front.Api.Patriki
                     ["id"] = r.OrderId,
                     ["number"] = r.Number,
                     ["sum"] = r.Sum,
+                    ["lunchGift"] = r.LunchGift,
                     ["items"] = r.Items.Select(i => new Dictionary<string, object>
                     {
                         ["productId"] = i.ProductId,
@@ -257,6 +307,7 @@ namespace Resto.Front.Api.Patriki
         }
 
         private static string Str(Dictionary<string, object> d, string k) => d.TryGetValue(k, out var v) && v != null ? Convert.ToString(v) : null;
+        internal static int IntOf(Dictionary<string, object> d, string k) => Int(d, k);
         private static int Int(Dictionary<string, object> d, string k)
         {
             if (!d.TryGetValue(k, out var v) || v == null) return 0;
@@ -282,6 +333,8 @@ namespace Resto.Front.Api.Patriki
         // Тип оплаты iiko для оплаты баллами (1.7): если такой тип оплаты есть — баллы проводятся ОПЛАТОЙ
         // (видно отдельной строкой в отчёте 48 «Итого по смене»), иначе — по-старому скидкой RedeemDiscount
         public string RedeemPayment { get; set; } = "Баллы Патрики";
+        // 2.0: скидка iiko «на произвольную сумму» для бесплатного ланча (ланч-карта)
+        public string LunchGiftDiscount { get; set; } = "Ланч в подарок";
 
         public bool IsReady => !string.IsNullOrWhiteSpace(PosKey) && !string.IsNullOrWhiteSpace(ApiUrl);
 

@@ -275,6 +275,12 @@ img { display: block; max-width: 100%; }
 .loy-balance small { font-size: 16px; color: var(--text-2); font-weight: 500; }
 .loy-prog { height: 6px; border-radius: 3px; background: rgba(242,239,232,.12); overflow: hidden; }
 .loy-prog span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+/* ланч-карта: штампы */
+.lunch-stamps { display: flex; gap: 8px; flex-wrap: wrap; }
+.lunch-stamp { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 2px dashed var(--line); color: var(--bg); font-weight: 700; font-size: 15px; }
+.lunch-stamp.on { border: 2px solid var(--accent); background: var(--accent); }
+.lunch-stamp.gift { border-style: solid; border-color: var(--accent); font-size: 16px; }
+.lunch-stamp.gift.on { background: var(--ok); border-color: var(--ok); }
 .loy-no { font-family: var(--display); letter-spacing: 3px; color: var(--text-2); font-size: 14px; }
 .loy-qr { background: #fff; padding: 10px; border-radius: 16px; line-height: 0; }
 .loy-qr svg { width: 220px; height: 220px; }

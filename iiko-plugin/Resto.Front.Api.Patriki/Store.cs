@@ -17,6 +17,8 @@ namespace Resto.Front.Api.Patriki
         // Оплата баллами на кассе: id списаний на сервере и сколько баллов уже применено скидкой
         public List<string> RedeemIds { get; set; } = new List<string>();
         public int Redeemed { get; set; }
+        // 2.0: «Ланч в подарок» — id подарка на сервере (ланч-карта)
+        public string LunchGiftId { get; set; }
     }
 
     /// <summary>Какой гость привязан к какому открытому заказу (переживает перезапуск кассы).</summary>

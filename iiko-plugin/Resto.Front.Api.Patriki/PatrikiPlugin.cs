@@ -16,6 +16,7 @@ namespace Resto.Front.Api.Patriki
     /// «Карта Патрики»: бармен сканирует QR гостя из приложения «Патрики», при закрытии заказа
     /// плагин отправляет чек на сервер лояльности, сервер начисляет баллы.
     /// Оплата баллами: по QR гостя баллы списываются и в заказ добавляется оплата «Баллы Патрики» (1.7; если такого типа оплаты нет — скидка, как раньше).
+    /// Ланч-карта (2.0): за ланчи в чеке гостю ставятся штампы (сервер, по позициям чека); набрал — ланч в подарок скидкой «Ланч в подарок».
     /// Заказ доставки из приложения (стол «Доставка») при закрытии отмечается выполненным — гостю начисляются баллы.
     /// На главной кассе ("Inbox": true) ещё и показывает заявки из приложения — брони и доставку (Inbox.cs).
     /// Установка: папка Plugins\Resto.Front.Api.Patriki рядом с iikoFront.exe.
@@ -97,16 +98,17 @@ namespace Resto.Front.Api.Patriki
                 }
 
                 var bound = Store.GetGuest(order.Id);
-                if (bound != null && bound.Redeemed > 0)
+                if (bound != null && (bound.Redeemed > 0 || bound.LunchGiftId != null))
                 {
-                    // гость уже оплатил часть баллами — менять гостя можно только отменив оплату баллами
+                    // гость уже оплатил часть баллами / получил ланч в подарок — менять гостя можно только отменив это
+                    var what = string.Join(" и ", new[] { bound.Redeemed > 0 ? $"оплата баллами ({bound.Redeemed})" : null, bound.LunchGiftId != null ? "ланч в подарок" : null }.Where(x => x != null));
                     if (!vm.ShowYesNoPopup(Sender,
-                        $"К заказу привязан гость: {bound.Name}. Оплачено баллами: {bound.Redeemed}.\n\nОтменить оплату баллами (оплата баллами уберётся из заказа, баллы вернутся гостю) и отвязать гостя?"))
+                        $"К заказу привязан гость: {bound.Name}. В заказе: {what}.\n\nОтменить (скидки уберутся из заказа, баллы и штампы вернутся гостю) и отвязать гостя?"))
                         return;
-                    vm.ChangeProgressBarMessage("Возвращаем баллы…");
+                    vm.ChangeProgressBarMessage("Возвращаем баллы и штампы…");
                     var back = CancelRedeem(order, os, vm, bound);
                     Store.RemoveGuest(order.Id);
-                    vm.ShowOkPopup(Sender, $"Оплата баллами отменена, гостю возвращено {back} баллов. Гость отвязан от заказа.");
+                    vm.ShowOkPopup(Sender, $"Отменено{(back > 0 ? $", гостю возвращено {back} баллов" : "")}. Гость отвязан от заказа.");
                     return;
                 }
                 if (bound != null)
@@ -159,7 +161,10 @@ namespace Resto.Front.Api.Patriki
                 Store.SetGuest(order.Id, guest);
 
                 var info = $"{g.Name}\nУровень: {g.TierText}\nБаланс: {g.Balance} баллов" +
-                    (g.Legacy ? "\n(старая карта — приложение ещё не установлено)" : "");
+                    (g.Legacy ? "\n(старая карта — приложение ещё не установлено)" : "") +
+                    (g.Lunch.Enabled ? "\n" + g.Lunch.Text : "");
+                // 2.0: ланч-карта — сначала подарок (уменьшает чек), потом баллы
+                info += OfferLunchGift(order, os, vm, code, g, guest);
                 if (!OfferRedeem(order, os, vm, code, g, guest, info))
                     vm.ShowOkPopup(Sender, info + "\n\nГость привязан к заказу. Баллы начислятся после закрытия.");
             }
@@ -185,6 +190,66 @@ namespace Resto.Front.Api.Patriki
             var chars = code.Trim().Where(c => !char.IsWhiteSpace(c)).Select(c => map.TryGetValue(c, out var m) ? m : c).ToArray();
             return new string(chars);
         }
+
+        /* ---------------- ланч-карта: каждый N-й ланч в подарок (2.0) ---------------- */
+
+        /// <summary>Предложить «Ланч в подарок», если гость набрал штампы и в заказе есть ланч. Возвращает строку для итогового окна.</summary>
+        private string OfferLunchGift(IOrder order, IOperationService os, IViewManager vm, string code, GuestInfo g, BoundGuest guest)
+        {
+            var l = g.Lunch;
+            if (l == null || !l.Enabled || !l.Ready || guest.LunchGiftId != null) return "";
+            var lunch = LunchItems(order, l).FirstOrDefault();
+            if (lunch == null) return "\nМожно взять ланч в подарок: добавьте ланч в заказ и снова нажмите «Карта Патрики».";
+            if (!code.StartsWith("PK1:", StringComparison.Ordinal)) return "\nЛанч в подарок — только по QR-коду из приложения гостя.";
+            var type = LunchDiscountType();
+            if (type == null)
+            {
+                PluginContext.Log.Warn($"Карта Патрики: в iiko нет активной скидки «{Config.Current.LunchGiftDiscount}» на произвольную сумму — ланч в подарок недоступен");
+                return $"\nЛанч в подарок не настроен: в iiko нет скидки «{Config.Current.LunchGiftDiscount}».";
+            }
+            var price = Math.Round(lunch.Price, 2);
+            if (price <= 0) return "";
+            if (!vm.ShowYesNoPopup(Sender, $"{g.Name}\n{l.Text}\n\nПровести ланч в подарок?\nНа один «{lunch.Product?.Name}» будет скидка {price:0} ₽."))
+                return "\nЛанч в подарок не проведён — штампы остались у гостя.";
+            vm.ChangeProgressBarMessage("Оформляем ланч в подарок…");
+            var id = Api.LunchGift(code, order.Id);   // ошибки сервера — ApiException, их покажет кнопка
+            try
+            {
+                os.AddFlexibleSumDiscount(price, type, order, CredentialsFor(os, vm));
+            }
+            catch (Exception ex)
+            {
+                PluginContext.Log.Error("Карта Патрики: не удалось добавить скидку «Ланч в подарок»", ex);
+                try { Api.LunchGiftCancel(id); } catch (Exception ex2) { PluginContext.Log.Warn($"Карта Патрики: штампы не вернулись ({id}) — {ex2.Message}"); }
+                vm.ShowErrorPopup("Не удалось добавить скидку «Ланч в подарок», штампы возвращены гостю: " + ex.Message);
+                return "";
+            }
+            guest.LunchGiftId = id;
+            Store.SetGuest(order.Id, guest);
+            return $"\n🎁 Ланч в подарок: скидка {price:0} ₽ добавлена в заказ.";
+        }
+
+        private static List<IOrderProductItem> LunchItems(IOrder order, LunchInfo l) =>
+            order.Items.OfType<IOrderProductItem>()
+                .Where(i => !i.Deleted && i.Product != null && l.ProductIds.Contains(i.Product.Id.ToString()))
+                .ToList();
+
+        private static IDiscountType LunchDiscountType()
+        {
+            var name = (Config.Current.LunchGiftDiscount ?? "").Trim();
+            if (name.Length == 0) return null;
+            return PluginContext.Operations.GetDiscountTypes()
+                .FirstOrDefault(d => !d.Deleted && d.IsActive && d.DiscountByFlexibleSum && string.Equals((d.Name ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static List<IDiscountItem> LunchGiftItems(IOrder order)
+        {
+            var name = (Config.Current.LunchGiftDiscount ?? "").Trim();
+            if (name.Length == 0) return new List<IDiscountItem>();
+            return order.Discounts.Where(d => string.Equals((d.DiscountType?.Name ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        private static bool HasLunchGift(IOrder order) => LunchGiftItems(order).Count > 0;
 
         /* ---------------- оплата баллами ---------------- */
 
@@ -294,10 +359,16 @@ namespace Resto.Front.Api.Patriki
                 }
                 catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось убрать оплату баллами — {ex.Message}"); }
             }
-            foreach (var d in RedeemDiscountItems(order))
+            foreach (var d in RedeemDiscountItems(order).Concat(guest.LunchGiftId != null ? LunchGiftItems(order) : new List<IDiscountItem>()))
             {
                 try { os.DeleteDiscount(d, order, creds); }
                 catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось убрать скидку — {ex.Message}"); }
+            }
+            if (guest.LunchGiftId != null)
+            {
+                try { Api.LunchGiftCancel(guest.LunchGiftId); }
+                catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось вернуть штампы ({guest.LunchGiftId}) — {ex.Message}"); }
+                guest.LunchGiftId = null;
             }
             var back = 0;
             foreach (var id in guest.RedeemIds.ToList())
@@ -314,9 +385,14 @@ namespace Resto.Front.Api.Patriki
             var guest = Store.GetGuest(order.Id);
             if (guest == null) return;
             Store.RemoveGuest(order.Id);
-            if (guest.RedeemIds.Count == 0) return;
+            if (guest.RedeemIds.Count == 0 && guest.LunchGiftId == null) return;
             Task.Run(() =>
             {
+                if (guest.LunchGiftId != null)
+                {
+                    try { Api.LunchGiftCancel(guest.LunchGiftId); }
+                    catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: заказ {order.Number} удалён, штампы ({guest.LunchGiftId}) не вернулись — {ex.Message}"); }
+                }
                 foreach (var id in guest.RedeemIds)
                 {
                     try { Api.RedeemCancel(id); }
@@ -429,7 +505,7 @@ namespace Resto.Front.Api.Patriki
                 // заказ доставки из приложения: отмечаем выполненным, баллы начислит сервер
                 if (IsDeliveryOrder(order)) Task.Run(() => SendDeliveryDone(order.Id, order.Number));
                 // оплату баллами провели на другой кассе — фиксируем списание, чтобы сервер не вернул баллы через 48 часов
-                else if (HasRedeemDiscount(order)) Task.Run(() =>
+                else if (HasRedeemDiscount(order) || HasLunchGift(order)) Task.Run(() =>
                 {
                     try { Api.RedeemFinalize(order.Id, order.Number); }
                     catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: заказ {order.Number} — списание баллами не зафиксировано: {ex.Message}"); }
@@ -447,6 +523,8 @@ namespace Resto.Front.Api.Patriki
                     guest.RedeemIds.Clear(); guest.Redeemed = 0;
                 }
                 var request = CloseRequest.FromOrder(order, guest.Code, Config.Current.Venue);
+                // ланч в подарок: скидку оставили — подарок проведён, убрали вручную — штампы вернутся
+                request.LunchGift = guest.LunchGiftId != null ? HasLunchGift(order) : (bool?)null;
                 // оплаченное баллами (оплатой) не считается покупкой — как было со скидкой
                 request.Sum -= RedeemPaidSum(order);
                 Store.RemoveGuest(order.Id);

@@ -15,6 +15,7 @@
 //   front-lookup / front-close — для плагина кассы iikoFront, по ключу кассы (заголовок x-pos-key);
 //   front-redeem / front-redeem-cancel — оплата баллами на кассе (скидка «Баллы Патрики»);
 //   front-done — заказ доставки из приложения закрыт на кассе → выполнен (начисляются баллы);
+//   front-lunch-gift / front-lunch-gift-cancel — «Ланч в подарок» (ланч-карта, 031-lunch.sql); штампы ставит front-close;
 //   front-inbox / front-reserve / front-order — заявки из приложения на главной кассе (тоже по ключу кассы):
 //     новые брони и заказы точки, решение официанта «подтвердить / отклонить».
 
@@ -130,6 +131,17 @@ function summarize(o: any, ex: Set<string>, byId: Record<string, any> = {}) {
     opened: ord.whenCreated || '', closed: ord.whenClosed || '', bill: ord.whenBillPrinted || '',
     sum: Math.round(iikoSum), eligible: Math.floor(eligible), lines,
   };
+}
+
+/* ---------------- ланч-карта: текст для кассы ---------------- */
+function lunchText(l: any, afterClose = false) {
+  if (!l?.enabled) return '';
+  const parts: string[] = [];
+  if (afterClose && l.gifts > 0) parts.push('ланч в подарок проведён');
+  if (afterClose && l.added > 0) parts.push(`+${l.added} ланч`);
+  if (afterClose && l.note && !l.added) parts.push(l.note);
+  parts.push(l.ready ? `ланч-карта ${l.stamps}/${l.goal - 1} — ЭТОТ ЛАНЧ В ПОДАРОК!` : `ланч-карта ${l.stamps}/${l.goal - 1}, бесплатный через ${l.left}`);
+  return parts.join(', ');
 }
 
 /* ---------------- права ---------------- */
@@ -284,7 +296,7 @@ Deno.serve(async (req) => {
     }
 
     /* ---------- плагин кассы iikoFront (ключ кассы в заголовке x-pos-key) ---------- */
-    if (['front-lookup', 'front-close', 'front-redeem', 'front-redeem-cancel', 'front-done'].includes(act)) {
+    if (['front-lookup', 'front-close', 'front-redeem', 'front-redeem-cancel', 'front-done', 'front-lunch-gift', 'front-lunch-gift-cancel'].includes(act)) {
       const key = req.headers.get('x-pos-key') || b.key || '';
       if (!key || key !== await secret('pos_api_key')) return json({ error: 'Неверный ключ кассы' }, 403);
       const rpc = async (fn: string, args: Record<string, unknown>) => {
@@ -302,12 +314,25 @@ Deno.serve(async (req) => {
         if (!b.id) throw new Error('Нет id списания');
         return json(await rpc('pos_redeem_cancel', { p_id: String(b.id) }));
       }
+      // ланч-карта: отменить подарок (скидку убрали, заказ удалён)
+      if (act === 'front-lunch-gift-cancel') {
+        if (!b.id) throw new Error('Нет id подарка');
+        return json(await rpc('pos_lunch_gift_cancel', { p_id: String(b.id) }));
+      }
       const code = String(b.code || '').trim();
       if (!code) throw new Error('Нет QR-кода гостя');
       if (act === 'front-lookup') {
         const data = await rpc('pos_lookup', { p_code: code });
         const { data: cfg } = await db.from('loyalty_settings').select('max_redeem_pct').limit(1).maybeSingle();
-        return json({ ...data, max_redeem_pct: Number(cfg?.max_redeem_pct ?? 0) });
+        const lunch = await rpc('pos_lunch_info', { p_code: code }).catch(() => ({ enabled: false }));
+        // плагины до 2.0 не знают про ланч-карту — прогресс видно в имени гостя
+        const name = lunch?.enabled && !b.lunch ? `${data?.name || 'Гость'} · ${lunchText(lunch)}` : data?.name;
+        return json({ ...data, name, lunch, max_redeem_pct: Number(cfg?.max_redeem_pct ?? 0) });
+      }
+      // ланч-карта: «Ланч в подарок» — списать штампы и держать подарок за заказом
+      if (act === 'front-lunch-gift') {
+        if (!b.order_id) throw new Error('Нет id заказа iiko');
+        return json(await rpc('pos_lunch_gift', { p_code: code, p_order: String(b.order_id), p_venue: String(b.venue || 'petrogradka') }));
       }
       // оплата баллами на кассе: баллы списываются сразу и держатся за заказом
       if (act === 'front-redeem') {
@@ -319,9 +344,19 @@ Deno.serve(async (req) => {
       }
       const o = b.order || {};
       if (!o.id) throw new Error('Нет id заказа iiko');
+      // ланч-карта: штампы за ланчи в чеке, подарок проведён / возвращён (ошибка тут не мешает баллам)
+      let lunch: any = null;
+      try {
+        lunch = await rpc('pos_lunch_close', {
+          p_code: code, p_order: String(o.id), p_venue: String(b.venue || 'petrogradka'),
+          p_items: o.items || [], p_gift: typeof o.lunchGift === 'boolean' ? o.lunchGift : null,
+        });
+      } catch (e) { console.warn('lunch close', (e as Error).message); }
+      const lunchMsg = lunch?.enabled && (lunch.added > 0 || lunch.gifts > 0 || lunch.note) ? lunchText(lunch, true) : '';
+      const withLunch = (r: any) => lunchMsg ? { ...r, lunch, note: r.note ? `${r.note}. ${lunchMsg}` : lunchMsg, name: r.points > 0 ? `${r.name || 'Гость'} (${lunchMsg})` : r.name } : r;
       // списания баллами по этому заказу фиксируем; по правилам за чек, оплаченный баллами, баллы могут не начисляться
       const red = await rpc('pos_redeem_close', { p_order: String(o.id), p_check: 'iiko:' + o.id });
-      if (!red.accrue) return json({ points: 0, redeemed: red.redeemed, note: `Чек оплачен баллами (${red.redeemed}) — по правилам за него баллы не начисляются` });
+      if (!red.accrue) return json(withLunch({ points: 0, redeemed: red.redeemed, note: `Чек оплачен баллами (${red.redeemed}) — по правилам за него баллы не начисляются` }));
       const ex = await excluded();
       let total = 0, eligible = 0;
       const lines = (o.items || []).map((it: any) => {
@@ -333,13 +368,13 @@ Deno.serve(async (req) => {
       const orderSum = Number(o.sum ?? total);
       if (total > 0 && Math.abs(orderSum - total) > 0.5) eligible = eligible * orderSum / total; // скидки на весь чек
       eligible = Math.floor(eligible);
-      if (eligible <= 0) return json({ points: 0, eligible: 0, note: 'В чеке нет позиций, за которые начисляются баллы', lines });
+      if (eligible <= 0) return json(withLunch({ points: 0, eligible: 0, note: 'В чеке нет позиций, за которые начисляются баллы', lines }));
       const { data, error } = await db.rpc('iiko_apply', {
         p_code: code, p_check_id: 'iiko:' + o.id, p_number: String(o.number ?? ''), p_sum: Math.round(orderSum),
         p_amount: eligible, p_redeem: 0, p_venue: String(b.venue || 'petrogradka'), p_staff: null,
       });
       if (error) throw new Error(error.message);
-      return json({ ...data, eligible, lines });
+      return json(withLunch({ ...data, eligible, lines }));
     }
 
     /* ---------- заявки из приложения на главной кассе ---------- */
