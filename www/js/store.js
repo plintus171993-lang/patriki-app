@@ -9,12 +9,46 @@ let sb = null;
 // Плохой интернет / VPN: запрос, который висит дольше 15 секунд, обрываем — приложение
 // покажет сохранённое меню или понятную ошибку, а не вечную загрузку.
 const NET_TIMEOUT = 15000;
-function fetchWithTimeout(input, init = {}) {
+function fetchOnce(input, init = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), NET_TIMEOUT);
   if (init.signal) init.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
   return fetch(input, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(timer));
 }
+
+// Несколько адресов сервера (CONFIG.API_URLS): запрос идёт на рабочий адрес, а если тот недоступен —
+// повторяется на запасном, и приложение запоминает, какой адрес работает у этого гостя.
+const API_BASES = (CONFIG.API_URLS && CONFIG.API_URLS.length ? CONFIG.API_URLS : [CONFIG.SUPABASE_URL]).map((u) => u.replace(/\/+$/, ''));
+let apiIdx = 0; // какой адрес ответил последним (для ссылок на фото)
+const activeBase = () => API_BASES[apiIdx] || CONFIG.SUPABASE_URL;
+function swapBase(url, base) {
+  for (const b of API_BASES) if (url.startsWith(b)) return base + url.slice(b.length);
+  if (url.startsWith(CONFIG.SUPABASE_URL)) return base + url.slice(CONFIG.SUPABASE_URL.length);
+  return url;
+}
+async function fetchWithTimeout(input, init = {}) {
+  const url = typeof input === 'string' ? input : input.url;
+  const method = (init.method || 'GET').toUpperCase();
+  const safe = method === 'GET' || method === 'HEAD' || method === 'OPTIONS' || /\/auth\/v1\/(token|signup|user)/.test(url);
+  let lastErr;
+  for (let n = 0; n < API_BASES.length; n++) {
+    const i = n; // всегда сначала российский адрес, запасной — только если он не ответил
+    try {
+      const r = await fetchOnce(swapBase(url, API_BASES[i]), init);
+      // 502/503/504 от российского адреса — значит, он не достучался до сервера: пробуем запасной
+      if (r.status >= 502 && r.status <= 504 && n < API_BASES.length - 1 && safe) { lastErr = new Error('HTTP ' + r.status); continue; }
+      apiIdx = i;
+      return r;
+    } catch (e) {
+      lastErr = e;
+      const network = e && (e.name === 'TypeError' || (e.name === 'AbortError' && safe));
+      if (!network || init.signal?.aborted) throw e;
+    }
+  }
+  throw lastErr;
+}
+/** Ссылка на файл сервера (фото меню и т. п.) — через тот адрес, что сейчас работает. */
+export const mediaUrl = (u) => (u && typeof u === 'string' ? swapBase(u, activeBase()) : u);
 
 // Меню и заведения сохраняются на телефоне: при следующем запуске приложение открывается сразу,
 // даже без интернета, а свежие данные подгружаются в фоне.

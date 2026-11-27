@@ -1,4 +1,4 @@
-import { store } from './store.js';
+import { store, mediaUrl } from './store.js';
 import { CONFIG } from './config.js';
 import { HERO_IMG } from './seed.js';
 import { logoMark, logoEmblem, bulldogLoader } from './logo.js';
@@ -78,7 +78,7 @@ const icon = {
   check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
 };
 const photo = (url, cls = '', alt = '') => url
-  ? `<div class="photo ph ${cls}"><img src="${esc(url)}" alt="${esc(alt)}" loading="lazy" onerror="this.remove()"></div>`
+  ? `<div class="photo ph ${cls}"><img src="${esc(mediaUrl(url))}" alt="${esc(alt)}" loading="lazy" onerror="this.remove()"></div>`
   : `<div class="photo ph ${cls}" aria-hidden="true"></div>`;
 const backBtn = (href, label = 'Назад') => `<a class="icon-btn" href="#${href}" aria-label="${label}">${icon.back}</a>`;
 
