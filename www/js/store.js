@@ -330,6 +330,7 @@ export const store = {
     }
     const { error } = await sb.rpc('delete_my_account');
     if (error) throw new Error(/ACTIVE_ORDER/.test(error.message) ? 'ACTIVE_ORDER' : error.message);
+    LS.set('loy_cache', null); LS.set('lunch_cache', null);
     await sb.auth.signOut();
     await this.ensureGuest();
   },
@@ -552,6 +553,7 @@ export const store = {
   // Выйти из профиля гостя: дальше он снова анонимный гость на этом устройстве
   async guestSignOut() {
     if (this.demo) { LS.set('me', { id: 'demo-user', phone: '', verified: false }); return; }
+    LS.set('loy_cache', null); LS.set('lunch_cache', null);
     await sb.auth.signOut();
     await this.ensureGuest();
   },
@@ -583,20 +585,51 @@ export const store = {
     } catch { /* нет сети */ }
   },
 
+  // Карта гостя сохраняется на телефоне: без связи с сервером QR всё равно откроется
+  // (QR считается на телефоне, а проверяет его касса, у которой интернет есть).
+  // id гостя из сохранённой на телефоне сессии — без сети и без обновления токена
+  async sessionUid() {
+    try { const raw = JSON.parse(localStorage.getItem('patriki-auth') || 'null'); return raw?.user?.id || raw?.currentSession?.user?.id || null; } catch { return null; }
+  },
+  async cachedFor(key) {
+    const c = LS.get(key, null);
+    if (!c || !c.data) return null;
+    const uid = await this.sessionUid();
+    return uid && c.uid === uid ? { ...c.data, offline: true, cachedAt: c.at } : null;
+  },
+  /** Сохранённая карта — сразу, без ожидания сети (null, если нет или чужая). */
+  async cachedLoyalty() { return this.demo ? null : this.cachedFor('loy_cache'); },
+  async cachedLunch() { return this.demo ? null : this.cachedFor('lunch_cache'); },
   async myLoyalty() {
-    if (!this.demo) await this.whenGuest();
     if (this.demo) return demoLoy.my();
-    const { data, error } = await sb.rpc('my_loyalty');
-    if (error) throw error;
-    return data;
+    try {
+      if (!(await this.whenGuest())) throw new Error('нет связи');
+      const { data, error } = await sb.rpc('my_loyalty');
+      if (error) throw error;
+      const uid = await this.sessionUid();
+      if (uid && data) LS.set('loy_cache', { uid, at: Date.now(), data: { ...data, history: (data.history || []).slice(0, 10) } });
+      return data;
+    } catch (e) {
+      const c = await this.cachedFor('loy_cache');
+      if (c) return c;
+      throw e;
+    }
   },
   // ланч-карта (031-lunch.sql): каждый N-й ланч в подарок
   async myLunch() {
     if (this.demo) return { enabled: false };
-    await this.whenGuest();
-    const { data, error } = await sb.rpc('my_lunch');
-    if (error) throw error;
-    return data;
+    try {
+      if (!(await this.whenGuest())) throw new Error('нет связи');
+      const { data, error } = await sb.rpc('my_lunch');
+      if (error) throw error;
+      const uid = await this.sessionUid();
+      if (uid && data) LS.set('lunch_cache', { uid, at: Date.now(), data });
+      return data;
+    } catch (e) {
+      const c = await this.cachedFor('lunch_cache');
+      if (c) return c;
+      throw e;
+    }
   },
   async lunchSettings() {
     if (this.demo) return null;

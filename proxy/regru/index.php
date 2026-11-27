@@ -12,12 +12,22 @@ $path = parse_url($uri, PHP_URL_PATH) ?: '/';
 
 if ($path === '/ping') { header('Content-Type: text/plain'); header('Access-Control-Allow-Origin: *'); echo 'ok'; exit; }
 
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$body = file_get_contents('php://input');
+
+// Плагин кассы iiko (с 16.11) шлёт всё на корень https://api.patrikipab.ru/ :
+// действия pos_* — в функцию waiter, остальные (front-*) — в функцию iiko.
+if ($path === '/' && $method === 'POST') {
+  $j = json_decode($body, true);
+  $act = is_array($j) ? (string)($j['action'] ?? '') : '';
+  $uri = strpos($act, 'pos_') === 0 ? '/functions/v1/waiter' : '/functions/v1/iiko';
+  $path = $uri;
+}
+
 $ok = false;
 foreach (ALLOWED as $p) { if (strpos($path, $p) === 0) { $ok = true; break; } }
 if (!$ok) { http_response_code(404); header('Content-Type: text/plain'); echo 'not found'; exit; }
 
-$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-$body = file_get_contents('php://input');
 
 // заголовки запроса: всё, кроме служебных
 $skip = ['host', 'content-length', 'accept-encoding', 'connection', 'cookie', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip'];

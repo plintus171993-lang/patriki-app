@@ -1266,6 +1266,10 @@ let loyLoading = false;
 async function loadLoyalty() {
   if (loyLoading) return; loyLoading = true;
   if (!S.loy) S.loy = false;                        // первая загрузка
+  if (!S.loy) {                                     // пока идёт сеть — показываем карту из памяти телефона
+    const [c, l] = await Promise.all([store.cachedLoyalty(), store.cachedLunch()]).catch(() => [null, null]);
+    if (c && !S.loy) { S.loy = c; if (l && !S.lunch) S.lunch = l; if (['/', '/profile', '/card', '/checkout'].includes(route())) render(); }
+  }
   try { S.loy = await store.myLoyalty(); S.loyAt = Date.now(); } catch (e) { console.warn('Карта гостя не загрузилась', e); S.loy = null; return; }
   finally { loyLoading = false; }
   try { S.lunch = await store.myLunch(); } catch (e) { console.warn('Ланч-карта не загрузилась', e); S.lunch = null; }
@@ -1336,7 +1340,7 @@ function GuestCard() {
         <span class="eyebrow">В пабе — покажите бармену</span>
         <div id="loy-qr" class="loy-qr">${qrSvg(qrPayload(L.card_no, L.secret), 220)}</div>
         <button type="button" class="btn btn-outline btn-sm" data-act="qr-refresh">Обновить QR-код</button>
-        <span class="muted" style="font-size:12px" id="loy-qr-tick">Касса пишет «устарел»? Нажмите «Обновить QR-код»</span>
+        <span class="muted" style="font-size:12px" id="loy-qr-tick">${L.offline ? 'Нет связи с сервером — карта из памяти телефона, QR работает. Баланс может быть не самым свежим.' : 'Касса пишет «устарел»? Нажмите «Обновить QR-код»'}</span>
         <span class="muted" style="font-size:12px">Не сканируется? Назовите номер карты или телефон.</span>
       </section>`}
     <section class="card stack" style="gap:8px">
