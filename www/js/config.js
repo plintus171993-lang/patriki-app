@@ -4,6 +4,9 @@
 // После создания проекта Supabase впишите сюда Project URL и anon public key.
 export const CONFIG = {
   SUPABASE_URL: 'https://ozbdmczmpejyctezxrdk.supabase.co',
+  // Адреса сервера по порядку: сначала российский (api.patrikipab.ru на хостинге Reg.ru пересылает
+  // запросы в Supabase — его не режут блокировки supabase.co), запасной — Supabase напрямую.
+  API_URLS: ['https://api.patrikipab.ru', 'https://ozbdmczmpejyctezxrdk.supabase.co'],
   // Публичный (publishable) ключ — его можно хранить в приложении, права ограничены правилами базы
   SUPABASE_ANON_KEY: 'sb_publishable_PhI0d9qM0Hp7KrERGKHQfg_668fWJMv',
 

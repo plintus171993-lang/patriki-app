@@ -254,7 +254,7 @@
   if (new URLSearchParams(location.search).has('embed')) document.querySelector('.doc > .btn')?.remove();
   // условия программы лояльности — из настроек управляющего
   try {
-    const r = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/loyalty_settings?id=eq.1&select=*', { headers: { apikey: CONFIG.SUPABASE_ANON_KEY } });
+    const r = await fetch((CONFIG.API_URLS?.[0] || CONFIG.SUPABASE_URL) + '/rest/v1/loyalty_settings?id=eq.1&select=*', { headers: { apikey: CONFIG.SUPABASE_ANON_KEY } }).catch(() => fetch(CONFIG.SUPABASE_URL + '/rest/v1/loyalty_settings?id=eq.1&select=*', { headers: { apikey: CONFIG.SUPABASE_ANON_KEY } }));
     const st = (await r.json())[0];
     if (st) {
       const rub = (n) => Number(n).toLocaleString('ru-RU') + ' ₽';
