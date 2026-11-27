@@ -381,7 +381,11 @@ Deno.serve(async (req) => {
         return { name: it.name || '', sum: Math.round(sum), off };
       });
       const orderSum = Number(o.sum ?? total);
-      if (total > 0 && Math.abs(orderSum - total) > 0.5) eligible = eligible * orderSum / total; // скидки на весь чек
+      // скидки на весь чек — пропорционально; но «Ланч в подарок» — скидка на ланч (он «без баллов»),
+      // её сначала относим на позиции без баллов, чтобы не урезать баллы за остальное
+      let base = total;
+      if (o.lunchGift === true) base = total - Math.min(Math.max(total - orderSum, 0), Math.max(total - eligible, 0));
+      if (base > 0 && Math.abs(orderSum - base) > 0.5) eligible = eligible * orderSum / base;
       eligible = Math.floor(eligible);
       if (eligible <= 0) return json(withLunch({ points: 0, eligible: 0, note: 'В чеке нет позиций, за которые начисляются баллы', lines }));
       const { data, error } = await db.rpc('iiko_apply', {
