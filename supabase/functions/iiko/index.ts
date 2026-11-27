@@ -346,13 +346,28 @@ Deno.serve(async (req) => {
       if (!o.id) throw new Error('Нет id заказа iiko');
       // ланч-карта: штампы за ланчи в чеке, подарок проведён / возвращён (ошибка тут не мешает баллам)
       let lunch: any = null;
+      // 2.1: доп. гости с ланч-картой (компания за одним столом) — основной гость тогда забирает себе один ланч
+      const extras: string[] = Array.isArray(o.lunchGuests) ? o.lunchGuests.map((x: any) => String(x || '').trim()).filter(Boolean) : [];
       try {
         lunch = await rpc('pos_lunch_close', {
           p_code: code, p_order: String(o.id), p_venue: String(b.venue || 'petrogradka'),
           p_items: o.items || [], p_gift: typeof o.lunchGift === 'boolean' ? o.lunchGift : null,
+          p_cap: extras.length ? 1 : null,
         });
       } catch (e) { console.warn('lunch close', (e as Error).message); }
-      const lunchMsg = lunch?.enabled && (lunch.added > 0 || lunch.gifts > 0 || lunch.note) ? lunchText(lunch, true) : '';
+      const extraMsgs: string[] = [];
+      for (const ec of extras) {
+        try {
+          const el = await rpc('pos_lunch_close_extra', { p_code: ec, p_order: String(o.id), p_venue: String(b.venue || 'petrogradka'), p_items: o.items || [] });
+          if (el?.enabled) {
+            const { data: who } = await db.from('loyalty_accounts').select('user_id').eq('card_no', ec).maybeSingle();
+            const { data: prof } = who ? await db.from('profiles').select('name').eq('id', who.user_id).maybeSingle() : { data: null };
+            extraMsgs.push(`${prof?.name || 'гость ' + ec.slice(-4)}: ${lunchText(el, true)}`);
+          }
+        } catch (e) { console.warn('lunch extra', (e as Error).message); }
+      }
+      const mainMsg = lunch?.enabled && (lunch.added > 0 || lunch.gifts > 0 || lunch.note) ? lunchText(lunch, true) : '';
+      const lunchMsg = [mainMsg, ...extraMsgs].filter(Boolean).join('; ');
       const withLunch = (r: any) => lunchMsg ? { ...r, lunch, note: r.note ? `${r.note}. ${lunchMsg}` : lunchMsg, name: r.points > 0 ? `${r.name || 'Гость'} (${lunchMsg})` : r.name } : r;
       // списания баллами по этому заказу фиксируем; по правилам за чек, оплаченный баллами, баллы могут не начисляться
       const red = await rpc('pos_redeem_close', { p_order: String(o.id), p_check: 'iiko:' + o.id });
