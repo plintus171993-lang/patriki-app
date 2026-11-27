@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -186,6 +186,19 @@ jobs:
           json.dump(out, open('www/update/latest.json', 'w', encoding='utf-8'), ensure_ascii=False)
           print(out)
           PY
+
+      # Копия сайта для российского хостинга Reg.ru: тот же www кладём в ветку site-dist
+      # (одна коммит-версия, без истории). Хостинг каждые 5 минут сверяет build и забирает новую версию.
+      - name: Копия сайта в ветку site-dist (зеркало на Reg.ru)
+        continue-on-error: true
+        run: |
+          cd www
+          git init -q -b site-dist
+          git config user.name "patriki-build"; git config user.email "build@patrikipab.ru"
+          git add -A
+          git commit -qm "site build ${{ github.run_number }}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" site-dist
+          rm -rf .git
 
       - uses: actions/configure-pages@v5
 
