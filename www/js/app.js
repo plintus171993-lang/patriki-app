@@ -1335,7 +1335,8 @@ function GuestCard() {
       : `<section class="card stack" style="align-items:center;gap:10px">
         <span class="eyebrow">В пабе — покажите бармену</span>
         <div id="loy-qr" class="loy-qr">${qrSvg(qrPayload(L.card_no, L.secret), 220)}</div>
-        <span class="muted" style="font-size:12px" id="loy-qr-tick">Код обновляется каждые 30 секунд</span>
+        <button type="button" class="btn btn-outline btn-sm" data-act="qr-refresh">Обновить QR-код</button>
+        <span class="muted" style="font-size:12px" id="loy-qr-tick">Касса пишет «устарел»? Нажмите «Обновить QR-код»</span>
         <span class="muted" style="font-size:12px">Не сканируется? Назовите номер карты или телефон.</span>
       </section>`}
     <section class="card stack" style="gap:8px">
@@ -1586,6 +1587,7 @@ app.addEventListener('click', async (e) => {
   if (act === 'fb-venue') { saveFbForm(); S.fb.venue = v; render(); }
   if (act === 'verify-back') { clearTimeout(tgPoll); clearTimeout(inPoll); S.verify.step = 'phone'; S.verify.err = ''; render(); }
   if (act === 'in-call') { S.verify.called = true; const w = document.getElementById('in-wait'); if (w) w.textContent = 'Ждём ваш звонок…'; }
+  if (act === 'qr-refresh') { drawCardQr(true); store.syncClock().then(() => { drawCardQr(true); toast('QR-код обновлён', 1500); }); return; }
   if (act === 'in-retry') startIncoming(S.verify.phone, null, null);
   if (act === 'resend') startCall(S.verify.phone, null, null, v === 'sms' ? 'sms' : 'call');
   if (act === 'tg-start') { if (consentOk(b.closest('form'))) startTg(b); }
