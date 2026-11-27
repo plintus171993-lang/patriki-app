@@ -1,4 +1,10 @@
 RewriteEngine On
+# patrikipab.ru (зеркало сайта приложения) — отдаём файлы из папки site/
+RewriteCond %{HTTP_HOST} ^(www\.)?patrikipab\.ru$ [NC]
+RewriteCond %{REQUEST_URI} !^/site/
+RewriteCond %{REQUEST_URI} !^/\.well-known/
+RewriteRule ^(.*)$ site/$1 [L]
+# api.patrikipab.ru — пересылка в сервер приложения
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^ index.php [L,QSA]
 SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
