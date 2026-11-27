@@ -84,6 +84,8 @@ namespace Resto.Front.Api.Patriki
         public string Kind { get; set; }
         // 2.0: в заказе осталась скидка «Ланч в подарок» (null — подарка не было)
         public bool? LunchGift { get; set; }
+        // 2.1: номера карт дополнительных гостей с ланч-картой
+        public List<string> LunchGuests { get; set; } = new List<string>();
 
         public static CloseRequest FromOrder(IOrder order, string code, string venue)
         {
@@ -219,6 +221,7 @@ namespace Resto.Front.Api.Patriki
                     ["number"] = r.Number,
                     ["sum"] = r.Sum,
                     ["lunchGift"] = r.LunchGift,
+                    ["lunchGuests"] = r.LunchGuests ?? new List<string>(),
                     ["items"] = r.Items.Select(i => new Dictionary<string, object>
                     {
                         ["productId"] = i.ProductId,
@@ -236,7 +239,9 @@ namespace Resto.Front.Api.Patriki
         /// <summary>Новые брони и заказы из приложения для своей точки.</summary>
         public static List<Request> Inbox(string venue)
         {
-            var d = Post(new Dictionary<string, object> { ["action"] = "front-inbox", ["venue"] = venue });
+            // 2.2: сначала напрямую у базы (не расходует лимит серверных функций), при сбое — по-старому
+            var d = RpcOr("pos_inbox", new Dictionary<string, object> { ["p_key"] = Config.Current.PosKey, ["p_venue"] = venue },
+                () => Post(new Dictionary<string, object> { ["action"] = "front-inbox", ["venue"] = venue }));
             var list = new List<Request>();
             if (d.TryGetValue("reservations", out var rs) && rs is System.Collections.IEnumerable r1)
                 foreach (var x in r1) if (x is Dictionary<string, object> r) list.Add(Request.FromReservation(r));
@@ -266,10 +271,17 @@ namespace Resto.Front.Api.Patriki
         /// <summary>Пульс кассы + снимок столов (если изменился); в ответ — новые заказы официантов.</summary>
         public static List<WaiterOrder> WaiterPoll(string venue, Dictionary<string, object> tables, object menu = null)
         {
-            var body = new Dictionary<string, object> { ["action"] = "pos_poll", ["venue"] = venue, ["version"] = typeof(Api).Assembly.GetName().Version?.ToString() };
-            if (tables != null) body["tables"] = tables;
-            if (menu != null) body["menu"] = menu; // меню кассы — приложение официантов показывает его один в один
-            var d = Post(body, WaiterUrl);
+            var version = typeof(Api).Assembly.GetName().Version?.ToString();
+            var args = new Dictionary<string, object> { ["p_key"] = Config.Current.PosKey, ["p_venue"] = venue, ["p_version"] = version };
+            if (tables != null) args["p_tables"] = tables;
+            if (menu != null) args["p_menu"] = menu; // меню кассы — приложение официантов показывает его один в один
+            var d = RpcOr("pos_poll", args, () =>
+            {
+                var body = new Dictionary<string, object> { ["action"] = "pos_poll", ["venue"] = venue, ["version"] = version };
+                if (tables != null) body["tables"] = tables;
+                if (menu != null) body["menu"] = menu;
+                return Post(body, WaiterUrl);
+            });
             var list = new List<WaiterOrder>();
             if (d.TryGetValue("orders", out var os) && os is System.Collections.IEnumerable items)
                 foreach (var x in items) if (x is Dictionary<string, object> o) list.Add(WaiterOrder.From(o));
@@ -284,6 +296,49 @@ namespace Resto.Front.Api.Patriki
             if (number > 0) body["number"] = number;
             if (!string.IsNullOrEmpty(kind)) body["kind"] = kind;
             Post(body, WaiterUrl);
+        }
+
+        /* ---------- 2.2: прямые запросы к базе (RPC) — не входят в лимит вызовов функций Supabase ---------- */
+        // https://api.patrikipab.ru/functions/v1/iiko → https://api.patrikipab.ru
+        private static string RestBase => System.Text.RegularExpressions.Regex.Replace(Config.Current.ApiUrl ?? "", @"(/functions/v1/.*)?/*$", "");
+        private static DateTime rpcOffUntil = DateTime.MinValue;
+
+        /// <summary>RPC в базе; если его нет или база не ответила понятно — запасной путь через серверную функцию.</summary>
+        private static Dictionary<string, object> RpcOr(string fn, Dictionary<string, object> args, Func<Dictionary<string, object>> fallback)
+        {
+            if (DateTime.Now < rpcOffUntil || string.IsNullOrWhiteSpace(Config.Current.AnonKey)) return fallback();
+            try { return Rpc(fn, args); }
+            catch (ApiException) { throw; }                 // ошибка по существу (неверный ключ и т.п.) — как раньше
+            catch (Exception ex)
+            {
+                // RPC недоступен (старая база, сеть) — 10 минут работаем по-старому
+                rpcOffUntil = DateTime.Now.AddMinutes(10);
+                PluginContext.Log.Warn($"Карта Патрики: запрос к базе {fn} не прошёл ({ex.Message}) — 10 минут через серверную функцию");
+                return fallback();
+            }
+        }
+
+        internal static Dictionary<string, object> Rpc(string fn, Dictionary<string, object> args)
+        {
+            var cfg = Config.Current;
+            var req = new HttpRequestMessage(HttpMethod.Post, RestBase + "/rest/v1/rpc/" + fn)
+            {
+                Content = new StringContent(Json.Serialize(args), Encoding.UTF8, "application/json"),
+            };
+            req.Headers.Add("apikey", cfg.AnonKey);
+            req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + cfg.AnonKey);
+            using (var res = Http.SendAsync(req).GetAwaiter().GetResult())
+            {
+                var text = res.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                Dictionary<string, object> d;
+                try { d = Json.Deserialize<Dictionary<string, object>>(text) ?? new Dictionary<string, object>(); }
+                catch { throw new HttpRequestException($"База ответила {(int)res.StatusCode}"); }
+                if (res.IsSuccessStatusCode) return d;
+                // ошибка из самой функции в базе (raise exception) — код P0001
+                if (d.TryGetValue("code", out var code) && Convert.ToString(code) == "P0001")
+                    throw new ApiException(Str(d, "message") ?? "Ошибка сервера");
+                throw new HttpRequestException($"База ответила {(int)res.StatusCode}: {Str(d, "message")}");
+            }
         }
 
         internal static Dictionary<string, object> Post(Dictionary<string, object> body, string url = null)
@@ -320,6 +375,8 @@ namespace Resto.Front.Api.Patriki
     {
         public string ApiUrl { get; set; } = "https://ozbdmczmpejyctezxrdk.supabase.co/functions/v1/iiko";
         public string PosKey { get; set; } = "";
+        // 2.2: публичный ключ приложения (тот же, что в приложении гостей) — для прямых запросов к базе
+        public string AnonKey { get; set; } = "sb_publishable_PhI0d9qM0Hp7KrERGKHQfg_668fWJMv";
         public string Venue { get; set; } = "petrogradka";
 
         // Заявки из приложения (брони и доставка) — включать ТОЛЬКО на главной кассе точки

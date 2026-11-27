@@ -19,6 +19,20 @@ namespace Resto.Front.Api.Patriki
         public int Redeemed { get; set; }
         // 2.0: «Ланч в подарок» — id подарка на сервере (ланч-карта)
         public string LunchGiftId { get; set; }
+        // 2.1: ещё гости с ланч-картой в этом заказе (компания за одним столом) и какие блюда — ланч
+        public List<LunchGuest> LunchGuests { get; set; } = new List<LunchGuest>();
+        public List<string> LunchProductIds { get; set; } = new List<string>();
+
+        public bool AnyLunchGift() => LunchGiftId != null || (LunchGuests != null && LunchGuests.Any(x => x.GiftId != null));
+        public int LunchGiftCount() => (LunchGiftId != null ? 1 : 0) + (LunchGuests?.Count(x => x.GiftId != null) ?? 0);
+    }
+
+    /// <summary>2.1: дополнительный гость с ланч-картой в заказе (только штампы/подарок, баллы — у основного гостя).</summary>
+    public sealed class LunchGuest
+    {
+        public string Code { get; set; }   // номер карты (QR живёт минуту)
+        public string Name { get; set; }
+        public string GiftId { get; set; }
     }
 
     /// <summary>Какой гость привязан к какому открытому заказу (переживает перезапуск кассы).</summary>
