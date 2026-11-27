@@ -1,7 +1,7 @@
 // Слой данных: Supabase (боевой режим) или localStorage (демо-режим).
 import { CONFIG, isDemo } from './config.js';
 import { SEED_CATEGORIES, SEED_ITEMS, SEED_VENUES } from './seed.js';
-import { tierFor, otp, DEFAULT_SETTINGS } from './loyalty.js';
+import { tierFor, otp, DEFAULT_SETTINGS, setClockSkew } from './loyalty.js';
 
 const SUPABASE_CDN = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 let sb = null;
@@ -538,6 +538,17 @@ export const store = {
   },
 
   /* ---------------- карта гостя (лояльность) ---------------- */
+  /** Сверить часы телефона с сервером (для QR гостя). Без сети — тихо пропускаем. */
+  async syncClock() {
+    if (this.demo || !sb) return;
+    try {
+      const t0 = Date.now();
+      const { data, error } = await sb.rpc('server_now');
+      const t1 = Date.now();
+      if (!error && data) setClockSkew(Number(data) - (t0 + t1) / 2);
+    } catch { /* нет сети */ }
+  },
+
   async myLoyalty() {
     if (!this.demo) await this.whenGuest();
     if (this.demo) return demoLoy.my();

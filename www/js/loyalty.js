@@ -28,7 +28,10 @@ function sha256hex(str) {
 // тот же алгоритм, что public.loyalty_otp в базе
 export const otp = (secret, win = Math.floor(Date.now() / 30000)) =>
   String(parseInt(sha256hex(`${secret}:${win}`).slice(0, 8), 16) % 1000000).padStart(6, '0');
-export const qrPayload = (card, secret) => `PK1:${card}:${otp(secret)}`;
+// поправка часов телефона по серверу (мс): QR считается по точному времени, даже если часы на телефоне сбиты
+let clockSkew = 0;
+export const setClockSkew = (ms) => { if (Number.isFinite(ms) && Math.abs(ms) < 86400000) clockSkew = ms; };
+export const qrPayload = (card, secret) => `PK1:${card}:${otp(secret, Math.floor((Date.now() + clockSkew) / 30000))}`;
 
 // QR-картинка (библиотека qrcode-generator кладётся в vendor/ при сборке)
 export function qrSvg(text, size = 220) {

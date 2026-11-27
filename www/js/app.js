@@ -1358,16 +1358,27 @@ function GuestCard() {
         <b style="color:${h.kind === 'pending' ? 'var(--muted)' : h.points >= 0 ? 'var(--ok)' : 'var(--text-2)'}">${h.points >= 0 ? '+' : ''}${pts(h.points)}</b></div>`).join('')}</div></section>` : ''}
   </main>`;
 }
-// QR обновляется каждые 30 секунд, пока открыт экран карты
+// QR меняется каждые 30 секунд. Проверяем часто и перерисовываем сразу, как сменилось окно,
+// и мгновенно — когда гость вернулся к телефону (экран был заблокирован / приложение свёрнуто),
+// иначе на кассе показывается старый код и касса пишет «QR-код устарел».
 let qrTimer = null;
+let qrShown = '';
+function drawCardQr(force = false) {
+  const box = document.getElementById('loy-qr');
+  if (!box || route() !== '/card' || !S.loy) return false;
+  const payload = qrPayload(S.loy.card_no, S.loy.secret);
+  if (force || payload !== qrShown) { box.innerHTML = qrSvg(payload, 220); qrShown = payload; }
+  return true;
+}
 function startCardQr() {
   clearInterval(qrTimer);
-  qrTimer = setInterval(() => {
-    const box = document.getElementById('loy-qr');
-    if (!box || route() !== '/card' || !S.loy) return clearInterval(qrTimer);
-    box.innerHTML = qrSvg(qrPayload(S.loy.card_no, S.loy.secret), 220);
-  }, 30000);
+  qrShown = '';
+  drawCardQr(true);
+  store.syncClock().then(() => drawCardQr(true));
+  qrTimer = setInterval(() => { if (!drawCardQr()) clearInterval(qrTimer); }, 3000);
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && drawCardQr(true)) store.syncClock().then(() => drawCardQr(true)); });
+window.addEventListener('focus', () => drawCardQr(true));
 
 // выбор паба для звонка
 function callSheet() {
