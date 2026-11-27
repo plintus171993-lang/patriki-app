@@ -9,8 +9,10 @@ $REPO   = 'plintus171993-lang/patriki-app';
 $BRANCH = 'site-dist';
 $target = rtrim($argv[1] ?? '', '/');
 if ($target === '' || !is_dir(dirname($target))) { fwrite(STDERR, "usage: php site-sync.php /path/to/site\n"); exit(2); }
-$base = dirname($target);
 $name = basename($target);
+// временные файлы — вне папки сайта (в домашней папке), чтобы их не было видно из интернета
+$base = (getenv('HOME') ?: dirname(dirname($target))) . '/.site-sync';
+if (!is_dir($base)) mkdir($base, 0700, true);
 
 $lock = fopen("$base/.$name.sync.lock", 'c');
 if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) exit(0);   // предыдущий запуск ещё идёт
@@ -61,6 +63,8 @@ try {
   file_put_contents("$new/.htaccess", <<<'HT'
 Options -Indexes
 DirectoryIndex index.html
+# свои правила (пусто) — чтобы правила пересылки из папки выше сюда не действовали
+RewriteEngine On
 AddType application/manifest+json .webmanifest
 AddType application/vnd.android.package-archive .apk
 <IfModule mod_headers.c>
