@@ -84,6 +84,8 @@ namespace Resto.Front.Api.Patriki
         public string Kind { get; set; }
         // 2.0: в заказе осталась скидка «Ланч в подарок» (null — подарка не было)
         public bool? LunchGift { get; set; }
+        // 2.1: номера карт дополнительных гостей с ланч-картой
+        public List<string> LunchGuests { get; set; } = new List<string>();
 
         public static CloseRequest FromOrder(IOrder order, string code, string venue)
         {
@@ -219,6 +221,7 @@ namespace Resto.Front.Api.Patriki
                     ["number"] = r.Number,
                     ["sum"] = r.Sum,
                     ["lunchGift"] = r.LunchGift,
+                    ["lunchGuests"] = r.LunchGuests ?? new List<string>(),
                     ["items"] = r.Items.Select(i => new Dictionary<string, object>
                     {
                         ["productId"] = i.ProductId,

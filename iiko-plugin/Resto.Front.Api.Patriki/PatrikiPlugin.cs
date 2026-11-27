@@ -98,10 +98,21 @@ namespace Resto.Front.Api.Patriki
                 }
 
                 var bound = Store.GetGuest(order.Id);
-                if (bound != null && (bound.Redeemed > 0 || bound.LunchGiftId != null))
+                // 2.1: в заказе несколько ланчей — можно добавить ещё гостей с ланч-картой (по одному на ланч)
+                if (bound != null && LunchSlots(order, bound) > 0)
+                {
+                    var lunches = LunchCount(order, bound.LunchProductIds);
+                    var cards = 1 + bound.LunchGuests.Count;
+                    if (vm.ShowYesNoPopup(Sender, $"К заказу привязан гость: {bound.Name}.\nВ заказе ланчей: {lunches}, ланч-карт: {cards}.\n\nДобавить ещё гостя с ланч-картой (по его QR)?"))
+                    {
+                        AddLunchGuest(order, os, vm, bound);
+                        return;
+                    }
+                }
+                if (bound != null && (bound.Redeemed > 0 || bound.AnyLunchGift()))
                 {
                     // гость уже оплатил часть баллами / получил ланч в подарок — менять гостя можно только отменив это
-                    var what = string.Join(" и ", new[] { bound.Redeemed > 0 ? $"оплата баллами ({bound.Redeemed})" : null, bound.LunchGiftId != null ? "ланч в подарок" : null }.Where(x => x != null));
+                    var what = string.Join(" и ", new[] { bound.Redeemed > 0 ? $"оплата баллами ({bound.Redeemed})" : null, bound.AnyLunchGift() ? "ланч в подарок" : null }.Where(x => x != null));
                     if (!vm.ShowYesNoPopup(Sender,
                         $"К заказу привязан гость: {bound.Name}. В заказе: {what}.\n\nОтменить (скидки уберутся из заказа, баллы и штампы вернутся гостю) и отвязать гостя?"))
                         return;
@@ -157,7 +168,8 @@ namespace Resto.Front.Api.Patriki
 
                 // QR живёт около минуты, поэтому при закрытии отправляем номер карты (для старых карт — телефон)
                 var closeCode = g.Legacy || string.IsNullOrEmpty(g.CardNo) ? code : g.CardNo;
-                var guest = new BoundGuest { Code = closeCode, Name = g.Name, Balance = g.Balance, Tier = g.TierText };
+                var guest = new BoundGuest { Code = closeCode, Name = g.Name, Balance = g.Balance, Tier = g.TierText,
+                    LunchProductIds = g.Lunch?.ProductIds?.ToList() ?? new List<string>() };
                 Store.SetGuest(order.Id, guest);
 
                 var info = $"{g.Name}\nУровень: {g.TierText}\nБаланс: {g.Balance} баллов" +
@@ -198,6 +210,7 @@ namespace Resto.Front.Api.Patriki
         {
             var l = g.Lunch;
             if (l == null || !l.Enabled || !l.Ready || guest.LunchGiftId != null) return "";
+            if (guest.LunchGiftCount() >= LunchCount(order, guest.LunchProductIds)) return "";
             var lunch = LunchItems(order, l).FirstOrDefault();
             if (lunch == null) return "\nМожно взять ланч в подарок: добавьте ланч в заказ и снова нажмите «Карта Патрики».";
             if (!code.StartsWith("PK1:", StringComparison.Ordinal)) return "\nЛанч в подарок — только по QR-коду из приложения гостя.";
@@ -215,7 +228,7 @@ namespace Resto.Front.Api.Patriki
             var id = Api.LunchGift(code, order.Id);   // ошибки сервера — ApiException, их покажет кнопка
             try
             {
-                os.AddFlexibleSumDiscount(price, type, order, CredentialsFor(os, vm));
+                SetLunchGiftDiscount(order, os, vm, type, price * (guest.LunchGiftCount() + 1));
             }
             catch (Exception ex)
             {
@@ -250,6 +263,112 @@ namespace Resto.Front.Api.Patriki
         }
 
         private static bool HasLunchGift(IOrder order) => LunchGiftItems(order).Count > 0;
+
+        /* ---------------- 2.1: несколько ланч-карт в одном заказе ---------------- */
+
+        private static int LunchCount(IOrder order, IEnumerable<string> productIds)
+        {
+            var ids = new HashSet<string>(productIds ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            if (ids.Count == 0) return 0;
+            return (int)Math.Floor(order.Items.OfType<IOrderProductItem>()
+                .Where(i => !i.Deleted && i.Product != null && ids.Contains(i.Product.Id.ToString()))
+                .Sum(i => i.Amount));
+        }
+
+        /// <summary>Сколько ещё гостей с ланч-картой можно добавить: ланчей в заказе минус уже привязанные карты.</summary>
+        private static int LunchSlots(IOrder order, BoundGuest bound) =>
+            Math.Max(0, LunchCount(order, bound.LunchProductIds) - 1 - (bound.LunchGuests?.Count ?? 0));
+
+        /// <summary>Скидка «Ланч в подарок» одна на заказ: при нескольких подарках — на их общую сумму.</summary>
+        private static void SetLunchGiftDiscount(IOrder order, IOperationService os, IViewManager vm, IDiscountType type, decimal total)
+        {
+            var creds = CredentialsFor(os, vm);
+            var existing = LunchGiftItems(order);
+            if (existing.Count > 0)
+            {
+                foreach (var d in existing) os.DeleteDiscount(d, order, creds);
+                order = os.GetOrderById(order.Id);
+            }
+            if (total > 0) os.AddFlexibleSumDiscount(total, type, order, creds);
+        }
+
+        private void AddLunchGuest(IOrder order, IOperationService os, IViewManager vm, BoundGuest bound)
+        {
+            var settings = new ExtendedInputDialogSettings
+            {
+                EnableBarcode = true,
+                TabTitleBarcode = "QR-код",
+                NumericInputMode = NumericInputMode.String,
+                TabTitleNumericString = "QR-код (вручную)",
+            };
+            var input = vm.ShowExtendedInputDialog(Sender, "Отсканируйте QR-код из приложения «Патрики» следующего гостя с ланчем", settings);
+            string code;
+            switch (input)
+            {
+                case null: return;
+                case BarcodeInputDialogResult b: code = b.Barcode; break;
+                case StringInputDialogResult s: code = s.Result; break;
+                default: return;
+            }
+            code = NormalizeCode(code);
+            if (code.Length == 0) return;
+            if (!code.StartsWith("PK1:", StringComparison.Ordinal))
+            {
+                vm.ShowErrorPopup("Ланч-карта — только по QR-коду из приложения гостя (не по номеру карты или телефону).");
+                return;
+            }
+            vm.ChangeProgressBarMessage("Ищем гостя…");
+            var g = Api.Lookup(code);
+            var card = string.IsNullOrEmpty(g.CardNo) ? code : g.CardNo;
+            if (card == bound.Code || bound.LunchGuests.Any(x => x.Code == card))
+            {
+                vm.ShowErrorPopup($"{g.Name}: эта ланч-карта уже есть в заказе. У каждого гостя — своя карта.");
+                return;
+            }
+            if (g.Lunch == null || !g.Lunch.Enabled)
+            {
+                vm.ShowErrorPopup("Акция «Ланч-карта» сейчас выключена.");
+                return;
+            }
+            // заказ мог измениться, пока сканировали
+            order = os.GetOrderById(order.Id);
+            if (LunchSlots(order, bound) <= 0)
+            {
+                vm.ShowErrorPopup("Ланч-карт уже столько же, сколько ланчей в заказе. Добавьте ланч в заказ.");
+                return;
+            }
+            var lg = new LunchGuest { Code = card, Name = g.Name };
+            bound.LunchGuests.Add(lg);
+            Store.SetGuest(order.Id, bound);
+
+            var msg = $"{g.Name} добавлен к заказу.\n{g.Lunch.Text}";
+            if (g.Lunch.Ready && bound.LunchGiftCount() < LunchCount(order, bound.LunchProductIds))
+            {
+                var lunch = LunchItems(order, g.Lunch).FirstOrDefault();
+                var type = LunchDiscountType();
+                var price = lunch != null ? Math.Round(lunch.Price, 2) : 0m;
+                if (type != null && price > 0 && vm.ShowYesNoPopup(Sender, $"{g.Name}\n{g.Lunch.Text}\n\nПровести этому гостю ланч в подарок?\nСкидка «{type.Name}» увеличится на {price:0} ₽."))
+                {
+                    vm.ChangeProgressBarMessage("Оформляем ланч в подарок…");
+                    var id = Api.LunchGift(code, order.Id);
+                    try
+                    {
+                        SetLunchGiftDiscount(order, os, vm, type, price * (bound.LunchGiftCount() + 1));
+                        lg.GiftId = id;
+                        Store.SetGuest(order.Id, bound);
+                        msg += $"\n🎁 Ланч в подарок: скидка +{price:0} ₽.";
+                    }
+                    catch (Exception ex)
+                    {
+                        PluginContext.Log.Error("Карта Патрики: не удалось добавить скидку «Ланч в подарок» (доп. гость)", ex);
+                        try { Api.LunchGiftCancel(id); } catch (Exception ex2) { PluginContext.Log.Warn($"Карта Патрики: штампы не вернулись ({id}) — {ex2.Message}"); }
+                        msg += "\nНе удалось добавить скидку — штампы возвращены гостю.";
+                    }
+                }
+            }
+            var lunches = LunchCount(order, bound.LunchProductIds);
+            vm.ShowOkPopup(Sender, msg + $"\n\nЛанч-карт в заказе: {1 + bound.LunchGuests.Count} из {lunches}. Отметки поставятся после закрытия.");
+        }
 
         /* ---------------- оплата баллами ---------------- */
 
@@ -359,7 +478,7 @@ namespace Resto.Front.Api.Patriki
                 }
                 catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось убрать оплату баллами — {ex.Message}"); }
             }
-            foreach (var d in RedeemDiscountItems(order).Concat(guest.LunchGiftId != null ? LunchGiftItems(order) : new List<IDiscountItem>()))
+            foreach (var d in RedeemDiscountItems(order).Concat(guest.AnyLunchGift() ? LunchGiftItems(order) : new List<IDiscountItem>()))
             {
                 try { os.DeleteDiscount(d, order, creds); }
                 catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось убрать скидку — {ex.Message}"); }
@@ -370,6 +489,12 @@ namespace Resto.Front.Api.Patriki
                 catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось вернуть штампы ({guest.LunchGiftId}) — {ex.Message}"); }
                 guest.LunchGiftId = null;
             }
+            foreach (var lg in guest.LunchGuests.Where(x => x.GiftId != null))
+            {
+                try { Api.LunchGiftCancel(lg.GiftId); }
+                catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: не удалось вернуть штампы ({lg.GiftId}) — {ex.Message}"); }
+            }
+            guest.LunchGuests.Clear();
             var back = 0;
             foreach (var id in guest.RedeemIds.ToList())
             {
@@ -385,9 +510,14 @@ namespace Resto.Front.Api.Patriki
             var guest = Store.GetGuest(order.Id);
             if (guest == null) return;
             Store.RemoveGuest(order.Id);
-            if (guest.RedeemIds.Count == 0 && guest.LunchGiftId == null) return;
+            if (guest.RedeemIds.Count == 0 && !guest.AnyLunchGift()) return;
             Task.Run(() =>
             {
+                foreach (var lg in guest.LunchGuests.Where(x => x.GiftId != null))
+                {
+                    try { Api.LunchGiftCancel(lg.GiftId); }
+                    catch (Exception ex) { PluginContext.Log.Warn($"Карта Патрики: заказ {order.Number} удалён, штампы ({lg.GiftId}) не вернулись — {ex.Message}"); }
+                }
                 if (guest.LunchGiftId != null)
                 {
                     try { Api.LunchGiftCancel(guest.LunchGiftId); }
@@ -524,7 +654,9 @@ namespace Resto.Front.Api.Patriki
                 }
                 var request = CloseRequest.FromOrder(order, guest.Code, Config.Current.Venue);
                 // ланч в подарок: скидку оставили — подарок проведён, убрали вручную — штампы вернутся
-                request.LunchGift = guest.LunchGiftId != null ? HasLunchGift(order) : (bool?)null;
+                request.LunchGift = guest.AnyLunchGift() ? HasLunchGift(order) : (bool?)null;
+                // 2.1: дополнительные гости с ланч-картой — каждому штамп за свой ланч
+                request.LunchGuests = guest.LunchGuests.Select(x => x.Code).ToList();
                 // оплаченное баллами (оплатой) не считается покупкой — как было со скидкой
                 request.Sum -= RedeemPaidSum(order);
                 Store.RemoveGuest(order.Id);
